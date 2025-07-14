@@ -33,7 +33,11 @@ jobs:
     - name: Build with flet
       run: |
         flet build linux
-    - name: Package build output
+    - name: Package the build/linux directory
       run: |
-        mkdir -p build/linux
-        tar -czvf build/linux.tar.gz -C build/linux .
+        tar -czvf build_linux.tar.gz -C build/linux .
+    - name: Upload the build products
+      uses: actions/upload-artifact@v4
+      with:
+        name: build_linux
+        path: build_linux.tar.gz

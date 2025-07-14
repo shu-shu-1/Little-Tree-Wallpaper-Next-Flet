@@ -40,3 +40,11 @@ jobs:
         flet build windows
       env:
         PYTHONIOENCODING: utf-8
+    - name: Package the build/windows directory
+      run: |
+        Compress-Archive -Path build/windows\* -DestinationPath build_windows.zip
+    - name: Upload the build products
+      uses: actions/upload-artifact@v4
+      with:
+        name: build_windows
+        path: build_windows.zip
