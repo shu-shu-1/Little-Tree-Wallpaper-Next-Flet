@@ -35,4 +35,5 @@ jobs:
     - uses: ilammy/msvc-dev-cmd@v1.4.1
     - name: Build with flet
       run: |
+        chcp 65001
         flet build windows
