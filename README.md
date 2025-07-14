@@ -13,10 +13,11 @@
 
 
 > [!NOTE]
+> 
 > This project is still under development. 
 > This is the Next version of the Little Tree Wallpaper, developed based on Flet. 
 > [Main repository of Little Tree Wallpaper](https://github.com/shu-shu-1/Little-Tree-Wallpaper)
-> ------
+> ————————
 > 该项目仍在开发中。
 > 这是小树壁纸的Next版本，基于Flet开发。
 > [小树壁纸主仓库](https://github.com/shu-shu-1/Little-Tree-Wallpaper)
@@ -32,7 +33,7 @@ Stay tuned for more exciting features coming soon! 🎉
 
 If you like this project, please give it a star! ⭐️
 
-------
+————————
 
 小树壁纸是一款多功能应用程序，旨在快速更换和下载来自多种来源的壁纸，包括 Bing、360 和 Wallhaven。✨ 另外，它支持多种接口，允许用户收藏并自动轮换他们喜欢的壁纸，小树壁纸会为用户壁纸进行本地智能分类。
 
