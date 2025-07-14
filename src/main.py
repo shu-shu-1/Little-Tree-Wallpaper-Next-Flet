@@ -204,7 +204,7 @@ def main(page: ft.Page):
     def switch_tab(e):
         idx = e.control.selected_index
         mapping = {0: pages.home, 1: pages.resource, 2: pages.sniff}
-        content.content = mapping.get(idx, pages.nopage)
+        content.content = mapping.get(idx, pages.unknown)
         page.update()
 
     rail = ft.NavigationRail(
