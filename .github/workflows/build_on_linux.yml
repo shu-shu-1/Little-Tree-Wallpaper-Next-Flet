@@ -34,4 +34,4 @@ jobs:
         ruff check .
     - name: Build with flet
       run: |
-        flet build .
+        flet build
