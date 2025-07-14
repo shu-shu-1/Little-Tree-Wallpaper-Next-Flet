@@ -64,8 +64,6 @@ main.py 是启动和管理 小树壁纸Next 应用程序的主入口文件。
 更多信息请参见项目仓库和README。
 """
 
-
-
 from pathlib import Path
 import flet as ft
 import ltwapi
@@ -73,49 +71,51 @@ import ltwapi
 VER = "0.1.0-alpha2"
 
 # ---------- 资源路径 ----------
-ASSET_DIR   = Path(__file__).parent / "assets"
-FONT_PATH   = ASSET_DIR / "fonts" / "LXGWNeoXiHeiPlus.ttf"
-ICO_PATH    = ASSET_DIR / "images" / "icon.ico"
+ASSET_DIR = Path(__file__).parent / "assets"
+FONT_PATH = ASSET_DIR / "fonts" / "LXGWNeoXiHeiPlus.ttf"
+ICO_PATH = ASSET_DIR / "images" / "icon.ico"
 
 
 class Pages:
     """缓存各页面组件"""
+
     def __init__(self, page: ft.Page):
         self.page = page
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
         self.home = self._build_home()
         self.resource = self._build_resource()
-        self.sniff   = self._build_sniff()
-        self.unknown  = self._build_unknown()
-        
+        self.sniff = self._build_sniff()
+        self.unknown = self._build_unknown()
+
     # --------------------------------------------------
     # 壁纸相关
     # --------------------------------------------------
-    
+
     def _update_wallpaper(self):
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
+
     def _refresh_home(self, _):
         """刷新按钮回调：重新获取壁纸并刷新 UI"""
         self._update_wallpaper()
         self.img.src = self.wallpaper_path
         self.file_name.value = f"当前壁纸：{Path(self.wallpaper_path).name}"
         self.page.update()
-        
+
     # --------------------------------------------------
     # 页面构建
     # --------------------------------------------------
-    
+
     def _build_home(self):
         self.file_name = ft.Text(
-                    f"当前壁纸：{Path(self.wallpaper_path).name}",
-                    style=ft.TextStyle(decoration=ft.TextDecoration.UNDERLINE),
+            f"当前壁纸：{Path(self.wallpaper_path).name}",
+            style=ft.TextStyle(decoration=ft.TextDecoration.UNDERLINE),
         )
         self.img = ft.Image(
             src=self.wallpaper_path,
             height=200,
             border_radius=10,
             fit=ft.ImageFit.COVER,
-            tooltip="当前计算机的壁纸"
+            tooltip="当前计算机的壁纸",
         )
         return ft.Column(
             [
@@ -128,7 +128,11 @@ class Pages:
                                 ft.TextButton("导出", icon=ft.Icons.SAVE_ALT),
                                 ft.TextButton("更换", icon=ft.Icons.PHOTO_LIBRARY),
                                 ft.TextButton("收藏", icon=ft.Icons.STAR),
-                                ft.TextButton("刷新", icon=ft.Icons.REFRESH, on_click=self._refresh_home)
+                                ft.TextButton(
+                                    "刷新",
+                                    icon=ft.Icons.REFRESH,
+                                    on_click=self._refresh_home,
+                                ),
                             ],
                             alignment=ft.MainAxisAlignment.END,
                         ),
@@ -161,7 +165,9 @@ class Pages:
                 ft.Text("嗅探", size=30),
                 ft.Row(
                     [
-                        ft.TextField(label="请输入网址", prefix_text="https://", expand=True),
+                        ft.TextField(
+                            label="请输入网址", prefix_text="https://", expand=True
+                        ),
                         ft.IconButton(
                             icon=ft.Icons.SEARCH,
                             icon_size=30,
@@ -188,9 +194,11 @@ class Pages:
             expand=True,
         )
 
+
 # --------------------------------------------------
 # 主入口
 # --------------------------------------------------
+
 
 def main(page: ft.Page):
     page.title = f"小树壁纸 Next (Flet) | {VER}"
@@ -212,11 +220,29 @@ def main(page: ft.Page):
         label_type=ft.NavigationRailLabelType.ALL,
         min_width=80,
         destinations=[
-            ft.NavigationRailDestination(icon=ft.Icons.HOME_OUTLINED, selected_icon=ft.Icons.HOME, label="首页"),
-            ft.NavigationRailDestination(icon=ft.Icons.ARCHIVE_OUTLINED, selected_icon=ft.Icons.ARCHIVE, label="资源"),
-            ft.NavigationRailDestination(icon=ft.Icons.WIFI_FIND_OUTLINED, selected_icon=ft.Icons.WIFI_FIND,label="嗅探"),
-            ft.NavigationRailDestination(icon=ft.Icons.STAR_RATE_OUTLINED, selected_icon=ft.Icons.STAR_RATE,label="收藏"),
-            ft.NavigationRailDestination(icon=ft.Icons.IMAGE_SEARCH_OUTLINED, selected_icon=ft.Icons.IMAGE_SEARCH, label="搜索"),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.HOME_OUTLINED, selected_icon=ft.Icons.HOME, label="首页"
+            ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.ARCHIVE_OUTLINED,
+                selected_icon=ft.Icons.ARCHIVE,
+                label="资源",
+            ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.WIFI_FIND_OUTLINED,
+                selected_icon=ft.Icons.WIFI_FIND,
+                label="嗅探",
+            ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.STAR_RATE_OUTLINED,
+                selected_icon=ft.Icons.STAR_RATE,
+                label="收藏",
+            ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.IMAGE_SEARCH_OUTLINED,
+                selected_icon=ft.Icons.IMAGE_SEARCH,
+                label="搜索",
+            ),
         ],
         on_change=switch_tab,
     )
@@ -239,7 +265,8 @@ def main(page: ft.Page):
             expand=True,
         )
     )
-    
+
+
 # --------------------------------------------------
 # 启动！！！
 # --------------------------------------------------
