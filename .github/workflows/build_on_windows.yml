@@ -29,11 +29,14 @@ jobs:
         pip install ruff
         pip install .
         pip install flet[all]
+      env:
+        PYTHONIOENCODING: utf-8
     - name: Lint with ruff
       run: |
         ruff check .
     - uses: ilammy/msvc-dev-cmd@v1.4.1
     - name: Build with flet
       run: |
-        chcp 65001
         flet build windows
+      env:
+        PYTHONIOENCODING: utf-8
