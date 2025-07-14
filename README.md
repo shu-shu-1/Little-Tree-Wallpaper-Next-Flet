@@ -15,11 +15,17 @@
 > [!NOTE]
 > 
 > This project is still under development. 
+> 
 > This is the Next version of the Little Tree Wallpaper, developed based on Flet. 
+> 
 > [Main repository of Little Tree Wallpaper](https://github.com/shu-shu-1/Little-Tree-Wallpaper)
+> 
 > ————————
+> 
 > 该项目仍在开发中。
+> 
 > 这是小树壁纸的Next版本，基于Flet开发。
+> 
 > [小树壁纸主仓库](https://github.com/shu-shu-1/Little-Tree-Wallpaper)
 
 
@@ -118,6 +124,7 @@ This project follows the versioning conventions of [Semantic Versioning 2.0.0](h
 ## Special Thanks / 特别感谢 ❤️
 
 @[炫饭的芙芙](https://space.bilibili.com/1669914811)
+
 @[wsrscx](https://github.com/wsrscx)
 
 
