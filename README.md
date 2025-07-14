@@ -84,6 +84,7 @@ poetry run flet run --web
 ```
 
 For more details on running the app, refer to the [Flet Getting Started Guide](https://flet.dev/docs/getting-started/).
+
 有关运行该应用程序的更多详细信息，请参阅 [Flet入门指南](https://flet.dev/docs/getting-started/)。
 
 ## Build the app / 构建指南 📦
@@ -95,6 +96,7 @@ flet build macos -v
 ```
 
 For more details on building macOS package, refer to the [Flet macOS Packaging Guide](https://flet.dev/docs/publish/macos/).
+
 有关构建macOS包的更多详细信息，请参阅 [Flet macOS打包指南](https://flet.dev/docs/publish/macos/)。
 
 ### Linux
@@ -104,6 +106,7 @@ flet build linux -v
 ```
 
 For more details on building Linux package, refer to the [Flet Linux Packaging Guide](https://flet.dev/docs/publish/linux/).
+
 有关构建Linux包的更多详细信息，请参阅 [Flet Linux打包指南](https://flet.dev/docs/publish/linux/)。
 
 ### Windows
@@ -113,6 +116,7 @@ flet build windows -v
 ```
 
 For more details on building Windows package, refer to the [Flet Windows Packaging Guide](https://flet.dev/docs/publish/windows/).
+
 有关构建Windows包的更多详细信息，请参阅 [Flet Windows打包指南](https://flet.dev/docs/publish/windows/)。
 
 ## Release Notes / 版本发行说明 📋
