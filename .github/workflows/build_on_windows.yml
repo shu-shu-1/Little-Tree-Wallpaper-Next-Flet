@@ -32,6 +32,7 @@ jobs:
     - name: Lint with ruff
       run: |
         ruff check .
+    - uses: ilammy/msvc-dev-cmd@v1.4.1
     - name: Build with flet
       run: |
-        flet build
+        flet build windows
