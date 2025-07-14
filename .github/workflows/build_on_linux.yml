@@ -29,7 +29,7 @@ jobs:
         pip install ruff
         pip install .
         pip install flet[all]
-        apt install libgtk-3-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+        sudo apt install libgtk-3-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
         sudo apt install libmpv-dev mpv
     - name: Lint with ruff
       run: |
