@@ -1,0 +1,43 @@
+name: build on linux
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python 3.13
+      uses: actions/setup-python@v3
+      with:
+        python-version: "3.13"
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install ruff
+        pip install .
+        pip install flet[all]
+        sudo apt install libgtk-3-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+        sudo apt install libmpv-dev mpv
+    - name: Lint with ruff
+      run: |
+        ruff check .
+    - name: Build with flet
+      run: |
+        flet build linux
+    - name: Package the build/linux directory
+      run: |
+        tar -czvf build_linux.tar.gz -C build/linux .
+    - name: Upload the build products
+      uses: actions/upload-artifact@v4
+      with:
+        name: build_linux
+        path: build_linux.tar.gz

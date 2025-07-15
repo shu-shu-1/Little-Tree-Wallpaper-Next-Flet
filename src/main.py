@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # File: main.py
-# Project: Little Tree Wallpaper
+# Project: Little Tree Wallpaper Next
 # Description: Entry point for the Little Tree Wallpaper Next application.
 #              本文件为 小树壁纸Next 程序入口文件。
 #
@@ -67,12 +67,22 @@ main.py 是启动和管理 小树壁纸Next 应用程序的主入口文件。
 from pathlib import Path
 import flet as ft
 import ltwapi
+import random
+import asyncio
 
-VER = "0.1.0-alpha2"
+VER = "0.1.0-alpha3"
+BUILD = "20250715-004a"
+
+MODE = "TEST"
+
+BUILD_VERSION = f"v{VER} ({BUILD})"
+FULL_VERSION = f"v{VER}-{BUILD_VERSION} {MODE} (Flet) "
+
 
 # ---------- 资源路径 ----------
 ASSET_DIR = Path(__file__).parent / "assets"
-FONT_PATH = ASSET_DIR / "fonts" / "LXGWNeoXiHeiPlus.ttf"
+UI_FONT_PATH = ASSET_DIR / "fonts" / "LXGWNeoXiHeiPlus.ttf"
+HITOKOTO_FONT_PATH = ASSET_DIR / "fonts" / "LXGWWenKaiLite.ttf"
 ICO_PATH = ASSET_DIR / "images" / "icon.ico"
 
 
@@ -86,6 +96,35 @@ class Pages:
         self.resource = self._build_resource()
         self.sniff = self._build_sniff()
         self.unknown = self._build_unknown()
+
+    # --------------------------------------------------
+    # 一言相关
+    # --------------------------------------------------
+    _HITOKOTO_POOL = [
+        "问世间情为何物，直教生死相许？",
+        "只愿君心似我心，定不负相思意。",
+        "死生契阔，与子成说。执子之手，与子偕老。",
+    ]
+
+    async def _load_hitokoto(self):
+        """模拟耗时请求，1 秒后随机返回一条一言"""
+        await asyncio.sleep(1)  # 可替换为 aiohttp 等
+        return random.choice(self._HITOKOTO_POOL)
+
+    async def _show_hitokoto(self):
+        """先显示加载动画，再替换为一言"""
+        self.hitokoto_text.value = ""
+        self.hitokoto_loading.visible = True
+        self.page.update()
+
+        sentence = await self._load_hitokoto()
+        self.hitokoto_text.value = "「" + sentence + "」"
+        self.hitokoto_loading.visible = False
+        self.page.update()
+
+    def refresh_hitokoto(self, _=None):
+        """供外部/按钮调用的刷新函数"""
+        self.page.run_task(self._show_hitokoto)
 
     # --------------------------------------------------
     # 壁纸相关
@@ -117,6 +156,12 @@ class Pages:
             fit=ft.ImageFit.COVER,
             tooltip="当前计算机的壁纸",
         )
+        # ---- 一言 UI ----
+        self.hitokoto_loading = ft.ProgressRing(visible=False, width=24, height=24)
+        self.hitokoto_text = ft.Text("", size=16, font_family="HITOKOTOFont")
+        refresh_btn = ft.IconButton(
+            icon=ft.Icons.REFRESH, tooltip="刷新一言", on_click=self.refresh_hitokoto
+        )
         return ft.Column(
             [
                 ft.Text("当前壁纸", size=30),
@@ -139,9 +184,23 @@ class Pages:
                     ]
                 ),
                 self.file_name,
+                # ---------- 分割线 ----------
+                ft.Container(
+                    content=ft.Divider(height=1, thickness=1),
+                    margin=ft.margin.only(top=30),  # 周围间距
+                ),
+                # ---------- 一言区 ----------
+                ft.Row(
+                    [
+                        self.hitokoto_loading,
+                        self.hitokoto_text,
+                        refresh_btn,
+                    ],
+                    alignment=ft.MainAxisAlignment.START,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
             ],
             expand=True,
-            # scroll=ft.ScrollMode.AUTO,
         )
 
     def _build_resource(self):
@@ -201,10 +260,13 @@ class Pages:
 
 
 def main(page: ft.Page):
-    page.title = f"小树壁纸 Next (Flet) | {VER}"
-    if FONT_PATH.exists():
-        page.fonts = {"LXGWNeoXiHeiPlus": str(FONT_PATH)}
-        page.theme = ft.Theme(font_family="LXGWNeoXiHeiPlus")
+    page.title = f"小树壁纸 Next (Flet) | {VER if MODE == 'STABLE' else BUILD_VERSION}"
+    if UI_FONT_PATH.exists() and HITOKOTO_FONT_PATH.exists():
+        page.fonts = {
+            "UIFont": str(UI_FONT_PATH),
+            "HITOKOTOFont": str(HITOKOTO_FONT_PATH),
+        }
+        page.theme = ft.Theme(font_family="UIFont")
 
     pages = Pages(page)
     content = ft.Container(expand=True, content=pages.home)
@@ -265,6 +327,7 @@ def main(page: ft.Page):
             expand=True,
         )
     )
+    pages.refresh_hitokoto()
 
 
 # --------------------------------------------------
