@@ -67,8 +67,7 @@ main.py 是启动和管理 小树壁纸Next 应用程序的主入口文件。
 from pathlib import Path
 import flet as ft
 import ltwapi
-import random
-import asyncio
+import aiohttp
 
 VER = "0.1.0-alpha3"
 BUILD = "20250715-004a"
@@ -100,16 +99,16 @@ class Pages:
     # --------------------------------------------------
     # 一言相关
     # --------------------------------------------------
-    _HITOKOTO_POOL = [
-        "问世间情为何物，直教生死相许？",
-        "只愿君心似我心，定不负相思意。",
-        "死生契阔，与子成说。执子之手，与子偕老。",
-    ]
 
     async def _load_hitokoto(self):
-        """模拟耗时请求，1 秒后随机返回一条一言"""
-        await asyncio.sleep(1)  # 可替换为 aiohttp 等
-        return random.choice(self._HITOKOTO_POOL)
+        """一言来源"""
+        # 使用 aiohttp 从一言API获取数据
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://international.v1.hitokoto.cn/") as resp:
+                data = await resp.json()
+                return data["hitokoto"]
+        # 如果请求失败，返回一个默认值
+        return "一言数据获取失败"
 
     async def _show_hitokoto(self):
         """先显示加载动画，再替换为一言"""
@@ -175,6 +174,7 @@ class Pages:
                                 ft.TextButton("收藏", icon=ft.Icons.STAR),
                                 ft.TextButton(
                                     "刷新",
+                                    tooltip="刷新当前壁纸信息",
                                     icon=ft.Icons.REFRESH,
                                     on_click=self._refresh_home,
                                 ),

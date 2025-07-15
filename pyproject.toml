@@ -8,9 +8,9 @@ authors = [
     { name = "Flet developer", email = "you@example.com" }
 ]
 dependencies = [
+  "aiohttp>=3.12.14",
   "flet-webview",
   "flet==0.28.3",
-  
 ]
 
 [tool.flet]
