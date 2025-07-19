@@ -135,7 +135,15 @@ This project follows the versioning conventions of [Semantic Versioning 2.0.0](h
 
 ## Star History / Star 趋势 🌟
 
-[![Star History Chart](https://api.star-history.com/svg?repos=shu-shu-1/Little-Tree-Wallpaper-Next-Flet&type=Date)](https://star-history.com/#shu-shu-1/Little-Tree-Wallpaper-Next-Flet&Date)
+
+<a href="https://www.star-history.com/#shu-shu-1/Little-Tree-Wallpaper-Next-Flet&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=shu-shu-1/Little-Tree-Wallpaper-Next-Flet&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=shu-shu-1/Little-Tree-Wallpaper-Next-Flet&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=shu-shu-1/Little-Tree-Wallpaper-Next-Flet&type=Date" />
+ </picture>
+</a>
+
 
 ---
 

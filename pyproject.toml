@@ -9,8 +9,14 @@ authors = [
 ]
 dependencies = [
   "aiohttp>=3.12.14",
+  "filetype>=1.2.0",
   "flet-webview",
   "flet==0.28.3",
+  "magic-python>=0.4.0",
+  "pycurl>=7.45.6",
+  "python-magic>=0.4.27; platform_system != 'Windows'",
+  "python-magic-bin>=0.4.14; platform_system == 'Windows'",
+  "loguru>=0.7.3",
 ]
 
 [tool.flet]

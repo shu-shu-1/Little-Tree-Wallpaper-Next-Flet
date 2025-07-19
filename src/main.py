@@ -70,78 +70,88 @@ import ltwapi
 import aiohttp
 
 VER = "0.1.0-alpha3"
-BUILD = "20250715-004a"
-
+BUILD = "20250717-001a"
 MODE = "TEST"
-
 BUILD_VERSION = f"v{VER} ({BUILD})"
-FULL_VERSION = f"v{VER}-{BUILD_VERSION} {MODE} (Flet) "
 
-
-# ---------- 资源路径 ----------
 ASSET_DIR = Path(__file__).parent / "assets"
 UI_FONT_PATH = ASSET_DIR / "fonts" / "LXGWNeoXiHeiPlus.ttf"
-HITOKOTO_FONT_PATH = ASSET_DIR / "fonts" / "LXGWWenKaiLite.ttf"
+HITO_FONT_PATH = ASSET_DIR / "fonts" / "LXGWWenKaiLite.ttf"
 ICO_PATH = ASSET_DIR / "images" / "icon.ico"
+HITOKOTO_API = ["https://v1.hitokoto.cn", "https://international.v1.hitokoto.cn/"]
+LICENSE_PATH = Path(__file__).parent / "LICENSES"
 
 
 class Pages:
-    """缓存各页面组件"""
-
     def __init__(self, page: ft.Page):
         self.page = page
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
+        self.bing_wallpaper = None
+        self.bing_wallpaper_url = None
+        self.bing_loading = True
+
         self.home = self._build_home()
         self.resource = self._build_resource()
         self.sniff = self._build_sniff()
-        self.unknown = self._build_unknown()
+        self.page.run_task(self._load_bing_wallpaper)
 
-    # --------------------------------------------------
-    # 一言相关
-    # --------------------------------------------------
+    def _get_license_text(self):
+        with open(LICENSE_PATH / "LXGWNeoXiHeiPlus-IPA-1.0.md", encoding="utf-8") as f1:
+            with open(LICENSE_PATH / "aiohttp.txt", encoding="utf-8") as f2:
+                with open(LICENSE_PATH / "Flet-Apache-2.0.txt", encoding="utf-8") as f3:
+                    with open(
+                        LICENSE_PATH / "LXGWWenKaiLite-OFL-1.1.txt", encoding="utf-8"
+                    ) as f4:
+                        return f"# LXGWNeoXiHeiPlus 字体\n\n{f1.read()}\n\n# aiohttp 库\n\n{f2.read()}\n\n# Flet 库\n\n{f3.read()}\n\n# LXGWWenKaiLite 字体\n\n{f4.read()}"
 
     async def _load_hitokoto(self):
-        """一言来源"""
-        # 使用 aiohttp 从一言API获取数据
-        async with aiohttp.ClientSession() as session:
-            async with session.get("https://international.v1.hitokoto.cn/") as resp:
-                data = await resp.json()
-                return data["hitokoto"]
-        # 如果请求失败，返回一个默认值
-        return "一言数据获取失败"
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(HITOKOTO_API[1]) as r:
+                    return (await r.json())["hitokoto"]
+        except Exception:
+            return "一言获取失败"
 
     async def _show_hitokoto(self):
-        """先显示加载动画，再替换为一言"""
         self.hitokoto_text.value = ""
         self.hitokoto_loading.visible = True
         self.page.update()
-
-        sentence = await self._load_hitokoto()
-        self.hitokoto_text.value = "「" + sentence + "」"
+        self.hitokoto_text.value = f"「{await self._load_hitokoto()}」"
         self.hitokoto_loading.visible = False
         self.page.update()
 
     def refresh_hitokoto(self, _=None):
-        """供外部/按钮调用的刷新函数"""
         self.page.run_task(self._show_hitokoto)
-
-    # --------------------------------------------------
-    # 壁纸相关
-    # --------------------------------------------------
 
     def _update_wallpaper(self):
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
 
     def _refresh_home(self, _):
-        """刷新按钮回调：重新获取壁纸并刷新 UI"""
         self._update_wallpaper()
         self.img.src = self.wallpaper_path
         self.file_name.value = f"当前壁纸：{Path(self.wallpaper_path).name}"
         self.page.update()
 
-    # --------------------------------------------------
-    # 页面构建
-    # --------------------------------------------------
+    async def _load_bing_wallpaper(self):
+        try:
+            self.bing_wallpaper = await ltwapi.get_bing_wallpaper_async()
+            base = self.bing_wallpaper.get("url")
+            if base:
+                self.bing_wallpaper_url = f"https://www.bing.com{base}".replace(
+                    "1920x1080", "UHD"
+                )
+        except Exception:
+            self.bing_wallpaper_url = None
+        finally:
+            self.bing_loading = False
+            self._refresh_bing_tab()
+
+    def _refresh_bing_tab(self):
+        for tab in self.resource_tabs.tabs:
+            if tab.text == "Bing 每日":
+                tab.content = self._build_bing_daily_content()
+                break
+        self.page.update()
 
     def _build_home(self):
         self.file_name = ft.Text(
@@ -155,7 +165,6 @@ class Pages:
             fit=ft.ImageFit.COVER,
             tooltip="当前计算机的壁纸",
         )
-        # ---- 一言 UI ----
         self.hitokoto_loading = ft.ProgressRing(visible=False, width=24, height=24)
         self.hitokoto_text = ft.Text("", size=16, font_family="HITOKOTOFont")
         refresh_btn = ft.IconButton(
@@ -184,18 +193,12 @@ class Pages:
                     ]
                 ),
                 self.file_name,
-                # ---------- 分割线 ----------
                 ft.Container(
                     content=ft.Divider(height=1, thickness=1),
-                    margin=ft.margin.only(top=30),  # 周围间距
+                    margin=ft.margin.only(top=30),
                 ),
-                # ---------- 一言区 ----------
                 ft.Row(
-                    [
-                        self.hitokoto_loading,
-                        self.hitokoto_text,
-                        refresh_btn,
-                    ],
+                    [self.hitokoto_loading, self.hitokoto_text, refresh_btn],
                     alignment=ft.MainAxisAlignment.START,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
@@ -204,18 +207,87 @@ class Pages:
         )
 
     def _build_resource(self):
+        self.resource_tabs = ft.Tabs(
+            tabs=[
+                ft.Tab(
+                    text="Bing 每日",
+                    icon=ft.Icons.TODAY,
+                    content=self._build_bing_loading_indicator(),
+                ),
+                ft.Tab(text="Windows 聚焦", icon=ft.Icons.WINDOW),
+                ft.Tab(text="其他", icon=ft.Icons.SUBJECT),
+            ],
+            animation_duration=300,
+        )
         return ft.Column(
             [
                 ft.Text("资源", size=30),
-                ft.Tabs(
-                    tabs=[
-                        ft.Tab(text="Bing 每日", icon=ft.Icons.TODAY),
-                        ft.Tab(text="Windows 聚焦", icon=ft.Icons.WINDOW),
-                        ft.Tab(text="其他", icon=ft.Icons.SUBJECT),
-                    ],
-                    animation_duration=300,
+                ft.Container(
+                    content=self.resource_tabs,
+                    expand=True,
+                    clip_behavior=ft.ClipBehavior.HARD_EDGE,
                 ),
-            ]
+            ],
+            expand=True,
+        )
+
+    def _build_bing_daily_content(self):
+        if self.bing_loading:
+            return self._build_bing_loading_indicator()
+        if not self.bing_wallpaper_url:
+            return ft.Container(ft.Text("Bing 壁纸加载失败，请稍后再试～"), padding=16)
+        title = self.bing_wallpaper.get("title", "Bing 每日壁纸")
+        desc = self.bing_wallpaper.get("copyright", "")
+        return ft.Container(
+            ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Image(
+                                src=self.bing_wallpaper_url,
+                                width=160,
+                                height=90,
+                                fit=ft.ImageFit.COVER,
+                                border_radius=8,
+                            ),
+                            ft.Column(
+                                [
+                                    ft.Text(title, size=16, weight=ft.FontWeight.BOLD),
+                                    ft.Text(desc, size=12, color=ft.Colors.GREY),
+                                    ft.Row(
+                                        [
+                                            ft.TextButton("测验", icon=ft.Icons.LAUNCH),
+                                            ft.TextButton("详情", icon=ft.Icons.LAUNCH),
+                                        ]
+                                    ),
+                                ],
+                                spacing=6,
+                            ),
+                        ]
+                    ),
+                    ft.Row(
+                        [
+                            ft.ElevatedButton("设为壁纸", icon=ft.Icons.WALLPAPER),
+                            ft.ElevatedButton("收藏", icon=ft.Icons.STAR),
+                            ft.ElevatedButton("下载", icon=ft.Icons.DOWNLOAD),
+                            ft.ElevatedButton("复制", icon=ft.Icons.COPY),
+                        ]
+                    ),
+                ]
+            ),
+            padding=16,
+        )
+
+    def _build_bing_loading_indicator(self):
+        return ft.Column(
+            [
+                ft.Row(
+                    [ft.ProgressRing(), ft.Text("正在加载 Bing 每日壁纸 …")],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                )
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            expand=True,
         )
 
     def _build_sniff(self):
@@ -228,111 +300,200 @@ class Pages:
                             label="请输入网址", prefix_text="https://", expand=True
                         ),
                         ft.IconButton(
-                            icon=ft.Icons.SEARCH,
-                            icon_size=30,
-                            tooltip="开始嗅探",
+                            icon=ft.Icons.SEARCH, icon_size=30, tooltip="开始嗅探"
                         ),
                     ]
                 ),
             ]
         )
+    def _change_theme_mode(self, e):
+        self.page.theme_mode = ft.ThemeMode.DARK if e.data == "true" else ft.ThemeMode.LIGHT
+        self.page.update()
+    def build_settings_view(self):
+        def tab_content(title, *controls):
+            return ft.Container(
+                content=ft.Column(list(controls), spacing=12, expand=True), padding=16
+            )
 
-    def _build_unknown(self):
-        return ft.Column(
-            [
-                ft.Icon(name=ft.Icons.ERROR, size=50, color=ft.Colors.RED),
-                ft.Text("页面不存在或正在开发中", size=35),
-                ft.Text(
-                    "此错误不应出现在正式版中，若您看到此页面，请联系开发者",
-                    size=10,
-                    color=ft.Colors.GREY,
+        license_sheet = ft.BottomSheet(
+            ft.Container(
+                ft.Column(
+                    [
+                        ft.Text("版权信息"),
+                        ft.Markdown(self._get_license_text(), selectable=True),
+                        ft.TextButton(
+                            "关闭",
+                            icon=ft.Icons.CLOSE,
+                            on_click=lambda _: setattr(license_sheet, "open", False)
+                            or self.page.update(),
+                        ),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    tight=True,
+                    scroll=ft.ScrollMode.ALWAYS,
                 ),
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            expand=True,
+                padding=50,
+            ),
+            open=False,
         )
 
+        general = tab_content(
+            "通用",
+            ft.Switch(label="开机自启"),
+            ft.Switch(label="自动检查更新", value=True),
+        )
+        download = tab_content(
+            "下载",
+            ft.Dropdown(
+                label="默认保存位置",
+                options=[
+                    ft.dropdown.Option("下载"),
+                    ft.dropdown.Option("图片"),
+                    ft.dropdown.Option("自定义…"),
+                ],
+                value="下载",
+                width=220,
+            ),
+            ft.Switch(label="仅 Wi-Fi 下载", value=True),
+        )
+        
+        ui = tab_content(
+            "界面",
+            ft.Slider(min=0.5, max=2, divisions=3, label="界面缩放: {value}", value=1),
+            #TODO 创建组件时进行颜色模式判断
+            ft.Switch(label="深色模式",on_change=self._change_theme_mode, value=True if self.page.theme_mode == ft.ThemeMode.DARK else False),
+        )
+        about = tab_content(
+            "关于",
+            ft.Text("小树壁纸 Next v0.1.0-alpha3", size=16),
+            ft.Text(
+                "Copyright © 2023-2025 Little Tree Studio",
+                size=12,
+                color=ft.Colors.GREY,
+            ),
+            ft.TextButton(
+                "查看许可证",
+                icon=ft.Icons.OPEN_IN_NEW,
+                on_click=lambda _: self.page.launch_url(
+                    "https://www.gnu.org/licenses/agpl-3.0.html"
+                ),
+            ),
+            ft.TextButton(
+                "查看版权信息",
+                icon=ft.Icons.OPEN_IN_NEW,
+                on_click=lambda _: setattr(license_sheet, "open", True)
+                or self.page.update(),
+            ),
+        )
 
-# --------------------------------------------------
-# 主入口
-# --------------------------------------------------
+        return ft.View(
+            "/settings",
+            [
+                ft.AppBar(
+                    title=ft.Text("设置"),
+                    leading=ft.IconButton(
+                        ft.Icons.ARROW_BACK,
+                        tooltip="返回",
+                        on_click=lambda _: self.page.go("/"),
+                    ),
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                ),
+                ft.Tabs(
+                    selected_index=0,
+                    animation_duration=300,
+                    padding=12,
+                    tabs=[
+                        ft.Tab(text="通用", icon=ft.Icons.SETTINGS, content=general),
+                        ft.Tab(text="下载", icon=ft.Icons.DOWNLOAD, content=download),
+                        ft.Tab(text="界面", icon=ft.Icons.PALETTE, content=ui),
+                        ft.Tab(text="关于", icon=ft.Icons.INFO, content=about),
+                    ],
+                    expand=True,
+                ),
+                license_sheet,
+            ],
+        )
 
 
 def main(page: ft.Page):
     page.title = f"小树壁纸 Next (Flet) | {VER if MODE == 'STABLE' else BUILD_VERSION}"
-    if UI_FONT_PATH.exists() and HITOKOTO_FONT_PATH.exists():
-        page.fonts = {
-            "UIFont": str(UI_FONT_PATH),
-            "HITOKOTOFont": str(HITOKOTO_FONT_PATH),
-        }
+    if UI_FONT_PATH.exists() and HITO_FONT_PATH.exists():
+        page.fonts = {"UIFont": str(UI_FONT_PATH), "HITOKOTOFont": str(HITO_FONT_PATH)}
         page.theme = ft.Theme(font_family="UIFont")
 
     pages = Pages(page)
-    content = ft.Container(expand=True, content=pages.home)
 
-    def switch_tab(e):
-        idx = e.control.selected_index
-        mapping = {0: pages.home, 1: pages.resource, 2: pages.sniff}
-        content.content = mapping.get(idx, pages.unknown)
-        page.update()
-
-    rail = ft.NavigationRail(
-        selected_index=0,
-        label_type=ft.NavigationRailLabelType.ALL,
-        min_width=80,
-        destinations=[
-            ft.NavigationRailDestination(
-                icon=ft.Icons.HOME_OUTLINED, selected_icon=ft.Icons.HOME, label="首页"
-            ),
-            ft.NavigationRailDestination(
-                icon=ft.Icons.ARCHIVE_OUTLINED,
-                selected_icon=ft.Icons.ARCHIVE,
-                label="资源",
-            ),
-            ft.NavigationRailDestination(
-                icon=ft.Icons.WIFI_FIND_OUTLINED,
-                selected_icon=ft.Icons.WIFI_FIND,
-                label="嗅探",
-            ),
-            ft.NavigationRailDestination(
-                icon=ft.Icons.STAR_RATE_OUTLINED,
-                selected_icon=ft.Icons.STAR_RATE,
-                label="收藏",
-            ),
-            ft.NavigationRailDestination(
-                icon=ft.Icons.IMAGE_SEARCH_OUTLINED,
-                selected_icon=ft.Icons.IMAGE_SEARCH,
-                label="搜索",
-            ),
+    home_view = ft.View(
+        "/",
+        [
+            ft.Row(
+                [
+                    ft.NavigationRail(
+                        selected_index=0,
+                        label_type=ft.NavigationRailLabelType.ALL,
+                        min_width=80,
+                        destinations=[
+                            ft.NavigationRailDestination(
+                                icon=ft.Icons.HOME_OUTLINED,
+                                selected_icon=ft.Icons.HOME,
+                                label="首页",
+                            ),
+                            ft.NavigationRailDestination(
+                                icon=ft.Icons.ARCHIVE_OUTLINED,
+                                selected_icon=ft.Icons.ARCHIVE,
+                                label="资源",
+                            ),
+                            ft.NavigationRailDestination(
+                                icon=ft.Icons.WIFI_FIND_OUTLINED,
+                                selected_icon=ft.Icons.WIFI_FIND,
+                                label="嗅探",
+                            ),
+                        ],
+                        on_change=lambda e: [
+                            setattr(
+                                content,
+                                "content",
+                                [pages.home, pages.resource, pages.sniff][
+                                    e.control.selected_index
+                                ],
+                            ),
+                            page.update(),
+                        ],
+                    ),
+                    ft.VerticalDivider(width=1),
+                    (content := ft.Container(expand=True, content=pages.home)),
+                ],
+                expand=True,
+            )
         ],
-        on_change=switch_tab,
-    )
-    page.appbar = ft.AppBar(
-        leading=ft.Image(str(ICO_PATH), width=24, height=24, fit=ft.ImageFit.CONTAIN),
-        title=ft.Text("小树壁纸 Next - Flet"),
-        bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
-        actions=[
-            ft.TextButton("帮助", icon=ft.Icons.HELP),
-            ft.TextButton("设置", icon=ft.Icons.SETTINGS),
-        ],
-    )
-    page.add(
-        ft.Row(
-            [
-                rail,
-                ft.VerticalDivider(width=1),
-                content,
+        appbar=ft.AppBar(
+            leading=ft.Image(
+                str(ICO_PATH), width=24, height=24, fit=ft.ImageFit.CONTAIN
+            ),
+            title=ft.Text("小树壁纸 Next - Flet"),
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            actions=[
+                ft.TextButton("帮助", icon=ft.Icons.HELP),
+                ft.TextButton(
+                    "设置",
+                    icon=ft.Icons.SETTINGS,
+                    on_click=lambda _: page.go("/settings"),
+                ),
             ],
-            expand=True,
-        )
+        ),
     )
+
+    def route_change(_):
+        page.views.clear()
+        if page.route == "/settings":
+            page.views.append(pages.build_settings_view())
+        else:
+            page.views.append(home_view)
+        page.update()
+    page.on_route_change = route_change
+    page.go("/")
     pages.refresh_hitokoto()
 
-
-# --------------------------------------------------
-# 启动！！！
-# --------------------------------------------------
 
 if __name__ == "__main__":
     ft.app(main)
