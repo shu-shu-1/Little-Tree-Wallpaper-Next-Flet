@@ -166,6 +166,7 @@ def set_wallpaper(path: str) -> None:
         )
         reg.SetValueEx(key, "Wallpaper", 0, reg.REG_SZ, path)
         reg.CloseKey(key)
+        return
 
     # ---------- macOS ----------
     if system == "Darwin":

@@ -17,6 +17,7 @@ dependencies = [
   "python-magic>=0.4.27; platform_system != 'Windows'",
   "python-magic-bin>=0.4.14; platform_system == 'Windows'",
   "loguru>=0.7.3",
+  "platformdirs>=4.3.8",
 ]
 
 [tool.flet]

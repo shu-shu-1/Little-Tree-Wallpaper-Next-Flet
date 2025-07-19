@@ -65,14 +65,19 @@ main.py 是启动和管理 小树壁纸Next 应用程序的主入口文件。
 """
 
 from pathlib import Path
+from loguru import logger
 import flet as ft
 import ltwapi
 import aiohttp
+import shutil
+import platformdirs
 
-VER = "0.1.0-alpha3"
-BUILD = "20250717-001a"
+VER = "0.1.0-alpha4"
+BUILD = "20250719-003"
 MODE = "TEST"
 BUILD_VERSION = f"v{VER} ({BUILD})"
+
+logger.info(f"Little Tree Wallpaper Next {BUILD_VERSION} 初始化")
 
 ASSET_DIR = Path(__file__).parent / "assets"
 UI_FONT_PATH = ASSET_DIR / "fonts" / "LXGWNeoXiHeiPlus.ttf"
@@ -80,6 +85,27 @@ HITO_FONT_PATH = ASSET_DIR / "fonts" / "LXGWWenKaiLite.ttf"
 ICO_PATH = ASSET_DIR / "images" / "icon.ico"
 HITOKOTO_API = ["https://v1.hitokoto.cn", "https://international.v1.hitokoto.cn/"]
 LICENSE_PATH = Path(__file__).parent / "LICENSES"
+
+CACHE_DIR = Path(
+    platformdirs.user_cache_dir(
+        "Little-Tree-Wallpaper", "Little Tree Studio", "Next", ensure_exists=True
+    )
+)
+RUNTIME_DIR = Path(
+    platformdirs.user_runtime_dir(
+        "Little-Tree-Wallpaper", "Little Tree Studio", "Next", ensure_exists=True
+    )
+)
+CONFIG_DIR = Path(
+    platformdirs.user_config_dir(
+        "Little-Tree-Wallpaper", "Little Tree Studio", "Next", ensure_exists=True
+    )
+)
+DATA_DIR = Path(
+    platformdirs.user_data_dir(
+        "Little-Tree-Wallpaper", "Little Tree Studio", "Next", ensure_exists=True
+    )
+)
 
 
 class Pages:
@@ -232,12 +258,85 @@ class Pages:
         )
 
     def _build_bing_daily_content(self):
+        def _set_wallpaper(url):
+            nonlocal bing_loading_info, bing_pb
+
+            def progress_callback(value, value1):
+                nonlocal bing_pb
+                bing_pb.value = value / value1
+                self.page.update()
+
+            bing_loading_info.visible = True
+            bing_pb.visible = True
+
+            set_button.disabled = True
+            favorite_button.disabled = True
+            download_button.disabled = True
+            copy_button.disabled = True
+
+            self.resource_tabs.disabled = True
+
+            self.page.update()
+
+            dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("获取Bing壁纸数据时出现问题"),
+                content=ft.Text(
+                    "你可以重试或手动下载壁纸后设置壁纸，若无法解决请联系开发者。"
+                ),
+                actions=[
+                    ft.TextButton(
+                        "关闭", on_click=lambda e: setattr(dlg, "open", False)
+                    ),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+                open=False,
+            )
+
+            wallpaper_path = ltwapi.download_file(
+                url,
+                DATA_DIR / "Wallpaper",
+                "Ltw-Wallpaper",
+                progress_callback=progress_callback,
+            )
+            if wallpaper_path:
+                ltwapi.set_wallpaper(wallpaper_path)
+
+            else:
+                setattr(dlg, "open", True)
+                logger.error("Bing 壁纸下载失败")
+
+            bing_pb.value = 0
+            bing_loading_info.visible = False
+            bing_pb.visible = False
+            set_button.disabled = False
+            favorite_button.disabled = False
+            download_button.disabled = False
+            copy_button.disabled = False
+
+            self.resource_tabs.disabled = False
+
+            self.page.update()
+
         if self.bing_loading:
             return self._build_bing_loading_indicator()
         if not self.bing_wallpaper_url:
             return ft.Container(ft.Text("Bing 壁纸加载失败，请稍后再试～"), padding=16)
         title = self.bing_wallpaper.get("title", "Bing 每日壁纸")
         desc = self.bing_wallpaper.get("copyright", "")
+        bing_loading_info = ft.Text("正在获取信息……")
+        bing_pb = ft.ProgressBar(value=0)
+        bing_pb.visible = False
+        bing_loading_info.visible = False
+        set_button = ft.ElevatedButton(
+            "设为壁纸",
+            icon=ft.Icons.WALLPAPER,
+            on_click=lambda e: _set_wallpaper(self.bing_wallpaper_url),
+        )
+        favorite_button = ft.ElevatedButton("收藏", icon=ft.Icons.STAR)
+        download_button = ft.ElevatedButton("下载", icon=ft.Icons.DOWNLOAD)
+        copy_button = ft.ElevatedButton("复制", icon=ft.Icons.COPY)
+
         return ft.Container(
             ft.Column(
                 [
@@ -267,12 +366,14 @@ class Pages:
                     ),
                     ft.Row(
                         [
-                            ft.ElevatedButton("设为壁纸", icon=ft.Icons.WALLPAPER),
-                            ft.ElevatedButton("收藏", icon=ft.Icons.STAR),
-                            ft.ElevatedButton("下载", icon=ft.Icons.DOWNLOAD),
-                            ft.ElevatedButton("复制", icon=ft.Icons.COPY),
+                            set_button,
+                            favorite_button,
+                            download_button,
+                            copy_button,
                         ]
                     ),
+                    bing_loading_info,
+                    bing_pb,
                 ]
             ),
             padding=16,
@@ -306,9 +407,13 @@ class Pages:
                 ),
             ]
         )
+
     def _change_theme_mode(self, e):
-        self.page.theme_mode = ft.ThemeMode.DARK if e.data == "true" else ft.ThemeMode.LIGHT
+        self.page.theme_mode = (
+            ft.ThemeMode.DARK if e.data == "true" else ft.ThemeMode.LIGHT
+        )
         self.page.update()
+
     def build_settings_view(self):
         def tab_content(title, *controls):
             return ft.Container(
@@ -320,11 +425,36 @@ class Pages:
                 ft.Column(
                     [
                         ft.Text("版权信息"),
-                        ft.Markdown(self._get_license_text(), selectable=True),
+                        ft.Markdown(self._get_license_text(), selectable=True, auto_follow_links=True),
                         ft.TextButton(
                             "关闭",
                             icon=ft.Icons.CLOSE,
                             on_click=lambda _: setattr(license_sheet, "open", False)
+                            or self.page.update(),
+                        ),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    tight=True,
+                    scroll=ft.ScrollMode.ALWAYS,
+                ),
+                padding=50,
+            ),
+            open=False,
+        )
+        thank_sheet = ft.BottomSheet(
+            ft.Container(
+                ft.Column(
+                    [
+                        ft.Text("特别鸣谢"),
+                        ft.Markdown(
+                            """@[炫饭的芙芙](https://space.bilibili.com/1669914811) | @[wsrscx](https://github.com/wsrscx) | @[kylemarvin884](https://github.com/kylemarvin884)""",
+                            selectable=True,
+                            auto_follow_links=True
+                        ),
+                        ft.TextButton(
+                            "关闭",
+                            icon=ft.Icons.CLOSE,
+                            on_click=lambda _: setattr(thank_sheet, "open", False)
                             or self.page.update(),
                         ),
                     ],
@@ -356,12 +486,16 @@ class Pages:
             ),
             ft.Switch(label="仅 Wi-Fi 下载", value=True),
         )
-        
+
         ui = tab_content(
             "界面",
             ft.Slider(min=0.5, max=2, divisions=3, label="界面缩放: {value}", value=1),
-            #TODO 创建组件时进行颜色模式判断
-            ft.Switch(label="深色模式",on_change=self._change_theme_mode, value=True if self.page.theme_mode == ft.ThemeMode.DARK else False),
+            # TODO 创建组件时进行颜色模式判断
+            ft.Switch(
+                label="深色模式",
+                on_change=self._change_theme_mode,
+                value=True if self.page.theme_mode == ft.ThemeMode.DARK else False,
+            ),
         )
         about = tab_content(
             "关于",
@@ -370,6 +504,12 @@ class Pages:
                 "Copyright © 2023-2025 Little Tree Studio",
                 size=12,
                 color=ft.Colors.GREY,
+            ),
+            ft.TextButton(
+                "查看特别鸣谢",
+                icon=ft.Icons.OPEN_IN_NEW,
+                on_click=lambda _: setattr(thank_sheet, "open", True)
+                or self.page.update(),
             ),
             ft.TextButton(
                 "查看许可证",
@@ -411,6 +551,7 @@ class Pages:
                     expand=True,
                 ),
                 license_sheet,
+                thank_sheet,
             ],
         )
 
@@ -490,6 +631,7 @@ def main(page: ft.Page):
         else:
             page.views.append(home_view)
         page.update()
+
     page.on_route_change = route_change
     page.go("/")
     pages.refresh_hitokoto()
