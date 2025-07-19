@@ -6,7 +6,7 @@
     </td>
     <td align="right">
       <h1>Little Tree Wallpaper Next  <br><span style="font-size: 0.7em; font-weight: normal;">小树壁纸Next</span></h1>
-      <h3 style="margin-top: -10px;">A wallpaper app for desktop and mobile devices. <br><span style="font-size: 0.7em; font-weight: normal;">一个桌面和移动设备壁纸应用.</span></h3>
+      <h3 style="margin-top: -10px;">A wallpaper app for desktop <br><span style="font-size: 0.7em; font-weight: normal;">一个桌面壁纸应用</span></h3>
     </td>
   </tr>
 </table>
