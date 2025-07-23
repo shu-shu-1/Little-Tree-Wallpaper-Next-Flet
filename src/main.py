@@ -71,7 +71,7 @@ from loguru import logger
 import flet as ft
 import ltwapi
 import aiohttp
-import shutil
+import pyperclip
 import platformdirs
 
 VER = "0.1.0-alpha4"
@@ -122,7 +122,7 @@ class Pages:
         self.resource = self._build_resource()
         self.sniff = self._build_sniff()
         self.favorite = self._build_favorite()
-        
+
         self.page.run_task(self._load_bing_wallpaper)
 
     def _get_license_text(self):
@@ -156,10 +156,30 @@ class Pages:
     def _update_wallpaper(self):
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
 
+    def _copy_sys_wallpaper_path(self):
+        pyperclip.copy(self.wallpaper_path)
+        self.page.open(
+            ft.SnackBar(
+                ft.Row(
+                    controls=[
+                        ft.Icon(name=ft.Icons.DONE, color=ft.Colors.ON_SECONDARY),
+                        ft.Text("壁纸路径已复制~ (。・∀・)"),
+                        
+                    ]
+                )
+            )
+        )
     def _refresh_home(self, _):
         self._update_wallpaper()
         self.img.src = self.wallpaper_path
-        self.file_name.value = f"当前壁纸：{Path(self.wallpaper_path).name}"
+        self.file_name.spans = [
+            ft.TextSpan(
+                f"当前壁纸：{Path(self.wallpaper_path).name}",
+                ft.TextStyle(decoration=ft.TextDecoration.UNDERLINE),
+                on_click=lambda _: self._copy_sys_wallpaper_path(),
+            )
+        ]
+
         self.page.update()
 
     async def _load_bing_wallpaper(self):
@@ -184,10 +204,18 @@ class Pages:
         self.page.update()
 
     def _build_home(self):
+
+
         self.file_name = ft.Text(
-            f"当前壁纸：{Path(self.wallpaper_path).name}",
-            style=ft.TextStyle(decoration=ft.TextDecoration.UNDERLINE),
+            spans=[
+                ft.TextSpan(
+                    f"当前壁纸：{Path(self.wallpaper_path).name}",
+                    ft.TextStyle(decoration=ft.TextDecoration.UNDERLINE),
+                    on_click=lambda _: self._copy_sys_wallpaper_path(),
+                )
+            ]
         )
+
         self.img = ft.Image(
             src=self.wallpaper_path,
             height=200,
@@ -244,7 +272,11 @@ class Pages:
                     icon=ft.Icons.TODAY,
                     content=self._build_bing_loading_indicator(),
                 ),
-                ft.Tab(text="Windows 聚焦", icon=ft.Icons.WINDOW),
+                ft.Tab(
+                    text="Windows 聚焦",
+                    icon=ft.Icons.WINDOW,
+                    content=self._build_spotlight_loading_indicator(),
+                ),
                 ft.Tab(text="搜索", icon=ft.Icons.SEARCH),
                 ft.Tab(text="其他", icon=ft.Icons.SUBJECT),
             ],
@@ -389,6 +421,18 @@ class Pages:
             [
                 ft.Row(
                     [ft.ProgressRing(), ft.Text("正在加载 Bing 每日壁纸 …")],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                )
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            expand=True,
+        )
+
+    def _build_spotlight_loading_indicator(self):
+        return ft.Column(
+            [
+                ft.Row(
+                    [ft.ProgressRing(), ft.Text("正在加载Windows 聚焦壁纸 …")],
                     alignment=ft.MainAxisAlignment.CENTER,
                 )
             ],
@@ -623,9 +667,12 @@ def main(page: ft.Page):
                             setattr(
                                 content,
                                 "content",
-                                [pages.home, pages.resource, pages.sniff, pages.favorite][
-                                    e.control.selected_index
-                                ],
+                                [
+                                    pages.home,
+                                    pages.resource,
+                                    pages.sniff,
+                                    pages.favorite,
+                                ][e.control.selected_index],
                             ),
                             page.update(),
                         ],

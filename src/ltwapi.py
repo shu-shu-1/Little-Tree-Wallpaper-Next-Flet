@@ -26,73 +26,91 @@ try:
 except ImportError:
     filetype = None
 
-if os.name == "nt":
-    import winreg
 
 
-def get_sys_wallpaper():
+def _try_subprocess(cmd: list) -> Optional[str]:
+    """运行命令并返回 stdout 的 str，失败返回 None。"""
+    try:
+        return subprocess.check_output(cmd, text=True).strip()
+    except Exception:
+        return None
+
+
+def _from_file_uri(raw: str) -> str:
+    """把 gsettings 返回的 'file:///xxx/yyy.jpg' 转成真实路径。"""
+    from urllib.parse import urlparse, unquote
+
+    if raw.startswith("file://"):
+        return unquote(urlparse(raw).path)
+    return unquote(raw)
+
+
+def get_sys_wallpaper() -> Optional[str]:
+    """
+    返回当前系统桌面壁纸的绝对路径；失败返回 None。
+    支持 Windows / macOS / Linux(GNOME/KDE/XFCE)。
+    """
     if os.name == "nt":
-        # Windows
-        reg_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop")
-        wallpaper_path, _ = winreg.QueryValueEx(reg_key, "WallPaper")
-        winreg.CloseKey(reg_key)
-        return wallpaper_path
-
-    elif sys.platform == "darwin":
-        # macOS
+        # ---------- Windows ----------
         try:
-            import subprocess
+            import winreg
 
-            script = """/usr/bin/osascript -e 'tell application "System Events" to get picture of current desktop'"""
-            result = subprocess.check_output(script, shell=True)
-            return result.decode("utf-8").strip()
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop"
+            ) as key:
+                path, _ = winreg.QueryValueEx(key, "WallPaper")
+            return path if os.path.isfile(path) else None
         except Exception:
             return None
 
-    elif sys.platform.startswith("linux"):
-        # Linux: 常见桌面环境
+    if sys.platform == "darwin":
+        # ---------- macOS ----------
         try:
-            import subprocess
-
-            # GNOME
-            try:
-                result = subprocess.check_output(
-                    ["gsettings", "get", "org.gnome.desktop.background", "picture-uri"]
-                )
-                return result.decode("utf-8").strip().strip("'").replace("file://", "")
-            except Exception:
-                pass
-            # KDE Plasma
-            try:
-                # 读取配置文件
-                kde_conf = os.path.expanduser(
-                    "~/.config/plasma-org.kde.plasma.desktop-appletsrc"
-                )
-                if os.path.exists(kde_conf):
-                    with open(kde_conf, encoding="utf-8") as f:
-                        for line in f:
-                            if "Image=" in line:
-                                return (
-                                    line.split("=", 1)[1].strip().replace("file://", "")
-                                )
-            except Exception:
-                pass
-            # XFCE
-            try:
-                result = subprocess.check_output(
-                    [
-                        "xfconf-query",
-                        "--channel",
-                        "xfce4-desktop",
-                        "--property",
-                        "/backdrop/screen0/monitor0/image-path",
-                    ]
-                )
-                return result.decode("utf-8").strip()
-            except Exception:
-                pass
+            script = 'tell application "System Events" to get picture of current desktop'
+            path = _try_subprocess(["osascript", "-e", script])
+            return path if path and os.path.isfile(path) else None
         except Exception:
             return None
+
+    if sys.platform.startswith("linux"):
+        # ---------- Linux ----------
+        # 1) GNOME / Unity / Cinnamon / Budgie / MATE 等 gsettings 方案
+        schemas = [
+            ("org.gnome.desktop.background", "picture-uri-dark"),
+            ("org.gnome.desktop.background", "picture-uri"),
+            ("org.cinnamon.desktop.background", "picture-uri"),
+            ("org.mate.background", "picture-filename"),
+        ]
+        for schema, key in schemas:
+            uri = _try_subprocess(["gsettings", "get", schema, key])
+            if uri and uri != "''":
+                path = _from_file_uri(uri.strip("'"))
+                if os.path.isfile(path):
+                    return path
+
+        # 2) KDE Plasma 5/6
+        kde_conf = os.path.expanduser(
+            "~/.config/plasma-org.kde.plasma.desktop-appletsrc"
+        )
+        if os.path.isfile(kde_conf):
+            try:
+                with open(kde_conf, encoding="utf-8") as f:
+                    for line in f:
+                        if line.startswith("Image="):
+                            path = _from_file_uri(line.split("=", 1)[1].strip())
+                            if os.path.isfile(path):
+                                return path
+            except Exception:
+                pass
+
+        # 3) XFCE
+        xfce_prop = "/backdrop/screen0/monitor0/image-path"  # 常见键
+        path = _try_subprocess(
+            ["xfconf-query", "--channel", "xfce4-desktop", "--property", xfce_prop]
+        )
+        if path and os.path.isfile(path):
+            return path
+
     return None
 
 

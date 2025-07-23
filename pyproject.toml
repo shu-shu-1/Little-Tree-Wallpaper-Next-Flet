@@ -18,6 +18,7 @@ dependencies = [
   "python-magic-bin>=0.4.14; platform_system == 'Windows'",
   "loguru>=0.7.3",
   "platformdirs>=4.3.8",
+  "pyperclip>=1.9.0",
 ]
 
 [tool.flet]
