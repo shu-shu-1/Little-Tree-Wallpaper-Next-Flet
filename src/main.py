@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 #
+# SPDX-License-Identifier: AGPL-3.0-only
+#
 # File: main.py
 # Project: Little Tree Wallpaper Next
 # Description: Entry point for the Little Tree Wallpaper Next application.
@@ -73,7 +75,7 @@ import shutil
 import platformdirs
 
 VER = "0.1.0-alpha4"
-BUILD = "20250719-003"
+BUILD = "20250721-001"
 MODE = "TEST"
 BUILD_VERSION = f"v{VER} ({BUILD})"
 
@@ -119,6 +121,8 @@ class Pages:
         self.home = self._build_home()
         self.resource = self._build_resource()
         self.sniff = self._build_sniff()
+        self.favorite = self._build_favorite()
+        
         self.page.run_task(self._load_bing_wallpaper)
 
     def _get_license_text(self):
@@ -241,6 +245,7 @@ class Pages:
                     content=self._build_bing_loading_indicator(),
                 ),
                 ft.Tab(text="Windows 聚焦", icon=ft.Icons.WINDOW),
+                ft.Tab(text="搜索", icon=ft.Icons.SEARCH),
                 ft.Tab(text="其他", icon=ft.Icons.SUBJECT),
             ],
             animation_duration=300,
@@ -408,6 +413,13 @@ class Pages:
             ]
         )
 
+    def _build_favorite(self):
+        return ft.Column(
+            controls=[
+                ft.Text("收藏", size=30),
+            ],
+        )
+
     def _change_theme_mode(self, e):
         self.page.theme_mode = (
             ft.ThemeMode.DARK if e.data == "true" else ft.ThemeMode.LIGHT
@@ -425,7 +437,11 @@ class Pages:
                 ft.Column(
                     [
                         ft.Text("版权信息"),
-                        ft.Markdown(self._get_license_text(), selectable=True, auto_follow_links=True),
+                        ft.Markdown(
+                            self._get_license_text(),
+                            selectable=True,
+                            auto_follow_links=True,
+                        ),
                         ft.TextButton(
                             "关闭",
                             icon=ft.Icons.CLOSE,
@@ -447,9 +463,9 @@ class Pages:
                     [
                         ft.Text("特别鸣谢"),
                         ft.Markdown(
-                            """@[炫饭的芙芙](https://space.bilibili.com/1669914811) | @[wsrscx](https://github.com/wsrscx) | @[kylemarvin884](https://github.com/kylemarvin884)""",
+                            """@[炫饭的芙芙](https://space.bilibili.com/1669914811) | @[wsrscx](https://github.com/wsrscx) | @[kylemarvin884](https://github.com/kylemarvin884) | @[Giampaolo-zzp](https://github.com/Giampaolo-zzp)""",
                             selectable=True,
-                            auto_follow_links=True
+                            auto_follow_links=True,
                         ),
                         ft.TextButton(
                             "关闭",
@@ -490,11 +506,19 @@ class Pages:
         ui = tab_content(
             "界面",
             ft.Slider(min=0.5, max=2, divisions=3, label="界面缩放: {value}", value=1),
-            # TODO 创建组件时进行颜色模式判断
-            ft.Switch(
-                label="深色模式",
-                on_change=self._change_theme_mode,
-                value=True if self.page.theme_mode == ft.ThemeMode.DARK else False,
+            # ft.Switch(
+            #     label="深色模式",
+            #     on_change=self._change_theme_mode,
+            #     value=True if self.page.theme_mode == ft.ThemeMode.DARK else False,
+            # ),
+            ft.Dropdown(
+                label="界面主题",
+                value="auto",
+                options=[
+                    ft.DropdownOption(key="auto", text="跟随系统"),
+                    ft.DropdownOption(key="light", text="浅色"),
+                    ft.DropdownOption(key="dark", text="深色"),
+                ],
             ),
         )
         about = tab_content(
@@ -589,12 +613,17 @@ def main(page: ft.Page):
                                 selected_icon=ft.Icons.WIFI_FIND,
                                 label="嗅探",
                             ),
+                            ft.NavigationRailDestination(
+                                icon=ft.Icons.STAR_OUTLINE,
+                                selected_icon=ft.Icons.STAR,
+                                label="收藏",
+                            ),
                         ],
                         on_change=lambda e: [
                             setattr(
                                 content,
                                 "content",
-                                [pages.home, pages.resource, pages.sniff][
+                                [pages.home, pages.resource, pages.sniff, pages.favorite][
                                     e.control.selected_index
                                 ],
                             ),
