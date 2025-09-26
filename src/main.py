@@ -67,6 +67,8 @@ main.py 是启动和管理 小树壁纸Next 应用程序的主入口文件。
 """
 
 import json
+import platform
+import subprocess
 from pathlib import Path
 from loguru import logger
 import flet as ft
@@ -110,6 +112,91 @@ DATA_DIR = Path(
         "Little-Tree-Wallpaper", "Little Tree Studio", "Next", ensure_exists=True
     )
 )
+
+
+def _ps_escape(value: str) -> str:
+    return value.replace("'", "''")
+
+
+def copy_image_to_clipboard(image_path: Path) -> bool:
+    image_path = Path(image_path).resolve()
+    if not image_path.exists():
+        logger.error(f"复制图片失败，文件不存在：{image_path}")
+        return False
+    if platform.system() != "Windows":
+        logger.warning("当前系统不支持直接复制图片数据，已忽略")
+        return False
+
+    uri = image_path.as_uri()
+    script = (
+        "Add-Type -AssemblyName PresentationCore; "
+        "Add-Type -AssemblyName WindowsBase; "
+        "$img = New-Object System.Windows.Media.Imaging.BitmapImage; "
+        "$img.BeginInit(); "
+        "$img.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad; "
+        f"$img.UriSource = New-Object System.Uri('{_ps_escape(uri)}'); "
+        "$img.EndInit(); "
+        "[System.Windows.Clipboard]::SetImage($img);"
+    )
+
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-STA", "-Command", script],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        logger.error("未找到 PowerShell，无法复制图片数据")
+        return False
+    except Exception as exc:
+        logger.error(f"复制图片失败: {exc}")
+        return False
+
+    if result.returncode != 0:
+        logger.error(
+            "复制图片失败：{}".format(result.stderr.strip() or result.stdout.strip())
+        )
+        return False
+    return True
+
+
+def copy_files_to_clipboard(paths: list[str]) -> bool:
+    resolved = []
+    for p in paths:
+        path_obj = Path(p).resolve()
+        if path_obj.exists():
+            resolved.append(path_obj)
+        else:
+            logger.warning(f"文件不存在，已跳过：{path_obj}")
+
+    if not resolved:
+        return False
+    if platform.system() != "Windows":
+        logger.warning("当前系统不支持复制文件到剪贴板，已忽略")
+        return False
+
+    ps_paths = ", ".join(f"'{_ps_escape(str(p))}'" for p in resolved)
+    script = f"Set-Clipboard -Path @({ps_paths})"
+
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        logger.error("未找到 PowerShell，无法复制文件")
+        return False
+    except Exception as exc:
+        logger.error(f"复制文件失败: {exc}")
+        return False
+
+    if result.returncode != 0:
+        logger.error(
+            "复制文件失败：{}".format(result.stderr.strip() or result.stdout.strip())
+        )
+        return False
+    return True
 
 
 class Pages:
@@ -324,6 +411,8 @@ class Pages:
         )
 
     def _build_bing_daily_content(self):
+        copy_menu = None
+
         def _set_wallpaper(url):
             nonlocal bing_loading_info, bing_pb
 
@@ -384,6 +473,129 @@ class Pages:
 
             self.page.update()
 
+        def _sanitize_filename(raw: str, fallback: str) -> str:
+            cleaned = "".join(
+                ch if (ch.isalnum() or ch in (" ", "-", "_")) else "_"
+                for ch in (raw or "").strip()
+            ).strip()
+            return cleaned or fallback
+
+        def _copy_link():
+            if not self.bing_wallpaper_url:
+                self.page.open(
+                    ft.SnackBar(
+                        ft.Text("当前没有可用的链接哦~"),
+                        bgcolor=ft.Colors.ERROR_CONTAINER,
+                    )
+                )
+                return
+            pyperclip.copy(self.bing_wallpaper_url)
+            self.page.open(
+                ft.SnackBar(
+                    ft.Text("链接已复制，快去分享吧~"),
+                    bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                )
+            )
+
+        def _handle_copy(action: str):
+            nonlocal bing_loading_info, bing_pb
+            nonlocal set_button, favorite_button, download_button, copy_button, copy_menu
+
+            if action == "link":
+                _copy_link()
+                return
+
+            if not self.bing_wallpaper_url:
+                self.page.open(
+                    ft.SnackBar(
+                        ft.Text("当前没有可用的壁纸资源~"),
+                        bgcolor=ft.Colors.ERROR_CONTAINER,
+                    )
+                )
+                return
+
+            def progress_callback(value, total):
+                if total:
+                    bing_pb.value = value / total
+                    self.page.update()
+
+            bing_loading_info.value = (
+                "正在准备复制…" if action.startswith("copy_") else "正在下载壁纸…"
+            )
+            bing_loading_info.visible = True
+            bing_pb.visible = True
+
+            set_button.disabled = True
+            favorite_button.disabled = True
+            download_button.disabled = True
+            copy_button.disabled = True
+            if copy_menu:
+                copy_menu.disabled = True
+            self.resource_tabs.disabled = True
+
+            self.page.update()
+
+            filename = _sanitize_filename(title, "Bing-Wallpaper")
+            wallpaper_path = ltwapi.download_file(
+                self.bing_wallpaper_url,
+                DATA_DIR / "Wallpaper",
+                filename,
+                progress_callback=progress_callback,
+            )
+
+            if not wallpaper_path:
+                logger.error("Bing 壁纸复制时下载失败")
+                self.page.open(
+                    ft.SnackBar(
+                        ft.Text("下载失败，请稍后再试~"),
+                        bgcolor=ft.Colors.ERROR_CONTAINER,
+                    )
+                )
+            else:
+                if action == "copy_image":
+                    if copy_image_to_clipboard(wallpaper_path):
+                        self.page.open(
+                            ft.SnackBar(
+                                ft.Text("图片已复制，可直接粘贴~"),
+                                bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                            )
+                        )
+                    else:
+                        self.page.open(
+                            ft.SnackBar(
+                                ft.Text("复制图片失败，请稍后再试~"),
+                                bgcolor=ft.Colors.ERROR_CONTAINER,
+                            )
+                        )
+                elif action == "copy_file":
+                    if copy_files_to_clipboard([wallpaper_path]):
+                        self.page.open(
+                            ft.SnackBar(
+                                ft.Text("文件已复制到剪贴板~"),
+                                bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                            )
+                        )
+                    else:
+                        self.page.open(
+                            ft.SnackBar(
+                                ft.Text("复制文件失败，请稍后再试~"),
+                                bgcolor=ft.Colors.ERROR_CONTAINER,
+                            )
+                        )
+
+            bing_pb.value = 0
+            bing_loading_info.visible = False
+            bing_pb.visible = False
+            set_button.disabled = False
+            favorite_button.disabled = False
+            download_button.disabled = False
+            copy_button.disabled = False
+            if copy_menu:
+                copy_menu.disabled = False
+            self.resource_tabs.disabled = False
+
+            self.page.update()
+
         if self.bing_loading:
             return self._build_bing_loading_indicator()
         if not self.bing_wallpaper_url:
@@ -394,14 +606,35 @@ class Pages:
         bing_pb = ft.ProgressBar(value=0)
         bing_pb.visible = False
         bing_loading_info.visible = False
-        set_button = ft.ElevatedButton(
+        set_button = ft.FilledTonalButton(
             "设为壁纸",
             icon=ft.Icons.WALLPAPER,
             on_click=lambda e: _set_wallpaper(self.bing_wallpaper_url),
         )
-        favorite_button = ft.ElevatedButton("收藏", icon=ft.Icons.STAR)
-        download_button = ft.ElevatedButton("下载", icon=ft.Icons.DOWNLOAD)
-        copy_button = ft.ElevatedButton("复制", icon=ft.Icons.COPY)
+        favorite_button = ft.FilledTonalButton("收藏", icon=ft.Icons.STAR)
+        download_button = ft.FilledTonalButton("下载", icon=ft.Icons.DOWNLOAD)
+        # copy_button = ft.FilledTonalButton("复制", icon=ft.Icons.COPY)
+        # TODO 处理复制按钮禁用逻辑
+        copy_menu = ft.PopupMenuButton(
+            content=ft.Container(content=ft.Row([ft.Icon(ft.Icons.COPY,ft.Colors.ON_SECONDARY_CONTAINER,size=17),ft.Text("复制")],spacing=7),bgcolor=ft.Colors.SECONDARY_CONTAINER,padding=7.5,border_radius=50),
+            items=[
+                ft.PopupMenuItem(
+                    icon=ft.Icons.LINK,
+                    text="复制链接",
+                    on_click=lambda _: _handle_copy("link"),
+                ),
+                ft.PopupMenuItem(
+                    icon=ft.Icons.IMAGE,
+                    text="复制图片",
+                    on_click=lambda _: _handle_copy("copy_image"),
+                ),
+                copy_button:=ft.PopupMenuItem(
+                    icon=ft.Icons.FOLDER_COPY,
+                    text="复制图片文件",
+                    on_click=lambda _: _handle_copy("copy_file"),
+                ),
+            ],
+        )
 
         return ft.Container(
             ft.Column(
@@ -435,7 +668,7 @@ class Pages:
                             set_button,
                             favorite_button,
                             download_button,
-                            copy_button,
+                            copy_menu,
                         ]
                     ),
                     bing_loading_info,
@@ -447,6 +680,7 @@ class Pages:
 
     def _build_spotlight_daily_content(self):
         current_index = 0
+        copy_menu = None
 
         def _sanitize_filename(raw: str, fallback: str) -> str:
             cleaned = "".join(
@@ -483,13 +717,13 @@ class Pages:
             _update_details(idx)
             self.page.update()
 
-        def _copy_link(_):
+        def _copy_link():
             url = self.spotlight_wallpaper[current_index].get("url")
             if not url:
                 self.page.open(
                     ft.SnackBar(
                         ft.Text("当前壁纸缺少下载链接，暂时无法复制~"),
-                        # bgcolor=ft.Colors.ERROR_CONTAINER,
+                        bgcolor=ft.Colors.ERROR_CONTAINER,
                     )
                 )
                 return
@@ -497,14 +731,14 @@ class Pages:
             self.page.open(
                 ft.SnackBar(
                     ft.Text("壁纸链接已复制，快去分享吧~"),
-                    # bgcolor=ft.Colors.ERROR_CONTAINER,
+                    bgcolor=ft.Colors.SECONDARY_CONTAINER,
                 )
             )
 
         def _handle_download(action: str):
             nonlocal current_index, spotlight_loading_info, spotlight_pb
             nonlocal set_button, favorite_button, download_button, copy_button
-            nonlocal segmented_button
+            nonlocal segmented_button, copy_menu
 
             spotlight = self.spotlight_wallpaper[current_index]
             url = spotlight.get("url")
@@ -522,7 +756,9 @@ class Pages:
                     spotlight_pb.value = value / total
                     self.page.update()
 
-            spotlight_loading_info.value = "正在下载壁纸…"
+            spotlight_loading_info.value = (
+                "正在准备复制…" if action.startswith("copy_") else "正在下载壁纸…"
+            )
             spotlight_loading_info.visible = True
             spotlight_pb.visible = True
 
@@ -530,6 +766,8 @@ class Pages:
             favorite_button.disabled = True
             download_button.disabled = True
             copy_button.disabled = True
+            if copy_menu:
+                copy_menu.disabled = True
             segmented_button.disabled = True
             self.resource_tabs.disabled = True
 
@@ -547,26 +785,64 @@ class Pages:
             )
 
             success = wallpaper_path is not None
+            handled = False
             if success and action == "set":
                 try:
                     ltwapi.set_wallpaper(wallpaper_path)
                     self.page.open(
                         ft.SnackBar(
                             ft.Text("壁纸设置成功啦~ (๑•̀ㅂ•́)و✧"),
-                            # bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                            bgcolor=ft.Colors.SECONDARY_CONTAINER,
                         )
                     )
                 except Exception as exc:
                     logger.error(f"设置壁纸失败: {exc}")
                     success = False
+                handled = True
             elif success and action == "download":
                 self.page.open(
                     ft.SnackBar(
                         ft.Text("壁纸下载完成，快去看看吧~"),
-                        # bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                        bgcolor=ft.Colors.SECONDARY_CONTAINER,
                     )
                 )
-            elif not success:
+                handled = True
+            elif success and action == "copy_image":
+                handled = True
+                if copy_image_to_clipboard(wallpaper_path):
+                    self.page.open(
+                        ft.SnackBar(
+                            ft.Text("图片已复制，可直接粘贴~"),
+                            bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                        )
+                    )
+                else:
+                    success = False
+                    self.page.open(
+                        ft.SnackBar(
+                            ft.Text("复制图片失败，请稍后再试~"),
+                            bgcolor=ft.Colors.ERROR_CONTAINER,
+                        )
+                    )
+            elif success and action == "copy_file":
+                handled = True
+                if copy_files_to_clipboard([wallpaper_path]):
+                    self.page.open(
+                        ft.SnackBar(
+                            ft.Text("文件已复制到剪贴板~"),
+                            bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                        )
+                    )
+                else:
+                    success = False
+                    self.page.open(
+                        ft.SnackBar(
+                            ft.Text("复制文件失败，请稍后再试~"),
+                            bgcolor=ft.Colors.ERROR_CONTAINER,
+                        )
+                    )
+
+            if not success and not handled:
                 logger.error("Windows 聚焦壁纸下载失败")
                 self.page.open(
                     ft.SnackBar(
@@ -583,10 +859,18 @@ class Pages:
             favorite_button.disabled = False
             download_button.disabled = False
             copy_button.disabled = False
+            if copy_menu:
+                copy_menu.disabled = False
             segmented_button.disabled = False
             self.resource_tabs.disabled = False
 
             self.page.update()
+
+        def _handle_copy_action(option: str):
+            if option == "link":
+                _copy_link()
+            else:
+                _handle_download(option)
 
         if self.spotlight_loading:
             return self._build_spotlight_loading_indicator()
@@ -598,20 +882,36 @@ class Pages:
         title = ft.Text()
         description = ft.Text(size=12)
         copy_rights = ft.Text(size=12, color=ft.Colors.GREY)
-        info_button = ft.ElevatedButton("了解详情", icon=ft.Icons.INFO, disabled=True)
-        set_button = ft.ElevatedButton(
+        info_button = ft.FilledTonalButton("了解详情", icon=ft.Icons.INFO, disabled=True)
+        set_button = ft.FilledTonalButton(
             "设为壁纸",
             icon=ft.Icons.WALLPAPER,
             on_click=lambda e: _handle_download("set"),
         )
-        favorite_button = ft.ElevatedButton("收藏", icon=ft.Icons.STAR)
-        download_button = ft.ElevatedButton(
+        favorite_button = ft.FilledTonalButton("收藏", icon=ft.Icons.STAR)
+        download_button = ft.FilledTonalButton(
             "下载", icon=ft.Icons.DOWNLOAD, on_click=lambda e: _handle_download("download")
         )
-        copy_button = ft.ElevatedButton(
-            "复制",
-            icon=ft.Icons.COPY,
-            on_click=_copy_link,
+        copy_button = ft.FilledTonalButton("复制", icon=ft.Icons.COPY)
+        copy_menu = ft.PopupMenuButton(
+            content=copy_button,
+            items=[
+                ft.PopupMenuItem(
+                    icon=ft.Icons.LINK,
+                    text="复制链接",
+                    on_click=lambda _: _handle_copy_action("link"),
+                ),
+                ft.PopupMenuItem(
+                    icon=ft.Icons.IMAGE,
+                    text="复制图片",
+                    on_click=lambda _: _handle_copy_action("copy_image"),
+                ),
+                ft.PopupMenuItem(
+                    icon=ft.Icons.FOLDER_COPY,
+                    text="复制图片文件",
+                    on_click=lambda _: _handle_copy_action("copy_file"),
+                ),
+            ],
         )
 
         spotlight_loading_info = ft.Text("正在获取信息……")
@@ -659,7 +959,7 @@ class Pages:
                             set_button,
                             favorite_button,
                             download_button,
-                            copy_button,
+                            copy_menu,
                         ]
                     ),
                     spotlight_loading_info,
