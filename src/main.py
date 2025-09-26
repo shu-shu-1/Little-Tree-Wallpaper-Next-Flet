@@ -66,6 +66,7 @@ main.py 是启动和管理 小树壁纸Next 应用程序的主入口文件。
 更多信息请参见项目仓库和README。
 """
 
+import json
 from pathlib import Path
 from loguru import logger
 import flet as ft
@@ -74,8 +75,8 @@ import aiohttp
 import pyperclip
 import platformdirs
 
-VER = "0.1.0-alpha4"
-BUILD = "20250721-001"
+VER = "0.1.0-alpha5"
+BUILD = "20250808-017"
 MODE = "TEST"
 BUILD_VERSION = f"v{VER} ({BUILD})"
 
@@ -84,7 +85,8 @@ logger.info(f"Little Tree Wallpaper Next {BUILD_VERSION} 初始化")
 ASSET_DIR = Path(__file__).parent / "assets"
 UI_FONT_PATH = ASSET_DIR / "fonts" / "LXGWNeoXiHeiPlus.ttf"
 HITO_FONT_PATH = ASSET_DIR / "fonts" / "LXGWWenKaiLite.ttf"
-ICO_PATH = ASSET_DIR / "images" / "icon.ico"
+ICO_PATH = ASSET_DIR / "icon.ico"
+IMAGE_PATH = ASSET_DIR / "images"
 HITOKOTO_API = ["https://v1.hitokoto.cn", "https://international.v1.hitokoto.cn/"]
 LICENSE_PATH = Path(__file__).parent / "LICENSES"
 
@@ -117,6 +119,9 @@ class Pages:
         self.bing_wallpaper = None
         self.bing_wallpaper_url = None
         self.bing_loading = True
+        self.spotlight_loading = True
+        self.spotlight_wallpaper_url = None
+        self.spotlight_wallpaper = list()
 
         self.home = self._build_home()
         self.resource = self._build_resource()
@@ -124,6 +129,7 @@ class Pages:
         self.favorite = self._build_favorite()
 
         self.page.run_task(self._load_bing_wallpaper)
+        self.page.run_task(self._load_spotlight_wallpaper)
 
     def _get_license_text(self):
         with open(LICENSE_PATH / "LXGWNeoXiHeiPlus-IPA-1.0.md", encoding="utf-8") as f1:
@@ -164,11 +170,11 @@ class Pages:
                     controls=[
                         ft.Icon(name=ft.Icons.DONE, color=ft.Colors.ON_SECONDARY),
                         ft.Text("壁纸路径已复制~ (。・∀・)"),
-                        
                     ]
                 )
             )
         )
+
     def _refresh_home(self, _):
         self._update_wallpaper()
         self.img.src = self.wallpaper_path
@@ -196,6 +202,23 @@ class Pages:
             self.bing_loading = False
             self._refresh_bing_tab()
 
+    async def _load_spotlight_wallpaper(self):
+        try:
+            self.spotlight_wallpaper = await ltwapi.get_spotlight_wallpaper_async()
+            if self.spotlight_wallpaper and len(self.spotlight_wallpaper) > 0:
+                self.spotlight_loading = self.spotlight_wallpaper
+            if self.spotlight_loading:
+                self.spotlight_wallpaper_url = [
+                    item["url"] for item in self.spotlight_wallpaper
+                ]
+
+        except Exception as e:
+            self.spotlight_wallpaper_url = None
+            logger.error(f"加载 Windows 聚焦壁纸失败: {e}")
+        finally:
+            self.spotlight_loading = False
+            self._refresh_spotlight_tab()
+
     def _refresh_bing_tab(self):
         for tab in self.resource_tabs.tabs:
             if tab.text == "Bing 每日":
@@ -203,9 +226,14 @@ class Pages:
                 break
         self.page.update()
 
+    def _refresh_spotlight_tab(self):
+        for tab in self.resource_tabs.tabs:
+            if tab.text == "Windows 聚焦":
+                tab.content = self._build_spotlight_daily_content()
+                break
+        self.page.update()
+
     def _build_home(self):
-
-
         self.file_name = ft.Text(
             spans=[
                 ft.TextSpan(
@@ -260,6 +288,7 @@ class Pages:
                     alignment=ft.MainAxisAlignment.START,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
+                ft.Image(src=ASSET_DIR / "images" / "1.gif"),
             ],
             expand=True,
         )
@@ -416,6 +445,230 @@ class Pages:
             padding=16,
         )
 
+    def _build_spotlight_daily_content(self):
+        current_index = 0
+
+        def _sanitize_filename(raw: str, fallback: str) -> str:
+            cleaned = "".join(
+                ch if (ch.isalnum() or ch in (" ", "-", "_")) else "_"
+                for ch in (raw or "").strip()
+            ).strip()
+            return cleaned or fallback
+
+        def _update_details(idx: int):
+            nonlocal current_index, title, description, copy_rights, info_button
+            current_index = idx
+            spotlight = self.spotlight_wallpaper[idx]
+            title.value = spotlight.get("title", "无标题")
+            description.value = spotlight.get("description", "无描述")
+            copy_rights.value = spotlight.get("copyright", "无版权信息")
+
+            info_url = spotlight.get("ctaUri")
+            if info_url:
+                info_button.text = "了解详情"
+                info_button.disabled = False
+                info_button.on_click = (
+                    lambda e, url=info_url: self.page.launch_url(url)
+                )
+            else:
+                info_button.text = "了解详情"
+                info_button.disabled = True
+                info_button.on_click = None
+
+        def _change_photo(e):
+            data = json.loads(e.data)
+            if not data:
+                return
+            idx = int(data[0])
+            _update_details(idx)
+            self.page.update()
+
+        def _copy_link(_):
+            url = self.spotlight_wallpaper[current_index].get("url")
+            if not url:
+                self.page.open(
+                    ft.SnackBar(
+                        ft.Text("当前壁纸缺少下载链接，暂时无法复制~"),
+                        # bgcolor=ft.Colors.ERROR_CONTAINER,
+                    )
+                )
+                return
+            pyperclip.copy(url)
+            self.page.open(
+                ft.SnackBar(
+                    ft.Text("壁纸链接已复制，快去分享吧~"),
+                    # bgcolor=ft.Colors.ERROR_CONTAINER,
+                )
+            )
+
+        def _handle_download(action: str):
+            nonlocal current_index, spotlight_loading_info, spotlight_pb
+            nonlocal set_button, favorite_button, download_button, copy_button
+            nonlocal segmented_button
+
+            spotlight = self.spotlight_wallpaper[current_index]
+            url = spotlight.get("url")
+            if not url:
+                self.page.open(
+                    ft.SnackBar(
+                        ft.Text("未找到壁纸地址，暂时无法下载~"),
+                        bgcolor=ft.Colors.ERROR_CONTAINER,
+                    )
+                )
+                return
+
+            def progress_callback(value, total):
+                if total:
+                    spotlight_pb.value = value / total
+                    self.page.update()
+
+            spotlight_loading_info.value = "正在下载壁纸…"
+            spotlight_loading_info.visible = True
+            spotlight_pb.visible = True
+
+            set_button.disabled = True
+            favorite_button.disabled = True
+            download_button.disabled = True
+            copy_button.disabled = True
+            segmented_button.disabled = True
+            self.resource_tabs.disabled = True
+
+            self.page.update()
+
+            filename = _sanitize_filename(
+                spotlight.get("title"), f"Windows-Spotlight-{current_index + 1}"
+            )
+
+            wallpaper_path = ltwapi.download_file(
+                url,
+                DATA_DIR / "Wallpaper",
+                filename,
+                progress_callback=progress_callback,
+            )
+
+            success = wallpaper_path is not None
+            if success and action == "set":
+                try:
+                    ltwapi.set_wallpaper(wallpaper_path)
+                    self.page.open(
+                        ft.SnackBar(
+                            ft.Text("壁纸设置成功啦~ (๑•̀ㅂ•́)و✧"),
+                            # bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                        )
+                    )
+                except Exception as exc:
+                    logger.error(f"设置壁纸失败: {exc}")
+                    success = False
+            elif success and action == "download":
+                self.page.open(
+                    ft.SnackBar(
+                        ft.Text("壁纸下载完成，快去看看吧~"),
+                        # bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                    )
+                )
+            elif not success:
+                logger.error("Windows 聚焦壁纸下载失败")
+                self.page.open(
+                    ft.SnackBar(
+                        ft.Text("下载失败，请稍后再试~"),
+                        bgcolor=ft.Colors.ERROR_CONTAINER,
+                    )
+                )
+
+            spotlight_loading_info.visible = False
+            spotlight_pb.visible = False
+            spotlight_pb.value = 0
+
+            set_button.disabled = False
+            favorite_button.disabled = False
+            download_button.disabled = False
+            copy_button.disabled = False
+            segmented_button.disabled = False
+            self.resource_tabs.disabled = False
+
+            self.page.update()
+
+        if self.spotlight_loading:
+            return self._build_spotlight_loading_indicator()
+        # print(self.spotlight_wallpaper_url)
+        if not self.spotlight_wallpaper_url:
+            return ft.Container(
+                ft.Text("Windows 聚焦壁纸加载失败，请稍后再试～"), padding=16
+            )
+        title = ft.Text()
+        description = ft.Text(size=12)
+        copy_rights = ft.Text(size=12, color=ft.Colors.GREY)
+        info_button = ft.ElevatedButton("了解详情", icon=ft.Icons.INFO, disabled=True)
+        set_button = ft.ElevatedButton(
+            "设为壁纸",
+            icon=ft.Icons.WALLPAPER,
+            on_click=lambda e: _handle_download("set"),
+        )
+        favorite_button = ft.ElevatedButton("收藏", icon=ft.Icons.STAR)
+        download_button = ft.ElevatedButton(
+            "下载", icon=ft.Icons.DOWNLOAD, on_click=lambda e: _handle_download("download")
+        )
+        copy_button = ft.ElevatedButton(
+            "复制",
+            icon=ft.Icons.COPY,
+            on_click=_copy_link,
+        )
+
+        spotlight_loading_info = ft.Text("正在获取信息……")
+        spotlight_loading_info.visible = False
+        spotlight_pb = ft.ProgressBar(value=0)
+        spotlight_pb.visible = False
+
+        segmented_button = ft.SegmentedButton(
+            segments=[
+                ft.Segment(
+                    value=str(index),
+                    label=ft.Text(f"图{index + 1}"),
+                    icon=ft.Icon(ft.Icons.PHOTO),
+                )
+                for index in range(len(self.spotlight_wallpaper_url))
+            ],
+            allow_multiple_selection=False,
+            selected={"0"},
+            on_change=_change_photo,
+        )
+
+        _update_details(0)
+        return ft.Container(
+            ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Image(
+                                src=url,
+                                width=160,
+                                height=90,
+                                fit=ft.ImageFit.COVER,
+                                border_radius=8,
+                            )
+                            for url in self.spotlight_wallpaper_url
+                        ],
+                    ),
+                    segmented_button,
+                    title,
+                    description,
+                    copy_rights,
+                    ft.Row([info_button]),
+                    ft.Row(
+                        [
+                            set_button,
+                            favorite_button,
+                            download_button,
+                            copy_button,
+                        ]
+                    ),
+                    spotlight_loading_info,
+                    spotlight_pb,
+                ]
+            ),
+            padding=16,
+        )
+
     def _build_bing_loading_indicator(self):
         return ft.Column(
             [
@@ -526,7 +779,35 @@ class Pages:
             ),
             open=False,
         )
-
+        spoon_sheet = ft.BottomSheet(
+            ft.Container(
+                ft.Column(
+                    [
+                        ft.Text(
+                            "特别感谢以下人员在本程序开发阶段的赞助",
+                            weight=ft.FontWeight.BOLD,
+                        ),
+                        ft.Text("（按照金额排序 | 相同金额按昵称排序）", size=10),
+                        ft.Markdown(
+                            """炫饭的芙芙 | 100￥ 👑\n\nGiampaolo-zzp | 50￥\n\nKyle | 30￥\n\n昊阳（漩涡7人） | 8.88￥\n\n蔡亩 | 6￥\n\n小苗 | 6￥\n\nZero | 6￥\n\n遮天s忏悔 | 5.91￥\n\n青山如岱 | 5￥\n\nLYC(luis) | 1￥\n\nFuruya | 0.01￥\n\nwzr | 0.01￥""",
+                            selectable=True,
+                            auto_follow_links=False,
+                        ),
+                        ft.TextButton(
+                            "关闭",
+                            icon=ft.Icons.CLOSE,
+                            on_click=lambda _: setattr(spoon_sheet, "open", False)
+                            or self.page.update(),
+                        ),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    tight=True,
+                    scroll=ft.ScrollMode.ALWAYS,
+                ),
+                padding=50,
+            ),
+            open=False,
+        )
         general = tab_content(
             "通用",
             ft.Switch(label="开机自启"),
@@ -573,24 +854,38 @@ class Pages:
                 size=12,
                 color=ft.Colors.GREY,
             ),
-            ft.TextButton(
-                "查看特别鸣谢",
-                icon=ft.Icons.OPEN_IN_NEW,
-                on_click=lambda _: setattr(thank_sheet, "open", True)
-                or self.page.update(),
+            ft.Row(
+                controls=[
+                    ft.TextButton(
+                        "查看特别鸣谢",
+                        icon=ft.Icons.OPEN_IN_NEW,
+                        on_click=lambda _: setattr(thank_sheet, "open", True)
+                        or self.page.update(),
+                    ),
+                    ft.TextButton(
+                        "查看赞助列表",
+                        icon=ft.Icons.OPEN_IN_NEW,
+                        on_click=lambda _: setattr(spoon_sheet, "open", True)
+                        or self.page.update(),
+                    ),
+                ]
             ),
-            ft.TextButton(
-                "查看许可证",
-                icon=ft.Icons.OPEN_IN_NEW,
-                on_click=lambda _: self.page.launch_url(
-                    "https://www.gnu.org/licenses/agpl-3.0.html"
-                ),
-            ),
-            ft.TextButton(
-                "查看版权信息",
-                icon=ft.Icons.OPEN_IN_NEW,
-                on_click=lambda _: setattr(license_sheet, "open", True)
-                or self.page.update(),
+            ft.Row(
+                controls=[
+                    ft.TextButton(
+                        "查看许可证",
+                        icon=ft.Icons.OPEN_IN_NEW,
+                        on_click=lambda _: self.page.launch_url(
+                            "https://www.gnu.org/licenses/agpl-3.0.html"
+                        ),
+                    ),
+                    ft.TextButton(
+                        "查看版权信息",
+                        icon=ft.Icons.OPEN_IN_NEW,
+                        on_click=lambda _: setattr(license_sheet, "open", True)
+                        or self.page.update(),
+                    ),
+                ]
             ),
         )
 
@@ -620,6 +915,7 @@ class Pages:
                 ),
                 license_sheet,
                 thank_sheet,
+                spoon_sheet,
             ],
         )
 
@@ -715,3 +1011,4 @@ def main(page: ft.Page):
 
 if __name__ == "__main__":
     ft.app(main)
+

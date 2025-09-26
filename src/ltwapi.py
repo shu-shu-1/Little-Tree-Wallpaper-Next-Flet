@@ -9,6 +9,7 @@ import re
 import io
 import uuid
 import time
+import json
 import shutil
 import hashlib
 import mimetypes
@@ -45,24 +46,31 @@ def _from_file_uri(raw: str) -> str:
     return unquote(raw)
 
 
-def get_sys_wallpaper() -> Optional[str]:
+def get_sys_wallpaper(windows_way = "reg") -> Optional[str]:
     """
     返回当前系统桌面壁纸的绝对路径；失败返回 None。
     支持 Windows / macOS / Linux(GNOME/KDE/XFCE)。
     """
     if os.name == "nt":
         # ---------- Windows ----------
-        try:
-            import winreg
+        if windows_way == "reg":
+            try:
+                import winreg
 
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop"
-            ) as key:
-                path, _ = winreg.QueryValueEx(key, "WallPaper")
-            return path if os.path.isfile(path) else None
-        except Exception:
-            return None
-
+                with winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop"
+                ) as key:
+                    path, _ = winreg.QueryValueEx(key, "WallPaper")
+                return path if os.path.isfile(path) else None
+            except Exception:
+                return None
+        else:
+            try:
+                import ctypes
+                path = ctypes.windll.user32.SystemParametersInfoW(20, 0, None, 0)
+                return path if os.path.isfile(path) else None
+            except Exception:
+                return None
     if sys.platform == "darwin":
         # ---------- macOS ----------
         try:
@@ -159,7 +167,42 @@ async def get_bing_wallpaper_async(
                 return None
     except Exception:
         return None
+    
+async def get_spotlight_wallpaper_async(user_agent: str = None):
 
+    """
+    异步获取 Windows Spotlight 壁纸信息。
+    """
+    try:
+        url = "https://fd.api.iris.microsoft.com/v4/api/selection?&placement=88000820&bcnt=4&country=CN&locale=zh-CN&fmt=json"
+        headers = {}
+        spotlight_wallpaper = list()
+        if user_agent:
+            headers["User-Agent"] = user_agent
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+
+                data = await response.json()
+                data = data.get("batchrsp", {})
+                if data and "items" in data and len(data["items"]) > 0:
+                    for item in data["items"]:
+                        item_tmp = json.loads(item["item"])["ad"]
+                        spotlight_wallpaper.append({
+                            "url" : item_tmp.get("landscapeImage", {}).get("asset", ""),
+                            "title": item_tmp.get("title", ""),
+                            "description": item_tmp.get("description", ""),
+                            "copyright": item_tmp.get("copyright", ""),
+                            "ctaUri": item_tmp.get("ctaUri", "").replace("microsoft-edge:", ""),
+                        })
+                    return spotlight_wallpaper
+                logger.error("获取 Windows Spotlight 壁纸失败，返回数据格式不正确")
+                return None
+                
+
+    except Exception as e:
+        logger.error(f"获取 Windows Spotlight 壁纸失败: {e}")
+        return None
+                            
 
 def set_wallpaper(path: str) -> None:
     """
