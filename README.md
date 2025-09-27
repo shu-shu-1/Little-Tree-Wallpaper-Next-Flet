@@ -47,6 +47,19 @@ If you like this project, please give it a star! ⭐️
 
 如果您喜欢这个项目，不妨点个 ⭐️ 吧！
 
+## Test watermark / 测试版水印 🏷️
+
+A small, unobtrusive badge appears at the bottom-right when the app runs in non-stable mode. You can tweak or disable it:
+
+- File: `src/main.py`
+- Toggle: change `MODE = "TEST"` to `"STABLE"` to hide the badge globally.
+
+当应用处于非稳定模式时，右下角会显示一个不打扰的“测试版”角标；如需关闭或自定义：
+
+- 位置：`src/main.py`
+- 开关：把 `MODE = "TEST"` 改为 `"STABLE"` 即可全局隐藏角标。
+
+
 ## Run the app / 运行指南 ▶️
 
 ### uv

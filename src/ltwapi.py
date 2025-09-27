@@ -73,10 +73,19 @@ def get_sys_wallpaper(windows_way = "reg") -> Optional[str]:
                 return None
     if sys.platform == "darwin":
         # ---------- macOS ----------
+        # 兼容多显示器：获取所有桌面的壁纸，按顺序返回第一个存在的路径
         try:
-            script = 'tell application "System Events" to get picture of current desktop'
-            path = _try_subprocess(["osascript", "-e", script])
-            return path if path and os.path.isfile(path) else None
+            # 使用 POSIX 路径，避免别名/冒号风格路径
+            script = 'tell application "System Events" to get POSIX path of picture of every desktop'
+            out = _try_subprocess(["osascript", "-e", script])
+            if not out:
+                return None
+            # osascript 返回可能是以", "分隔的一行，或按行分隔
+            candidates = [p.strip() for p in re.split(r",\s+|\n+", out) if p.strip()]
+            for p in candidates:
+                if os.path.isfile(p):
+                    return p
+            return None
         except Exception:
             return None
 
@@ -90,34 +99,72 @@ def get_sys_wallpaper(windows_way = "reg") -> Optional[str]:
             ("org.mate.background", "picture-filename"),
         ]
         for schema, key in schemas:
-            uri = _try_subprocess(["gsettings", "get", schema, key])
-            if uri and uri != "''":
-                path = _from_file_uri(uri.strip("'"))
-                if os.path.isfile(path):
-                    return path
+            try:
+                uri_out = _try_subprocess(["gsettings", "get", schema, key])
+                if not uri_out or uri_out in {"''", '""'}:
+                    continue
+                # 可能返回：'file:///path' 或 'file:///a', 'file:///b' 或普通路径字符串
+                # 去除外层引号
+                uri_out = uri_out.strip()
+                if (uri_out.startswith("'") and uri_out.endswith("'")) or (
+                    uri_out.startswith('"') and uri_out.endswith('"')
+                ):
+                    uri_out = uri_out[1:-1]
+                # 若是逗号分隔的多值，逐个尝试
+                candidates = [s.strip() for s in uri_out.split(",")]
+                for cand in candidates:
+                    path = _from_file_uri(cand)
+                    if os.path.isfile(path):
+                        return path
+            except Exception:
+                pass
 
         # 2) KDE Plasma 5/6
+        # 读取 plasma 配置文件，可能有多个 Image=，优先后出现的（通常为当前活动桌面）
         kde_conf = os.path.expanduser(
             "~/.config/plasma-org.kde.plasma.desktop-appletsrc"
         )
         if os.path.isfile(kde_conf):
             try:
-                with open(kde_conf, encoding="utf-8") as f:
+                images = []
+                with open(kde_conf, encoding="utf-8", errors="ignore") as f:
                     for line in f:
                         if line.startswith("Image="):
-                            path = _from_file_uri(line.split("=", 1)[1].strip())
-                            if os.path.isfile(path):
-                                return path
+                            val = line.split("=", 1)[1].strip()
+                            p = _from_file_uri(val)
+                            images.append(p)
+                # 从后往前找第一个存在的
+                for p in reversed(images):
+                    if os.path.isfile(p):
+                        return p
             except Exception:
                 pass
 
         # 3) XFCE
-        xfce_prop = "/backdrop/screen0/monitor0/image-path"  # 常见键
-        path = _try_subprocess(
-            ["xfconf-query", "--channel", "xfce4-desktop", "--property", xfce_prop]
-        )
-        if path and os.path.isfile(path):
-            return path
+        # 列出所有 backdrop 键，检查包含 image-path/last-image 的键值
+        try:
+            props_out = _try_subprocess(
+                ["xfconf-query", "--channel", "xfce4-desktop", "--property", "/backdrop", "--list"]
+            )
+            if props_out:
+                props = [p.strip() for p in props_out.splitlines() if p.strip()]
+                for prop in props:
+                    if prop.endswith("image-path") or prop.endswith("last-image"):
+                        val = _try_subprocess(
+                            [
+                                "xfconf-query",
+                                "--channel",
+                                "xfce4-desktop",
+                                "--property",
+                                prop,
+                            ]
+                        )
+                        if val:
+                            p = _from_file_uri(val.strip())
+                            if os.path.isfile(p):
+                                return p
+        except Exception:
+            pass
 
     return None
 
@@ -462,13 +509,13 @@ def download_file(
     url: str,
     save_path: str = "./temp",
     custom_filename: Optional[str] = None,
-    timeout: int = 30,
+    timeout: int = 300,
     max_retries: int = 3,
     headers: Optional[Dict[str, str]] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     resume: bool = False,
 ) -> Optional[str]:
-    logger.debug("开始下载：{}", url)
+    logger.debug(f"开始下载：{url}")
 
     req_headers = [
         "User-Agent: Mozilla/5.0",
