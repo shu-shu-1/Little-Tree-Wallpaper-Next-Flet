@@ -51,13 +51,57 @@ If you like this project, please give it a star! ⭐️
 
 A small, unobtrusive badge appears at the bottom-right when the app runs in non-stable mode. You can tweak or disable it:
 
-- File: `src/main.py`
+- File: `src/app/constants.py`
 - Toggle: change `MODE = "TEST"` to `"STABLE"` to hide the badge globally.
 
 当应用处于非稳定模式时，右下角会显示一个不打扰的“测试版”角标；如需关闭或自定义：
 
-- 位置：`src/main.py`
+- 位置：`src/app/constants.py`
 - 开关：把 `MODE = "TEST"` 改为 `"STABLE"` 即可全局隐藏角标。
+
+## Plugin system quick start / 插件系统速览 🔌
+
+The entry point has been modularized. At runtime the app loads plugins from `src/plugins/`. Each plugin can register navigation destinations and additional routes through a simple context API.
+
+- Core plugin: `src/plugins/core.py` – provides the built-in pages.
+- Sample plugin: `src/plugins/sample.py` – demonstrates the latest API features.
+- Plugin contracts: `src/app/plugins/base.py`.
+- Discovery: `src/app/plugins/manager.py` automatically imports Python modules placed under `src/plugins/` that expose a `PLUGIN` instance.
+- Developer notes: see `docs/plugin_dev.md` for the temporary plugin authoring guide.
+
+要扩展应用，只需在 `src/plugins/` 中新建模块，并实现 `PLUGIN = YourPlugin()`，并为插件定义 `PluginManifest`：
+
+```python
+import flet as ft
+
+from app.plugins import AppNavigationView, Plugin, PluginContext, PluginManifest
+
+
+class ExamplePlugin(Plugin):
+  manifest = PluginManifest(
+    identifier="example",
+    name="示例插件",
+    version="0.1.0",
+  )
+
+  def activate(self, context: PluginContext) -> None:
+    context.add_navigation_view(
+      AppNavigationView(
+        id="example",
+        label="示例",
+        icon=ft.Icons.EMOJI_OBJECTS_OUTLINED,
+        selected_icon=ft.Icons.EMOJI_OBJECTS,
+        content=ft.Text("Hello from plugin!"),
+      )
+    )
+
+
+PLUGIN = ExamplePlugin()
+```
+
+Plugins can keep state, use the shared `ft.Page` instance from `context.page`, schedule startup hooks via `context.add_startup_hook`, and persist files under the per-plugin storage helpers provided by `PluginContext`. 插件可以访问 `context.page` 获取 Flet 页面实例，通过 `context.add_startup_hook` 注册启动钩子，并使用上下文提供的路径助手读写专属数据。
+
+Need plugin-specific actions? Use `context.add_bing_action` / `context.add_spotlight_action` to append buttons below the built-in wallpaper cards, and `context.register_settings_page` to expose a dedicated settings view accessed via the plugin card's **插件设置** button. 更多扩展 API 详见 `docs/plugin_dev.md`。
 
 
 ## Run the app / 运行指南 ▶️

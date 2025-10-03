@@ -1,0 +1,483 @@
+"""Plugin manager implementation."""
+
+from __future__ import annotations
+
+import importlib
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from types import ModuleType
+from collections import deque
+from typing import Callable, Iterable, List, Dict, Set
+
+from loguru import logger
+
+from .base import Plugin, PluginContext, PluginManifest
+from .config import PluginConfigStore
+from .permissions import PermissionState, ensure_permission_states
+from .runtime import PluginRuntimeInfo, PluginStatus
+
+
+@dataclass(slots=True)
+class LoadedPlugin:
+    identifier: str
+    plugin: Plugin
+    manifest: PluginManifest
+    module: ModuleType | None = None
+    module_name: str | None = None
+    source_path: Path | None = None
+    builtin: bool = False
+
+
+@dataclass(slots=True)
+class PluginImportResult:
+    destination: Path
+    identifier: str | None
+    manifest: PluginManifest | None
+    requested_permissions: tuple[str, ...] = tuple()
+    module_name: str | None = None
+    error: str | None = None
+
+
+class PluginManager:
+    """Responsible for discovering and activating plugins."""
+
+    def __init__(
+        self,
+        search_paths: Iterable[Path],
+        config_store: PluginConfigStore,
+        package_prefix: str = "plugins",
+        builtin_identifiers: Iterable[str] | None = None,
+    ):
+        self._search_paths: List[Path] = [Path(p) for p in search_paths]
+        self._package_prefix = package_prefix
+        self._config = config_store
+        self._builtin_ids: Set[str] = set(builtin_identifiers or [])
+        self._loaded: list[LoadedPlugin] = []
+        self._runtime: Dict[str, PluginRuntimeInfo] = {}
+
+    @staticmethod
+    def _states_to_bool(states: dict[str, PermissionState]) -> dict[str, bool]:
+        return {key: state == PermissionState.GRANTED for key, state in states.items()}
+
+    @property
+    def loaded_plugins(self) -> list[LoadedPlugin]:
+        return list(self._loaded)
+
+    @property
+    def runtime_info(self) -> list[PluginRuntimeInfo]:
+        return list(self._runtime.values())
+
+    def reset(self) -> None:
+        self._loaded.clear()
+        self._runtime.clear()
+
+    def is_builtin(self, identifier: str) -> bool:
+        return identifier in self._builtin_ids
+
+    def register(
+        self, plugin: Plugin, manifest: PluginManifest, module: ModuleType | None = None
+    ) -> None:
+        self._loaded.append(LoadedPlugin(plugin=plugin, manifest=manifest, module=module))
+
+    def discover(self) -> None:
+        self._loaded.clear()
+        self._runtime.clear()
+        found_identifiers: Set[str] = set()
+
+        for path in self._search_paths:
+            if not path.exists():
+                continue
+            for entry in sorted(path.iterdir()):
+                if entry.name.startswith("_"):
+                    continue
+                if entry.is_file() and entry.suffix != ".py":
+                    continue
+
+                module_name = entry.stem if entry.is_file() else entry.name
+                import_name = f"{self._package_prefix}.{module_name}"
+
+                try:
+                    module = importlib.import_module(import_name)
+                except Exception as exc:  # pragma: no cover - import errors logged for diagnosis
+                    identifier = module_name
+                    logger.error(f"插件模块导入失败 {import_name}: {exc}")
+                    config_entry = self._config.register_plugin(
+                        identifier,
+                        default_enabled=False,
+                        source={"type": "module", "module": module_name, "path": str(entry)},
+                        permissions={},
+                    )
+                    permissions_state = config_entry.permissions
+                    self._runtime[identifier] = PluginRuntimeInfo(
+                        identifier=identifier,
+                        manifest=None,
+                        enabled=config_entry.enabled,
+                        status=PluginStatus.FAILED,
+                        error=str(exc),
+                        source_path=entry,
+                        builtin=False,
+                        permissions_granted=self._states_to_bool(permissions_state),
+                        permission_states=permissions_state,
+                        module_name=module_name,
+                    )
+                    found_identifiers.add(identifier)
+                    continue
+
+                plugin = getattr(module, "PLUGIN", None)
+                if plugin is None:
+                    logger.warning(
+                        f"插件模块 {import_name} 未提供 PLUGIN 实例，已跳过"
+                    )
+                    identifier = module_name
+                    config_entry = self._config.register_plugin(
+                        identifier,
+                        default_enabled=False,
+                        source={"type": "module", "module": module_name, "path": str(entry)},
+                        permissions={},
+                    )
+                    permissions_state = config_entry.permissions
+                    self._runtime[identifier] = PluginRuntimeInfo(
+                        identifier=identifier,
+                        manifest=None,
+                        enabled=config_entry.enabled,
+                        status=PluginStatus.FAILED,
+                        error="缺少 PLUGIN 实例",
+                        source_path=Path(getattr(module, "__file__", entry)),
+                        builtin=False,
+                        permissions_granted=config_entry.permissions,
+                        module_name=module_name,
+                    )
+                    found_identifiers.add(identifier)
+                    continue
+
+                manifest = getattr(plugin, "manifest", None)
+                if not isinstance(manifest, PluginManifest):
+                    logger.error(
+                        f"插件 {import_name} 缺少 manifest 或类型错误，已跳过"
+                    )
+                    identifier = module_name
+                    config_entry = self._config.register_plugin(
+                        identifier,
+                        default_enabled=False,
+                        source={"type": "module", "module": module_name, "path": str(entry)},
+                        permissions={},
+                    )
+                    self._runtime[identifier] = PluginRuntimeInfo(
+                        identifier=identifier,
+                        manifest=None,
+                        enabled=config_entry.enabled,
+                        status=PluginStatus.FAILED,
+                        error="manifest 缺失或类型错误",
+                        source_path=Path(getattr(module, "__file__", entry)),
+                        builtin=False,
+                        permissions_granted=self._states_to_bool(permissions_state),
+                        permission_states=permissions_state,
+                        module_name=module_name,
+                    )
+                    found_identifiers.add(identifier)
+                    continue
+
+                identifier = manifest.identifier
+                if identifier in found_identifiers:
+                    logger.error(f"检测到重复的插件标识符 {identifier}，已跳过 {import_name}")
+                    continue
+
+                module_path = Path(getattr(module, "__file__", entry)) if getattr(module, "__file__", None) else entry
+                is_builtin = identifier in self._builtin_ids
+                try:
+                    dependency_specs = manifest.dependency_specs()
+                except ValueError as exc:
+                    logger.error(
+                        "插件 {identifier} 依赖声明错误: {error}",
+                        identifier=manifest.identifier,
+                        error=str(exc),
+                    )
+                    dependency_specs = tuple()
+
+                current_states = ensure_permission_states(
+                    manifest.permissions,
+                    self._config.get_permissions(identifier),
+                )
+                config_entry = self._config.register_plugin(
+                    identifier,
+                    default_enabled=True if is_builtin else True,
+                    source={
+                        "type": "builtin" if is_builtin else "module",
+                        "module": module_name,
+                        "path": str(module_path),
+                    },
+                    permissions={k: v.value for k, v in current_states.items()},
+                )
+                enabled = config_entry.enabled
+                permission_states = ensure_permission_states(
+                    manifest.permissions, config_entry.permissions
+                )
+
+                runtime_status = PluginStatus.DISABLED
+                if enabled:
+                    missing_permissions = [
+                        perm
+                        for perm, state in permission_states.items()
+                        if state is not PermissionState.GRANTED
+                    ]
+                    if missing_permissions:
+                        runtime_status = PluginStatus.PERMISSION_BLOCKED
+                    else:
+                        runtime_status = PluginStatus.LOADED
+                self._runtime[identifier] = PluginRuntimeInfo(
+                    identifier=identifier,
+                    manifest=manifest,
+                    enabled=enabled,
+                    status=runtime_status,
+                    error=None,
+                    source_path=module_path,
+                    builtin=is_builtin,
+                    permissions_required=manifest.permissions,
+                    permissions_granted=self._states_to_bool(permission_states),
+                    permission_states=permission_states,
+                    module_name=module_name,
+                    plugin_type=manifest.kind,
+                    dependencies=dependency_specs,
+                )
+
+                if enabled and self._runtime[identifier].status == PluginStatus.LOADED:
+                    self._loaded.append(
+                        LoadedPlugin(
+                            identifier=identifier,
+                            plugin=plugin,
+                            manifest=manifest,
+                            module=module,
+                            module_name=module_name,
+                            source_path=module_path,
+                            builtin=is_builtin,
+                        )
+                    )
+
+                found_identifiers.add(identifier)
+
+        # Any plugins present in config but not found on disk should be marked accordingly
+        for identifier, entry in self._config.all_plugins().items():
+            if identifier in found_identifiers:
+                continue
+            source = entry.source
+            source_path = Path(source.get("path")) if source.get("path") else None
+            builtin = source.get("type") == "builtin"
+            permissions_state = entry.permissions
+            self._runtime[identifier] = PluginRuntimeInfo(
+                identifier=identifier,
+                manifest=None,
+                enabled=entry.enabled,
+                status=PluginStatus.FAILED,
+                error="插件文件未找到",
+                source_path=source_path,
+                builtin=builtin,
+                permissions_required=tuple(),
+                permissions_granted=self._states_to_bool(permissions_state),
+                permission_states=permissions_state,
+                module_name=source.get("module"),
+            )
+
+        self._evaluate_dependencies()
+
+    def _evaluate_dependencies(self) -> None:
+        manifest_versions: Dict[str, str] = {}
+        for identifier, runtime in self._runtime.items():
+            if runtime.manifest:
+                manifest_versions[identifier] = runtime.manifest.version
+
+        for identifier, runtime in self._runtime.items():
+            issues: Dict[str, str] = {}
+            for spec in runtime.dependencies:
+                dep_runtime = self._runtime.get(spec.identifier)
+                if dep_runtime is None or dep_runtime.manifest is None:
+                    issues[spec.identifier] = "依赖插件未安装"
+                    continue
+                if not dep_runtime.enabled or dep_runtime.status not in {
+                    PluginStatus.LOADED,
+                    PluginStatus.ACTIVE,
+                }:
+                    issues[spec.identifier] = f"依赖插件 {spec.identifier} 未启用或无法加载"
+                    continue
+                dep_version = manifest_versions.get(spec.identifier)
+                if not spec.is_satisfied_by(dep_version):
+                    required = spec.describe()
+                    current = dep_version or "?"
+                    issues[spec.identifier] = f"需要 {required}，当前 {current}"
+            runtime.dependency_issues = issues
+            if issues and runtime.status == PluginStatus.LOADED:
+                runtime.status = PluginStatus.MISSING_DEPENDENCY
+                runtime.error = "; ".join(issues.values())
+                logger.warning(
+                    "插件 {identifier} 依赖未满足: {issues}",
+                    identifier=identifier,
+                    issues=runtime.error,
+                )
+
+        self._loaded = [
+            loaded
+            for loaded in self._loaded
+            if self._runtime.get(loaded.identifier) and self._runtime[loaded.identifier].status == PluginStatus.LOADED
+        ]
+
+    def _compute_activation_order(self) -> List[LoadedPlugin]:
+        if not self._loaded:
+            return []
+        available = {loaded.identifier: loaded for loaded in self._loaded}
+        in_degree: Dict[str, int] = {identifier: 0 for identifier in available}
+        dependents: Dict[str, Set[str]] = {identifier: set() for identifier in available}
+
+        for identifier, loaded in available.items():
+            runtime = self._runtime.get(identifier)
+            if not runtime:
+                continue
+            deps = [spec.identifier for spec in runtime.dependencies if spec.identifier in available]
+            in_degree[identifier] = len(deps)
+            for dep in deps:
+                dependents.setdefault(dep, set()).add(identifier)
+
+        queue = deque([identifier for identifier, degree in in_degree.items() if degree == 0])
+        ordered: List[str] = []
+        while queue:
+            current = queue.popleft()
+            ordered.append(current)
+            for dependent in dependents.get(current, set()):
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+
+        if len(ordered) != len(available):
+            logger.warning("检测到插件依赖循环，使用默认加载顺序")
+            return list(self._loaded)
+        return [available[identifier] for identifier in ordered]
+
+    def activate_all(
+        self,
+        context_factory: Callable[[Plugin, PluginManifest], PluginContext],
+    ) -> None:
+        activation_order = self._compute_activation_order()
+
+        for loaded in activation_order:
+            runtime = self._runtime.get(loaded.identifier)
+            try:
+                context = context_factory(loaded.plugin, loaded.manifest)
+            except Exception as exc:
+                logger.error(
+                    f"构建插件上下文失败 {loaded.manifest.identifier}: {exc}"
+                )
+                if runtime:
+                    runtime.status = PluginStatus.ERROR
+                    runtime.error = str(exc)
+                continue
+
+            try:
+                loaded.plugin.activate(context)
+                logger.info(
+                    f"插件 {loaded.manifest.identifier} ({loaded.manifest.short_label()}) 已激活"
+                )
+                if runtime:
+                    runtime.status = PluginStatus.ACTIVE
+                    runtime.error = None
+            except Exception as exc:
+                logger.error(
+                    f"插件 {loaded.manifest.identifier} 激活失败: {exc}"
+                )
+                if runtime:
+                    runtime.status = PluginStatus.ERROR
+                    runtime.error = str(exc)
+
+    # ------------------------------------------------------------------
+    # management helpers
+    # ------------------------------------------------------------------
+    def set_enabled(self, identifier: str, enabled: bool) -> None:
+        self._config.set_enabled(identifier, enabled)
+
+    def update_permission(
+        self, identifier: str, permission: str, allowed: bool | PermissionState | None
+    ) -> None:
+        if isinstance(allowed, PermissionState):
+            state = allowed
+        elif allowed is None:
+            state = PermissionState.PROMPT
+        else:
+            state = PermissionState.GRANTED if allowed else PermissionState.DENIED
+        self._config.set_permission_state(identifier, permission, state)
+
+    def delete_plugin(self, identifier: str) -> None:
+        runtime = self._runtime.get(identifier)
+        if runtime is None:
+            logger.warning(f"尝试删除未知插件 {identifier}")
+            self._config.remove_plugin(identifier)
+            return
+        if runtime.builtin:
+            raise ValueError("内置插件无法删除")
+        dependents = [
+            info.identifier
+            for info in self._runtime.values()
+            if info.manifest and any(spec.identifier == identifier for spec in info.dependencies)
+        ]
+        if dependents:
+            raise ValueError(
+                f"以下插件依赖于 {identifier}，请先卸载依赖项：{', '.join(sorted(dependents))}"
+            )
+        path = runtime.source_path
+        if path and path.exists():
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        self._config.remove_plugin(identifier)
+
+    def import_plugin(self, source_path: Path) -> PluginImportResult:
+        source = Path(source_path)
+        if not source.exists():
+            raise FileNotFoundError(source)
+        if source.is_dir():
+            raise ValueError("暂不支持导入目录形式的插件，请选择 *.py 文件")
+
+        target_root = self._search_paths[0]
+        target_root.mkdir(parents=True, exist_ok=True)
+
+        sanitized = "".join(
+            ch if ch.isalnum() or ch == "_" else "_" for ch in source.stem
+        ).strip("_")
+        sanitized = sanitized or "plugin"
+        candidate = sanitized
+        counter = 1
+        while (target_root / f"{candidate}.py").exists():
+            candidate = f"{sanitized}_{counter}"
+            counter += 1
+
+        destination = target_root / f"{candidate}.py"
+        shutil.copy2(source, destination)
+        importlib.invalidate_caches()
+
+        manifest: PluginManifest | None = None
+        identifier: str | None = None
+        requested_permissions: tuple[str, ...] = tuple()
+        error: str | None = None
+        module_name = destination.stem
+
+        try:
+            import_name = f"{self._package_prefix}.{module_name}"
+            module = importlib.import_module(import_name)
+            plugin = getattr(module, "PLUGIN", None)
+            plugin_manifest = getattr(plugin, "manifest", None)
+            if isinstance(plugin_manifest, PluginManifest):
+                manifest = plugin_manifest
+                identifier = manifest.identifier
+                requested_permissions = manifest.permissions or tuple()
+        except Exception as exc:  # pragma: no cover - diagnostic helper
+            error = str(exc)
+
+        return PluginImportResult(
+            destination=destination,
+            identifier=identifier,
+            manifest=manifest,
+            requested_permissions=tuple(requested_permissions),
+            module_name=module_name,
+            error=error,
+        )
+
+    def get_runtime(self, identifier: str) -> PluginRuntimeInfo | None:
+        return self._runtime.get(identifier)
