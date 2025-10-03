@@ -77,7 +77,7 @@ manifest = PluginManifest(
 - 系统操作接口（返回 `PluginOperationResult`，详见下文）：
     - `open_route(route: str)`: 请求跳转到指定路由。需声明并获得 `app_route` 权限。
     - `switch_home(navigation_id: str)`: 切换首页侧边栏导航项（例如 `home`、`resource`）。需 `app_home` 权限。
-    - `open_settings_tab(tab: str)`: 打开设置页并定位到指定标签（`general`、`download`、`ui`、`about`、`plugins`）。需 `app_settings` 权限。
+    - `open_settings_tab(tab: int)`: 打开设置页并定位到指定标签（按设置tabs顺序，从0开始）。需 `app_settings` 权限。
     - `set_wallpaper(path: str)`: 将本地图片设置为系统壁纸。需 `wallpaper_control` 权限。
     - `ipc_broadcast(channel: str, payload: dict)`: 通过跨进程广播发布消息。需 `ipc_broadcast` 权限。
     - `ipc_subscribe(channel: str)`: 订阅跨进程广播频道，成功时结果的 `data` 为 `IPCSubscription` 对象，可调用 `.get()` 读取队列消息。
@@ -97,9 +97,8 @@ manifest = PluginManifest(
 
 调用 `result.raise_for_error()` 可将失败结果转换为异常；当错误为 `permission_denied` 且带有权限标识时，会抛出 `PluginPermissionError`，便于插件或插件管理器统一处理。
 
-常见错误码说明：
+常见错误码说明（权限请求会阻塞直到用户做出选择，因此不会返回 `permission_pending`）：
 
-- `permission_pending`：当前权限处于“待确认”，应用已弹出权限对话框；用户授权后可重试操作。
 - `permission_denied`：权限被拒绝或撤销；插件可提示用户授权或直接终止相关功能。
 - `invalid_argument`：传入参数无效（如导航 ID 不存在）。
 - `operation_failed`：操作执行过程中发生异常，`message` 提供具体原因。
@@ -110,9 +109,7 @@ manifest = PluginManifest(
 ```python
 result = context.open_route("/settings")
 if not result.success:
-    if result.error == "permission_pending":
-        context.logger.info("等待用户授权 app_route 权限")
-    elif result.error == "permission_denied":
+    if result.error == "permission_denied":
         result.raise_for_error()  # 将抛出 PluginPermissionError，可由插件管理器捕获
     else:
         context.logger.error("操作失败: %s", result.message)
@@ -129,6 +126,20 @@ if not config_file.exists():
 
 context.logger.info("配置文件位置: {}", config_file)
 ```
+
+## 权限管理
+
+插件权限支持三种持久化策略，可在“插件管理 → 管理权限”对话框或导入插件时的权限向导中切换：
+
+- **允许**：永久授予对应能力，后续调用不会再提示。
+- **禁用**：拒绝插件访问该能力，相关 API 会立即返回 `permission_denied`，但插件本身仍保持加载状态。
+- **每次询问**：每次调用相关 API 时都会弹出系统对话框。调用线程会同步阻塞，直到用户选择允许或拒绝。
+
+当用户授权额外权限后，插件可立即重试相同操作；若用户拒绝，建议捕获 `PluginPermissionError` 并引导用户在设置中调整权限。
+
+### 动态库权限
+
+导入 `.py` 格式插件时，管理器会扫描源码中的 `import` / `from` 语句，并为非白名单模块生成附加权限条目，例如 `python_import:requests`。白名单包含 `flet`、`datetime`、`time`、`json` 以及 `app.plugins` 命名空间下的模块，同时自动忽略标准库和插件自身的相对导入。这样用户可以在导入阶段明确插件依赖的外部库并决定是否授权。
 
 ## 全局数据共享（Global Data Store）
 
@@ -301,6 +312,7 @@ unsubscribe()
 - `resource.bing.action`：用户在 Bing 卡片上执行操作（permission="resource_data"）
 - `resource.spotlight.updated`：Windows 聚焦资源列表更新（permission="resource_data"）
 - `resource.spotlight.action`：Windows 聚焦动作（permission="resource_data"）
+- `resource.download.completed`：内置资源下载完成（permission="resource_data"），payload 附带 `source`、`action`、`file_path` 以及对应资源的 `namespace`、`data_id`
 
 以上核心事件由应用在启动时注册（参见 `CORE_EVENT_DEFINITIONS`），插件可以直接订阅或在需时重新注册／扩展新的事件类型。
 
@@ -400,16 +412,12 @@ context.register_settings_page(
 - 使用插件专属的数据 / 配置目录；
 - 启动钩子与日志输出；
 - 使用 `PluginContext.metadata` 传递信息；
+- 订阅 `resource.download.completed` 事件，记录最近一次下载并展示事件日志；
+- 展示权限状态，并提供 `open_route` / `switch_home` / `open_settings_tab` / `set_wallpaper` 等操作的快捷测试按钮；
 - `add_bing_action` / `add_spotlight_action` 扩展资源页操作按钮；
 - `register_settings_page` 提供插件专属的设置页面。
 
-可以直接运行应用验证效果：
-
-```pwsh
-uv run flet run
-```
-
-应用启动后，侧边栏会出现“示例”入口，展示示例插件的主要特性。
+示例插件声明了 `resource_data`、`app_route`、`app_home`、`app_settings` 与 `wallpaper_control` 等权限，方便在实际应用中直接体验运行时授权对话框和操作结果。可根据需要复制并裁剪成自己的模板。
 
 ---
 

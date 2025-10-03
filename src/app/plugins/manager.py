@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
+import importlib.util
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -14,7 +17,12 @@ from loguru import logger
 
 from .base import Plugin, PluginContext, PluginManifest
 from .config import PluginConfigStore
-from .permissions import PermissionState, ensure_permission_states
+from .permissions import (
+    PermissionState,
+    PluginPermission,
+    ensure_permission_states,
+    KNOWN_PERMISSIONS,
+)
 from .runtime import PluginRuntimeInfo, PluginStatus
 
 
@@ -41,6 +49,9 @@ class PluginImportResult:
 
 class PluginManager:
     """Responsible for discovering and activating plugins."""
+
+    _IMPORT_WHITELIST: Set[str] = {"flet", "datetime", "time", "json"}
+    _IMPORT_WHITELIST_PREFIXES: tuple[str, ...] = ("app.plugins",)
 
     def __init__(
         self,
@@ -215,16 +226,14 @@ class PluginManager:
                 )
 
                 runtime_status = PluginStatus.DISABLED
+                pending_permissions: List[str] = []
                 if enabled:
-                    missing_permissions = [
+                    pending_permissions = [
                         perm
                         for perm, state in permission_states.items()
                         if state is not PermissionState.GRANTED
                     ]
-                    if missing_permissions:
-                        runtime_status = PluginStatus.PERMISSION_BLOCKED
-                    else:
-                        runtime_status = PluginStatus.LOADED
+                    runtime_status = PluginStatus.LOADED
                 self._runtime[identifier] = PluginRuntimeInfo(
                     identifier=identifier,
                     manifest=manifest,
@@ -236,6 +245,7 @@ class PluginManager:
                     permissions_required=manifest.permissions,
                     permissions_granted=self._states_to_bool(permission_states),
                     permission_states=permission_states,
+                    permissions_pending=tuple(pending_permissions),
                     module_name=module_name,
                     plugin_type=manifest.kind,
                     dependencies=dependency_specs,
@@ -426,7 +436,24 @@ class PluginManager:
                 shutil.rmtree(path)
             else:
                 path.unlink()
+            if path.is_file():
+                pycache_dir = path.with_name("__pycache__")
+                if pycache_dir.exists() and pycache_dir.is_dir():
+                    module_name = path.stem
+                    for cached in list(pycache_dir.iterdir()):
+                        if cached.stem.startswith(module_name):
+                            try:
+                                cached.unlink()
+                            except OSError:
+                                pass
         self._config.remove_plugin(identifier)
+        self._runtime.pop(identifier, None)
+        self._loaded = [plugin for plugin in self._loaded if plugin.identifier != identifier]
+        module_name = runtime.module_name
+        if module_name:
+            self_module = f"{self._package_prefix}.{module_name}"
+            sys.modules.pop(self_module, None)
+        importlib.invalidate_caches()
 
     def import_plugin(self, source_path: Path) -> PluginImportResult:
         source = Path(source_path)
@@ -454,9 +481,14 @@ class PluginManager:
 
         manifest: PluginManifest | None = None
         identifier: str | None = None
-        requested_permissions: tuple[str, ...] = tuple()
+        requested_permissions: set[str] = set()
         error: str | None = None
         module_name = destination.stem
+
+        import_permissions = self._derive_import_permissions(
+            self._collect_import_modules(destination)
+        )
+        requested_permissions.update(import_permissions)
 
         try:
             import_name = f"{self._package_prefix}.{module_name}"
@@ -466,7 +498,89 @@ class PluginManager:
             if isinstance(plugin_manifest, PluginManifest):
                 manifest = plugin_manifest
                 identifier = manifest.identifier
-                requested_permissions = manifest.permissions or tuple()
+                requested_permissions.update(manifest.permissions or tuple())
+
+                if identifier in self._runtime:
+                    if destination.exists():
+                        try:
+                            destination.unlink()
+                        except OSError:
+                            pass
+                    raise ValueError(f"插件标识符 {identifier} 已存在，请先删除后再导入。")
+
+                module_path = Path(getattr(module, "__file__", destination))
+                is_builtin = self.is_builtin(identifier)
+
+                try:
+                    dependency_specs = manifest.dependency_specs()
+                except ValueError as dep_exc:
+                    logger.error(
+                        "插件 {identifier} 依赖声明错误: {error}",
+                        identifier=manifest.identifier,
+                        error=str(dep_exc),
+                    )
+                    dependency_specs = tuple()
+
+                permission_states = ensure_permission_states(
+                    manifest.permissions,
+                    self._config.get_permissions(identifier),
+                )
+
+                config_entry = self._config.register_plugin(
+                    identifier,
+                    default_enabled=True if is_builtin else False,
+                    source={
+                        "type": "builtin" if is_builtin else "module",
+                        "module": module_name,
+                        "path": str(module_path),
+                    },
+                    permissions={k: v.value for k, v in permission_states.items()},
+                )
+
+                if not is_builtin and config_entry.enabled:
+                    self._config.set_enabled(identifier, False)
+                    config_entry.enabled = False
+
+                permission_states = ensure_permission_states(
+                    manifest.permissions,
+                    self._config.get_permissions(identifier),
+                )
+
+                pending_permissions = [
+                    perm
+                    for perm, state in permission_states.items()
+                    if state is not PermissionState.GRANTED
+                ]
+
+                self._runtime[identifier] = PluginRuntimeInfo(
+                    identifier=identifier,
+                    manifest=manifest,
+                    enabled=config_entry.enabled,
+                    status=PluginStatus.DISABLED if not config_entry.enabled else PluginStatus.LOADED,
+                    error=None,
+                    source_path=module_path,
+                    builtin=is_builtin,
+                    permissions_required=manifest.permissions,
+                    permissions_granted=self._states_to_bool(permission_states),
+                    permission_states=permission_states,
+                    permissions_pending=tuple(pending_permissions),
+                    module_name=module_name,
+                    plugin_type=manifest.kind,
+                    dependencies=dependency_specs,
+                )
+
+                # Newly imported plugins shouldn't be considered loaded yet
+                if identifier in {plugin.identifier for plugin in self._loaded}:
+                    self._loaded = [
+                        loaded
+                        for loaded in self._loaded
+                        if loaded.identifier != identifier
+                    ]
+
+                self._evaluate_dependencies()
+        except ValueError:
+            # Duplicate identifier or other validation error.
+            raise
         except Exception as exc:  # pragma: no cover - diagnostic helper
             error = str(exc)
 
@@ -474,10 +588,121 @@ class PluginManager:
             destination=destination,
             identifier=identifier,
             manifest=manifest,
-            requested_permissions=tuple(requested_permissions),
+            requested_permissions=tuple(sorted(requested_permissions)),
             module_name=module_name,
             error=error,
         )
 
     def get_runtime(self, identifier: str) -> PluginRuntimeInfo | None:
         return self._runtime.get(identifier)
+
+    def has_pending_changes(self) -> bool:
+        """Return True when there are configuration changes that require a reload.
+
+        We compare persisted config (enabled/permission states) against the
+        in-memory runtime info to determine whether a reload is actually needed.
+        """
+        try:
+            for identifier, runtime in self._runtime.items():
+                try:
+                    cfg_enabled = self._config.is_enabled(identifier)
+                except Exception:
+                    cfg_enabled = True
+                # Consider the currently *applied* enabled state based on runtime.status
+                # (ACTIVE/LOADED => applied enabled, DISABLED => applied disabled).
+                applied_enabled = getattr(runtime, "status", None) is not None and runtime.status != PluginStatus.DISABLED
+                if bool(applied_enabled) != bool(cfg_enabled):
+                    return True
+                try:
+                    cfg_perms = self._config.get_permissions(identifier)
+                except Exception:
+                    cfg_perms = {}
+                # Normalize keys and values: if any permission state differs, reload needed
+                for perm, state in runtime.permission_states.items():
+                    cfg_state = cfg_perms.get(perm)
+                    if cfg_state is None:
+                        # missing in config -> treat as prompt/default vs runtime state
+                        if state is not None and state.value != "prompt":
+                            return True
+                    else:
+                        # cfg_state is PermissionState; compare values
+                        if getattr(cfg_state, "value", cfg_state) != getattr(state, "value", state):
+                            return True
+            return False
+        except Exception:
+            # Defensive: if inspection fails, assume no pending changes to avoid false positives
+            return False
+
+    @staticmethod
+    def _collect_import_modules(file_path: Path) -> set[str]:
+        try:
+            source = file_path.read_text(encoding="utf-8")
+        except OSError:
+            return set()
+        try:
+            tree = ast.parse(source, filename=str(file_path))
+        except SyntaxError:
+            return set()
+
+        modules: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name:
+                        modules.add(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level and node.level > 0:
+                    continue
+                if node.module:
+                    modules.add(node.module)
+        return modules
+
+    def _derive_import_permissions(self, modules: Iterable[str]) -> set[str]:
+        permissions: set[str] = set()
+        for module in modules:
+            normalized = module.strip()
+            if not normalized:
+                continue
+            if self._is_import_allowed(normalized):
+                continue
+            root = normalized.split(".")[0]
+            if self._is_import_allowed(root):
+                continue
+            permission_id = f"python_import:{root}"
+            if permission_id not in KNOWN_PERMISSIONS:
+                KNOWN_PERMISSIONS[permission_id] = PluginPermission(
+                    identifier=permission_id,
+                    name=f"使用库 {root}",
+                    description=f"允许插件导入额外的 Python 库 {root}。",
+                )
+            permissions.add(permission_id)
+        return permissions
+
+    @classmethod
+    def _is_import_allowed(cls, module: str) -> bool:
+        if not module:
+            return True
+        candidate = module.strip()
+        if not candidate:
+            return True
+        if candidate in cls._IMPORT_WHITELIST:
+            return True
+        for prefix in cls._IMPORT_WHITELIST_PREFIXES:
+            if candidate == prefix or candidate.startswith(prefix + "."):
+                return True
+        root = candidate.split(".")[0]
+        if root in cls._IMPORT_WHITELIST:
+            return True
+        try:
+            spec = importlib.util.find_spec(root)
+        except (ImportError, ValueError):  # pragma: no cover - defensive
+            spec = None
+        if spec is None:
+            return False
+        origin = getattr(spec, "origin", None)
+        if origin in {None, "built-in", "frozen"}:
+            return True
+        origin_str = str(origin).lower()
+        if "site-packages" in origin_str or "dist-packages" in origin_str:
+            return False
+        return True

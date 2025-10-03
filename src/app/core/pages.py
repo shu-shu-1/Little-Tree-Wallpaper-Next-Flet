@@ -19,6 +19,7 @@ from app.constants import BUILD_VERSION, HITOKOTO_API, SHOW_WATERMARK, VER
 from app.paths import DATA_DIR, LICENSE_PATH
 from app.ui_utils import build_watermark, copy_files_to_clipboard, copy_image_to_clipboard
 from app.plugins import (
+    AppRouteView,
     PluginPermission,
     PluginRuntimeInfo,
     PluginService,
@@ -28,6 +29,7 @@ from app.plugins import (
     PluginImportResult,
     PluginKind,
     PermissionState,
+    KNOWN_PERMISSIONS,
 )
 from app.plugins.events import EventDefinition, PluginEventBus
 
@@ -54,6 +56,7 @@ class Pages:
         self.plugin_service = plugin_service
         self._plugin_runtime_cache: List[PluginRuntimeInfo] = list(plugin_runtime or [])
         self._known_permissions: Dict[str, PluginPermission] = dict(known_permissions or {})
+        self._sync_known_permissions()
         # Flet Colors compatibility: some versions may not expose SURFACE_CONTAINER_LOW
         self._bgcolor_surface_low = getattr(ft.Colors, "SURFACE_CONTAINER_LOW", ft.Colors.SURFACE_CONTAINER_HIGHEST)
         self._event_definitions: List[EventDefinition] = list(event_definitions or [])
@@ -74,16 +77,18 @@ class Pages:
         self.spotlight_action_factories = (
             spotlight_action_factories if spotlight_action_factories is not None else []
         )
-        self._settings_pages = list(settings_pages or [])
-        self._settings_page_map: dict[str, "PluginSettingsPage"] = {
-            entry.plugin_identifier: entry for entry in self._settings_pages
-        }
+        self._settings_pages = settings_pages if settings_pages is not None else []
+        self._settings_page_map: dict[str, "PluginSettingsPage"] = {}
+        self._refresh_settings_registry()
         self._global_data = global_data
         self._bing_data_id: str | None = None
         self._spotlight_data_id: str | None = None
         self._settings_tabs = None
         self._settings_tab_indices: dict[str, int] = {}
         self._pending_settings_tab: str | None = None
+        self._reload_banner: ft.Banner | None = None
+        self._reload_banner_open = False
+        self._route_register: Callable[[AppRouteView], None] | None = None
 
         self._ensure_global_namespaces()
 
@@ -95,6 +100,9 @@ class Pages:
 
         self.page.run_task(self._load_bing_wallpaper)
         self.page.run_task(self._load_spotlight_wallpaper)
+
+    def _sync_known_permissions(self) -> None:
+        self._known_permissions.update(KNOWN_PERMISSIONS)
 
     def _ensure_global_namespaces(self) -> None:
         if not self._global_data:
@@ -146,7 +154,54 @@ class Pages:
             expand=True,
         )
 
+    def _refresh_settings_registry(self) -> None:
+        if not self._settings_pages:
+            self._settings_page_map = {}
+            return
+        self._settings_page_map = {
+            entry.plugin_identifier: entry
+            for entry in self._settings_pages
+            if getattr(entry, "plugin_identifier", None)
+        }
+
+    def set_route_registrar(self, registrar: Callable[[AppRouteView], None]) -> None:
+        """Provide a callback used to register plugin settings routes."""
+
+        self._route_register = registrar
+        self._register_all_plugin_settings_routes()
+
+    def _make_plugin_settings_route(self, entry: "PluginSettingsPage") -> AppRouteView:
+        route_path = self._settings_route(entry.plugin_identifier)
+
+        def _builder(pid: str = entry.plugin_identifier) -> ft.View:
+            return self.build_plugin_settings_view(pid)
+
+        return AppRouteView(route=route_path, builder=_builder)
+
+    def _register_settings_page_route(self, entry: "PluginSettingsPage") -> None:
+        if not self._route_register:
+            return
+        try:
+            view = self._make_plugin_settings_route(entry)
+            self._route_register(view)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "注册插件设置路由失败: {error}",
+                error=str(exc),
+            )
+
+    def _register_all_plugin_settings_routes(self) -> None:
+        if not self._route_register:
+            return
+        for entry in self.iter_plugin_settings_pages():
+            self._register_settings_page_route(entry)
+
+    def notify_settings_page_registered(self, entry: "PluginSettingsPage") -> None:
+        self._refresh_settings_registry()
+        self._register_settings_page_route(entry)
+
     def iter_plugin_settings_pages(self) -> list["PluginSettingsPage"]:
+        self._refresh_settings_registry()
         return list(self._settings_pages)
 
     def select_settings_tab(self, tab_id: str) -> bool:
@@ -156,9 +211,33 @@ class Pages:
         if normalized not in self._settings_tab_indices:
             return False
         if self._settings_tabs is None:
+            logger.info(f"延迟切换设置页面标签到 {normalized}")
             self._pending_settings_tab = normalized
             return True
+        logger.info(f"切换设置页面标签到 {normalized}")
         self._settings_tabs.selected_index = self._settings_tab_indices[normalized]
+        self.page.update()
+        return True
+
+    def select_settings_tab_index(self, index: int) -> bool:
+        # Allow selecting by numeric index. If tabs not yet created, save pending index.
+        try:
+            if index < 0:
+                return False
+        except Exception:
+            return False
+        if self._settings_tabs is None:
+            logger.info(f"延迟切换设置页面索引到 {index}")
+            # store as normalized string so existing pending logic can handle it
+            self._pending_settings_tab = str(index)
+            return True
+        # guard against out-of-range
+        if not getattr(self._settings_tabs, "tabs", None):
+            return False
+        if index >= len(self._settings_tabs.tabs):
+            return False
+        logger.info(f"切换设置页面索引到 {index}")
+        self._settings_tabs.selected_index = index
         self.page.update()
         return True
 
@@ -169,6 +248,7 @@ class Pages:
         return None
 
     def _open_plugin_settings_page(self, runtime: PluginRuntimeInfo) -> None:
+        self._refresh_settings_registry()
         registration = self._settings_page_map.get(runtime.identifier)
         if not registration:
             self._show_snackbar("该插件未提供设置页面。", error=True)
@@ -178,7 +258,53 @@ class Pages:
     def _settings_route(self, plugin_id: str) -> str:
         return f"/settings/plugin/{plugin_id}"
 
+    def _handle_reload_request(self, _: ft.ControlEvent | None = None) -> None:
+        self._hide_reload_banner()
+        self._reload_plugins()
+
+    def _show_reload_banner(self) -> None:
+        if not self.page:
+            return
+        if self._reload_banner is None:
+            self._reload_banner = ft.Banner(
+                bgcolor=ft.Colors.AMBER_100,
+                leading=ft.Icon(ft.Icons.RESTART_ALT, color=ft.Colors.AMBER_800),
+                content=ft.Text("插件权限已更新，需要重新加载后生效。"),
+                actions=[
+                    ft.FilledButton(
+                        "重新加载",
+                        icon=ft.Icons.RESTART_ALT,
+                        on_click=self._handle_reload_request,
+                    )
+                ],
+            )
+        if not self._reload_banner_open:
+            self.page.open(self._reload_banner)
+            self._reload_banner_open = True
+        else:
+            self.page.update()
+
+    def _hide_reload_banner(self) -> None:
+        if self.page and self._reload_banner and self._reload_banner_open:
+            self.page.close(self._reload_banner)
+            self._reload_banner_open = False
+            self.page.update()
+
+    def _sync_reload_banner(self) -> None:
+        if not self.plugin_service or not hasattr(self.plugin_service, "is_reload_required"):
+            self._hide_reload_banner()
+            return
+        try:
+            pending = self.plugin_service.is_reload_required()
+        except Exception:
+            pending = False
+        if pending:
+            self._show_reload_banner()
+        else:
+            self._hide_reload_banner()
+
     def build_plugin_settings_view(self, plugin_id: str) -> ft.View:
+        self._refresh_settings_registry()
         registration = self._settings_page_map.get(plugin_id)
         runtime = self._resolve_plugin_runtime(plugin_id)
 
@@ -306,6 +432,7 @@ class Pages:
         )
 
         self._refresh_plugin_list()
+        self._sync_reload_banner()
 
         body_controls: list[ft.Control] = [header, self._plugin_list_column]
 
@@ -364,16 +491,26 @@ class Pages:
         self.page.update()
 
     def _build_plugin_card(self, runtime: PluginRuntimeInfo) -> ft.Control:
+        self._sync_known_permissions()
         status_label, status_color = self._status_display(runtime.status)
         permissions_summary = self._format_permissions(runtime)
 
         switch_disabled = runtime.builtin
 
-        def _on_toggle(e: ft.ControlEvent, *, plugin_id: str = runtime.identifier) -> None:
+        def _on_toggle(
+            e: ft.ControlEvent,
+            *,
+            plugin_id: str = runtime.identifier,
+            runtime_info: PluginRuntimeInfo = runtime,
+        ) -> None:
             new_value = bool(e.control.value)
+            if runtime_info.enabled == new_value:
+                return
             if not self._toggle_plugin_enabled(plugin_id, new_value):
-                e.control.value = not new_value
+                e.control.value = runtime_info.enabled
                 self.page.update()
+                return
+            runtime_info.enabled = new_value
 
         toggle = ft.Switch(
             label="启用",
@@ -390,6 +527,7 @@ class Pages:
             )
         ]
 
+        self._refresh_settings_registry()
         settings_page = self._settings_page_map.get(runtime.identifier)
         if settings_page:
             action_buttons.append(
@@ -462,6 +600,55 @@ class Pages:
         )
 
         controls: list[ft.Control] = [header, status_row]
+
+        denied_permissions = [
+            self._format_permission_label(perm)
+            for perm, state in runtime.permission_states.items()
+            if state is PermissionState.DENIED
+        ]
+        prompt_permissions = [
+            self._format_permission_label(perm)
+            for perm, state in runtime.permission_states.items()
+            if state is PermissionState.PROMPT
+        ]
+
+        badges: list[ft.Control] = []
+        if denied_permissions:
+            badges.append(
+                ft.Container(
+                    padding=ft.Padding(8, 4, 8, 4),
+                    bgcolor=ft.Colors.RED_50,
+                    border_radius=6,
+                    content=ft.Text(
+                        f"已拒绝：{', '.join(denied_permissions)}",
+                        size=11,
+                        color=ft.Colors.RED_700,
+                    ),
+                )
+            )
+        if prompt_permissions:
+            badges.append(
+                ft.Container(
+                    padding=ft.Padding(8, 4, 8, 4),
+                    bgcolor=ft.Colors.AMBER_50,
+                    border_radius=6,
+                    content=ft.Text(
+                        f"每次询问：{', '.join(prompt_permissions)}",
+                        size=11,
+                        color=ft.Colors.AMBER_800,
+                    ),
+                )
+            )
+
+        if badges:
+            controls.append(
+                ft.Row(
+                    controls=badges,
+                    spacing=6,
+                    run_spacing=6,
+                    wrap=True,
+                )
+            )
 
         controls.append(
             ft.Text(
@@ -664,11 +851,36 @@ class Pages:
         self._open_dialog(dialog)
 
     def _show_permission_dialog(self, runtime: PluginRuntimeInfo) -> None:
+        self._sync_known_permissions()
         requested = sorted(set(runtime.permission_states.keys()) | set(runtime.permissions_required))
 
         if not requested:
             self._show_snackbar("该插件未请求任何权限。")
             return
+
+        pending_choices: dict[str, str] = {}
+        initial_choices: dict[str, str] = {}
+        action_holder: dict[str, ft.FilledButton | None] = {"button": None}
+
+        def _update_apply_state() -> None:
+            button = action_holder["button"]
+            if not button:
+                return
+            button.disabled = not pending_choices
+            button.update()
+
+        def _submit(_: ft.ControlEvent | None = None) -> None:
+            if not pending_choices:
+                self._close_dialog()
+                return
+            for permission_id, choice in list(pending_choices.items()):
+                new_state = self._state_from_choice(choice)
+                if not self._update_permission_state(runtime.identifier, permission_id, new_state):
+                    _update_apply_state()
+                    return
+            pending_choices.clear()
+            _update_apply_state()
+            self._close_dialog()
 
         rows: list[ft.Control] = []
 
@@ -684,40 +896,52 @@ class Pages:
                     else PermissionState.PROMPT
                 )
 
-            def _on_toggle(
+            initial_choice = self._choice_from_state(current_state)
+            initial_choices[permission_id] = initial_choice
+
+            def _on_choice(
                 e: ft.ControlEvent,
                 *,
-                pid: str = runtime.identifier,
                 perm: str = permission_id,
-                previous: PermissionState = current_state,
             ) -> None:
-                new_state = self._state_from_checkbox(e.control.value)
-                if not self._update_permission_state(pid, perm, new_state):
-                    e.control.value = self._checkbox_value_from_state(previous)
-                    self.page.update()
+                choice = e.control.value
+                if choice == initial_choices.get(perm):
+                    pending_choices.pop(perm, None)
+                else:
+                    pending_choices[perm] = choice
+                _update_apply_state()
 
             rows.append(
                 ft.ListTile(
                     leading=ft.Icon(ft.Icons.SECURITY),
                     title=ft.Text(title),
                     subtitle=ft.Text(description or f"权限标识：{permission_id}"),
-                    trailing=ft.Checkbox(
-                        tristate=True,
-                        value=self._checkbox_value_from_state(current_state),
-                        on_change=_on_toggle,
+                    trailing=ft.Dropdown(
+                        width=180,
+                        value=initial_choice,
+                        options=[
+                            ft.DropdownOption(key="deny", text="禁用"),
+                            ft.DropdownOption(key="prompt", text="每次询问"),
+                            ft.DropdownOption(key="allow", text="允许"),
+                        ],
+                        on_change=_on_choice,
                     ),
                 )
             )
+
+        apply_button = ft.FilledButton("确定", icon=ft.Icons.CHECK, disabled=True, on_click=_submit)
+        action_holder["button"] = apply_button
 
         dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(f"权限管理 - {runtime.name}"),
             content=ft.Container(
                 width=420,
-                content=ft.Column(rows, tight=True, spacing=4),
+                content=ft.Column(rows, tight=True, spacing=4, scroll=ft.ScrollMode.AUTO),
             ),
             actions=[
-                ft.TextButton("关闭", on_click=lambda _: self._close_dialog()),
+                ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
+                apply_button,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
@@ -730,7 +954,8 @@ class Pages:
             return False
         try:
             self.plugin_service.set_enabled(identifier, enabled)
-            self._show_snackbar("插件状态已更新，将自动重新加载。")
+            self._show_snackbar("插件状态已更新，将在重新加载后生效。")
+            self._sync_reload_banner()
             return True
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"更新插件启用状态失败: {exc}")
@@ -745,7 +970,16 @@ class Pages:
             return False
         try:
             self.plugin_service.update_permission(identifier, permission, state)
-            self._show_snackbar("权限已更新，将在重新加载后生效。")
+            pending_reload = False
+            try:
+                pending_reload = bool(self.plugin_service.is_reload_required())
+            except Exception:
+                pending_reload = False
+            if pending_reload:
+                self._show_snackbar("权限已更新，将在重新加载后生效。")
+            else:
+                self._show_snackbar("权限已更新，启用插件后生效。")
+            self._sync_reload_banner()
             return True
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"更新插件权限失败: {exc}")
@@ -781,7 +1015,10 @@ class Pages:
             return
         try:
             self.plugin_service.delete_plugin(identifier)
-            self._show_snackbar("插件已删除，将自动重新加载。")
+            # 更新列表，提示用户稍后手动重新加载
+            self._refresh_plugin_list()
+            self._show_snackbar("插件已删除，需要重新加载后生效。")
+            self._sync_reload_banner()
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"删除插件失败: {exc}")
             self._show_snackbar(f"删除失败：{exc}", error=True)
@@ -793,6 +1030,7 @@ class Pages:
             self._show_snackbar("插件服务不可用。", error=True)
             return
         try:
+            self._hide_reload_banner()
             self.plugin_service.reload()
             self._show_snackbar("插件正在重新加载…")
         except Exception as exc:  # pragma: no cover - defensive logging
@@ -858,10 +1096,12 @@ class Pages:
         if not self.plugin_service:
             return
 
+        self._sync_known_permissions()
+
         identifier = result.identifier or result.module_name or result.destination.stem
         manifest = result.manifest
         permission_controls: list[ft.Control] = []
-        toggles: dict[str, ft.Checkbox] = {}
+        toggles: dict[str, ft.Dropdown] = {}
 
         description = manifest.description if manifest else ""
         plugin_title = manifest.name if manifest else identifier
@@ -871,16 +1111,21 @@ class Pages:
                 info = self._known_permissions.get(perm)
                 label = info.name if info else perm
                 detail = info.description if info else "未在权限目录中登记。"
-                checkbox = ft.Checkbox(
-                    value=None,
-                    tristate=True,
+                selector = ft.Dropdown(
+                    width=220,
                     label=f"授予 {label}",
+                    value="prompt",
+                    options=[
+                        ft.DropdownOption(key="deny", text="禁用"),
+                        ft.DropdownOption(key="prompt", text="每次询问"),
+                        ft.DropdownOption(key="allow", text="允许"),
+                    ],
                 )
-                toggles[perm] = checkbox
+                toggles[perm] = selector
                 permission_controls.append(
                     ft.Column(
                         [
-                            checkbox,
+                            selector,
                             ft.Text(f"权限 ID：{perm}\n{detail}", size=12, color=ft.Colors.GREY),
                         ],
                         spacing=4,
@@ -907,12 +1152,9 @@ class Pages:
 
         def _on_skip(_: ft.ControlEvent) -> None:
             self._close_dialog()
-            self._show_snackbar("插件已导入，使用默认权限重新加载…")
-            try:
-                self.plugin_service.reload()
-            except Exception as exc:  # pragma: no cover - defensive logging
-                logger.error(f"重新加载插件失败: {exc}")
-                self._show_snackbar(f"重新加载失败：{exc}", error=True)
+            self._show_snackbar("插件已导入并保持禁用，可稍后在列表中启用。")
+            self._refresh_plugin_list()
+            self._sync_reload_banner()
 
         dialog = ft.AlertDialog(
             modal=True,
@@ -936,34 +1178,32 @@ class Pages:
             ),
             actions=[
                 ft.TextButton("稍后再说", on_click=_on_skip),
-                ft.FilledButton("保存并重新加载", on_click=_on_accept),
+                ft.FilledButton("保存设置", on_click=_on_accept),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
         self._open_dialog(dialog)
 
-    def _apply_import_permissions(self, identifier: str, toggles: dict[str, ft.Checkbox]) -> None:
+    def _apply_import_permissions(self, identifier: str, toggles: dict[str, ft.Dropdown]) -> None:
         if not self.plugin_service:
             return
 
         try:
             for perm, control in toggles.items():
-                state = self._state_from_checkbox(control.value)
+                state = self._state_from_choice(control.value)
                 self.plugin_service.update_permission(identifier, perm, state)
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"设置导入权限失败: {exc}")
             self._show_snackbar(f"保存权限失败：{exc}", error=True)
             return
 
-        self._show_snackbar("权限已保存，正在重新加载插件…")
-        try:
-            self.plugin_service.reload()
-        except Exception as exc:  # pragma: no cover - defensive logging
-            logger.error(f"重新加载插件失败: {exc}")
-            self._show_snackbar(f"重新加载失败：{exc}", error=True)
+        self._show_snackbar("权限已保存，将在启用插件时生效。")
+        self._refresh_plugin_list()
+        self._sync_reload_banner()
 
     def _build_permission_catalog_section(self) -> ft.Control | None:
+        self._sync_known_permissions()
         if not self._known_permissions:
             return None
 
@@ -1019,18 +1259,18 @@ class Pages:
         return permission_id
 
     @staticmethod
-    def _checkbox_value_from_state(state: PermissionState | None) -> bool | None:
+    def _choice_from_state(state: PermissionState | None) -> str:
         if state is PermissionState.GRANTED:
-            return True
+            return "allow"
         if state is PermissionState.DENIED:
-            return False
-        return None
+            return "deny"
+        return "prompt"
 
     @staticmethod
-    def _state_from_checkbox(value: bool | None) -> PermissionState:
-        if value is True:
+    def _state_from_choice(value: str | None) -> PermissionState:
+        if value == "allow":
             return PermissionState.GRANTED
-        if value is False:
+        if value == "deny":
             return PermissionState.DENIED
         return PermissionState.PROMPT
 
@@ -1136,6 +1376,26 @@ class Pages:
             self.event_bus.emit(event_type, payload, source="core")
         except Exception as exc:  # pragma: no cover - defensive
             logger.error(f"派发插件事件失败 {event_type}: {exc}")
+
+    def _emit_download_completed(
+        self,
+        source: str,
+        action: str,
+        file_path: str,
+        extra: Dict[str, Any] | None = None,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "source": source,
+            "action": action,
+            "file_path": str(file_path),
+        }
+        if source == "bing":
+            payload.update(self._bing_event_payload())
+        elif source == "spotlight":
+            payload.update(self._spotlight_event_payload())
+        if extra:
+            payload.update(extra)
+        self._emit_resource_event("resource.download.completed", payload)
 
     def _bing_event_payload(self) -> Dict[str, Any]:
         payload = self._bing_payload_data()
@@ -1445,6 +1705,7 @@ class Pages:
                 progress_callback=progress_callback,
             )
             if wallpaper_path:
+                self._emit_download_completed("bing", "set_wallpaper", wallpaper_path)
                 ltwapi.set_wallpaper(wallpaper_path)
                 self._emit_bing_action(
                     "set_wallpaper",
@@ -1551,6 +1812,7 @@ class Pages:
                 )
                 self._emit_bing_action(action, False)
             else:
+                self._emit_download_completed("bing", action, wallpaper_path)
                 if action == "copy_image":
                     if copy_image_to_clipboard(wallpaper_path):
                         self.page.open(
@@ -1834,6 +2096,8 @@ class Pages:
 
             success = wallpaper_path is not None
             handled = False
+            if success:
+                self._emit_download_completed("spotlight", normalized_action, wallpaper_path)
             if success and action == "set":
                 try:
                     ltwapi.set_wallpaper(wallpaper_path)
@@ -2291,7 +2555,16 @@ class Pages:
             "plugin": 4,
         }
         if self._pending_settings_tab:
-            pending = self._settings_tab_indices.get(self._pending_settings_tab)
+            pending = None
+            # Try numeric pending index first
+            try:
+                pending_idx = int(self._pending_settings_tab)
+                if 0 <= pending_idx < len(settings_tabs.tabs):
+                    pending = pending_idx
+            except Exception:
+                pass
+            if pending is None:
+                pending = self._settings_tab_indices.get(self._pending_settings_tab)
             if pending is not None:
                 settings_tabs.selected_index = pending
             self._pending_settings_tab = None

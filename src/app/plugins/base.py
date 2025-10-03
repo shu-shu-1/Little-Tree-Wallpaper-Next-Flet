@@ -151,6 +151,9 @@ class PluginService(Protocol):
     def reload(self) -> None:
         ...
 
+    def is_reload_required(self) -> bool:
+        ...
+
 
 @dataclass(slots=True)
 class PluginSettingsPage:
@@ -214,7 +217,7 @@ class PluginContext:
     global_data: GlobalDataAccess | None = None
     _open_route_handler: Callable[[str], PluginOperationResult] | None = None
     _switch_home_handler: Callable[[str], PluginOperationResult] | None = None
-    _open_settings_handler: Callable[[str], PluginOperationResult] | None = None
+    _open_settings_handler: Callable[[str | int], PluginOperationResult] | None = None
     _set_wallpaper_handler: Callable[[str], PluginOperationResult] | None = None
     _ipc_broadcast_handler: Callable[[str, dict], PluginOperationResult] | None = None
     _ipc_subscribe_handler: Callable[[str], PluginOperationResult] | None = None
@@ -246,6 +249,15 @@ class PluginContext:
     def open_settings_tab(self, tab_id: str) -> PluginOperationResult:
         if not self._open_settings_handler:
             return PluginOperationResult.failed("operation_unavailable", "应用未开放设置页切换。")
+        # Accept numeric indices as well as string ids
+        if isinstance(tab_id, (int,)):
+            return self._open_settings_handler(tab_id)
+        # try to coerce numeric strings to int
+        try:
+            if isinstance(tab_id, str) and tab_id.isdigit():
+                return self._open_settings_handler(int(tab_id))
+        except Exception:
+            pass
         return self._open_settings_handler(tab_id)
 
     def set_wallpaper(self, path: str) -> PluginOperationResult:
@@ -298,17 +310,28 @@ class PluginContext:
         """Register a dedicated settings page accessible from the plugin management panel."""
 
         existing = [page for page in self.settings_pages if page.plugin_identifier != self.manifest.identifier]
-        existing.append(
-            PluginSettingsPage(
-                plugin_identifier=self.manifest.identifier,
-                title=label,
-                builder=builder,
-                icon=icon,
-                button_label=button_label or "插件设置",
-                description=description,
-            )
+        new_page = PluginSettingsPage(
+            plugin_identifier=self.manifest.identifier,
+            title=label,
+            builder=builder,
+            icon=icon,
+            button_label=button_label or "插件设置",
+            description=description,
         )
+        existing.append(new_page)
         self.settings_pages[:] = existing
+
+        core_pages = self.metadata.get("core_pages")
+        if core_pages and hasattr(core_pages, "notify_settings_page_registered"):
+            try:
+                core_pages.notify_settings_page_registered(new_page)  # type: ignore[call-arg]
+            except Exception as exc:  # pragma: no cover - defensive logging
+                self.logger.warning(
+                    "同步插件设置页面注册信息失败: {error}",
+                    error=str(exc),
+                )
+
+
 
     def add_settings_tab(
         self,

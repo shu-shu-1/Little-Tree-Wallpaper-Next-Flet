@@ -102,13 +102,18 @@ class CorePlugin(Plugin):
             context.add_navigation_view(view)
 
         context.add_route_view(AppRouteView(route="/settings", builder=pages.build_settings_view))
+        from app.plugins.base import PluginSettingsPage
+
+        def _make_settings_route(entry: PluginSettingsPage) -> AppRouteView:
+            route_path = f"/settings/plugin/{entry.plugin_identifier}"
+
+            def _builder(pid: str = entry.plugin_identifier) -> ft.View:
+                return pages.build_plugin_settings_view(pid)
+
+            return AppRouteView(route=route_path, builder=_builder)
+
         for entry in pages.iter_plugin_settings_pages():
-            context.add_route_view(
-                AppRouteView(
-                    route=f"/settings/plugin/{entry.plugin_identifier}",
-                    builder=lambda pid=entry.plugin_identifier: pages.build_plugin_settings_view(pid),
-                )
-            )
+            context.add_route_view(_make_settings_route(entry))
         context.add_route_view(
             AppRouteView(route="/test-warning", builder=pages.build_test_warning_page)
         )

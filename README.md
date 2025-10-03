@@ -207,3 +207,31 @@ This project follows the versioning conventions of [Semantic Versioning 2.0.0](h
 Feel free to explore, contribute, 和 help improve the project! 
 
 🚀 欢迎随时探索、贡献和帮助改进此项目！
+
+## Plugin settings tab index (0-based) / 插件设置页索引说明 🧭
+
+When developing plugins, you may want to programmatically open the app Settings page and switch to the "Plugins" tab. Flet's Tabs selection is numeric and 0-based, so using a hard-coded number in plugins is fragile and hard to maintain.
+
+To avoid magic numbers the application exposes a small constant in `src/app/constants.py`:
+
+- `SETTINGS_TAB_PLUGINS` — index of the "Plugins" tab inside the Settings view (0-based).
+
+Example (inside a plugin):
+
+```python
+from app.constants import SETTINGS_TAB_PLUGINS
+
+# ... inside your plugin's activate or UI builder:
+context.open_settings_tab(SETTINGS_TAB_PLUGINS)
+```
+
+
+插件如果需要跳转到应用的“设置 → 插件”页，请优先使用 `src/app/constants.py` 中提供的 `SETTINGS_TAB_PLUGINS` 常量，避免在代码中直接写入索引数字（0-based）。示例：
+
+```python
+from app.constants import SETTINGS_TAB_PLUGINS
+
+context.open_settings_tab(SETTINGS_TAB_PLUGINS)
+```
+
+Using the named constant improves readability and makes future reshuffles of the Settings tabs safer, since only the constant needs to be updated.

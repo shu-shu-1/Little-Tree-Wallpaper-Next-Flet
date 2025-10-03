@@ -205,4 +205,9 @@ CORE_EVENT_DEFINITIONS: List[EventDefinition] = [
         description="当用户在 Windows 聚焦卡片上执行下载、复制等操作时触发。",
         permission="resource_data",
     ),
+    EventDefinition(
+        event_type="resource.download.completed",
+        description="当内置壁纸下载完成时触发，提供下载来源与文件路径。",
+        permission="resource_data",
+    ),
 ]

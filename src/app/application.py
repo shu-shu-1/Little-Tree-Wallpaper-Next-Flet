@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Event
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import flet as ft
@@ -59,11 +61,14 @@ class ApplicationPluginService:
 
     def set_enabled(self, identifier: str, enabled: bool) -> None:
         self._app._plugin_manager.set_enabled(identifier, enabled)
-        self._app.reload()
+        runtime = self._app._plugin_manager.get_runtime(identifier)
+        if runtime is not None:
+            runtime.enabled = enabled
+        self._app.mark_reload_required()
 
     def delete_plugin(self, identifier: str) -> None:
         self._app._plugin_manager.delete_plugin(identifier)
-        self._app.reload()
+        self._app.mark_reload_required()
 
     def import_plugin(self, source_path: Path) -> PluginImportResult:
         return self._app._plugin_manager.import_plugin(source_path)
@@ -73,10 +78,30 @@ class ApplicationPluginService:
     ) -> None:
         state = normalize_permission_state(allowed)
         self._app._set_permission_state(identifier, permission, state)
-        self._app.reload()
+        runtime = self._app._plugin_manager.get_runtime(identifier)
+        if runtime is None or runtime.enabled:
+            self._app.mark_reload_required()
 
     def reload(self) -> None:
         self._app.reload()
+
+    def is_reload_required(self) -> bool:
+        # Consider pending changes in the plugin manager as well as the app-level flag.
+        try:
+            manager_pending = bool(self._app._plugin_manager.has_pending_changes())
+        except Exception:
+            manager_pending = False
+        return self._app.is_reload_required() or manager_pending
+
+
+@dataclass(slots=True)
+class _PermissionPromptRequest:
+    plugin_id: str
+    permission: str
+    on_granted: Callable[[], PluginOperationResult]
+    on_denied: Optional[Callable[[], PluginOperationResult]] = None
+    result: PluginOperationResult | None = None
+    completion: Event = field(default_factory=Event, repr=False)
 
 
 class Application:
@@ -95,9 +120,7 @@ class Application:
         self._register_core_events()
         self._page: ft.Page | None = None
         self._plugin_contexts: Dict[str, PluginContext] = {}
-        self._permission_prompt_queue: List[
-            Tuple[str, str, Callable[[], None], Optional[Callable[[], None]]]
-        ] = []
+        self._permission_prompt_queue: List[_PermissionPromptRequest] = []
         self._permission_prompt_active: bool = False
         self._permission_dialog: ft.AlertDialog | None = None
         self._route_registry: Dict[str, AppRouteView] = {}
@@ -108,6 +131,7 @@ class Application:
         self._core_pages: Pages | None = None
         self._ipc_service = IPCService()
         self._ipc_plugin_subscriptions: Dict[str, Set[str]] = {}
+        self._reload_required = False
 
     def __call__(self, page: ft.Page) -> None:
         self._page = page
@@ -119,10 +143,11 @@ class Application:
     def _build_app(self, page: ft.Page) -> None:
         logger.info(f"Little Tree Wallpaper Next {BUILD_VERSION} 初始化")
 
+        self._reload_required = False
+
         page.clean()
         self._close_permission_dialog()
-        self._permission_prompt_queue.clear()
-        self._permission_prompt_active = False
+        self._reset_permission_prompts("应用重新加载，操作已取消。")
         self._cleanup_ipc_subscriptions()
         self._route_registry = {}
         self._navigation_views = []
@@ -365,9 +390,29 @@ class Application:
                 logger.error(f"插件启动钩子执行失败: {exc}")
 
     def reload(self) -> None:
+        # Proactively hide any open reload banners before rebuilding,
+        # in case reload is triggered outside of Pages' handlers.
+        try:
+            if self._core_pages is not None:
+                # _hide_reload_banner is defensive and no-op if nothing is open
+                self._core_pages._hide_reload_banner()  # type: ignore[attr-defined]
+        except Exception:
+            pass
         if self._page is None:
             return
+        # Clear the flag BEFORE rebuilding so new UI doesn’t re-open the banner
+        # when it checks is_reload_required during construction.
+        self.clear_reload_required()
         self._build_app(self._page)
+
+    def mark_reload_required(self) -> None:
+        self._reload_required = True
+
+    def clear_reload_required(self) -> None:
+        self._reload_required = False
+
+    def is_reload_required(self) -> bool:
+        return self._reload_required
 
     def _configure_page(self, page: ft.Page) -> None:
         page.title = f"小树壁纸 Next (Flet) | {BUILD_VERSION}"
@@ -411,31 +456,24 @@ class Application:
         if state is PermissionState.GRANTED:
             return on_granted()
         if state is PermissionState.DENIED:
-            if on_denied:
-                return on_denied()
-            return PluginOperationResult.denied(permission)
-
-        result_holder: list[PluginOperationResult] = [
-            PluginOperationResult.pending(permission)
-        ]
-
-        def _grant_wrapper() -> None:
-            result_holder[0] = on_granted()
-
-        def _deny_wrapper() -> None:
-            if on_denied:
-                result_holder[0] = on_denied()
-            else:
-                result_holder[0] = PluginOperationResult.denied(permission)
-            if result_holder[0].error == "permission_denied":
+            result = on_denied() if on_denied else PluginOperationResult.denied(permission)
+            if result.error == "permission_denied":
                 self._notify_permission_denied(plugin_id, permission)
+            return result
 
-        self._permission_prompt_queue.append(
-            (plugin_id, permission, _grant_wrapper, _deny_wrapper)
+        request = _PermissionPromptRequest(
+            plugin_id=plugin_id,
+            permission=permission,
+            on_granted=on_granted,
+            on_denied=on_denied,
         )
+        self._permission_prompt_queue.append(request)
         if not self._permission_prompt_active:
             self._dequeue_permission_prompt()
-        return result_holder[0]
+        request.completion.wait()
+        return request.result or PluginOperationResult.failed(
+            "permission_prompt_cancelled", "权限请求已取消。"
+        )
 
     def _open_route(self, plugin_id: str, route: str) -> PluginOperationResult:
         target_route = route or "/"
@@ -469,15 +507,32 @@ class Application:
 
         return self._ensure_permission(plugin_id, "app_home", _granted)
 
-    def _open_settings_tab(self, plugin_id: str, tab_id: str) -> PluginOperationResult:
-        desired_tab = tab_id.strip().lower()
+    def _open_settings_tab(self, plugin_id: str, tab_id: str | int) -> PluginOperationResult:
+        # Accept numeric index or string identifier
+        desired_index: int | None = None
+        desired_tab: str | None = None
+        if isinstance(tab_id, int):
+            desired_index = tab_id
+        elif isinstance(tab_id, str):
+            s = tab_id.strip()
+            if s.isdigit():
+                desired_index = int(s)
+            else:
+                desired_tab = s.lower()
 
         def _granted() -> PluginOperationResult:
             pages = self._core_pages or self._extract_core_pages()
             if pages is None:
                 return PluginOperationResult.failed("settings_unavailable", "设置页面尚未加载。")
-            if not pages.select_settings_tab(desired_tab):
-                return PluginOperationResult.failed("invalid_argument", f"未知的设置标签 {tab_id}。")
+            if desired_index is not None:
+                # If tabs are not initialized yet, Pages.select_settings_tab handles pending state
+                try:
+                    pages.select_settings_tab_index(desired_index)
+                except Exception:
+                    return PluginOperationResult.failed("invalid_argument", f"未知的设置索引 {tab_id}。")
+            else:
+                if not desired_tab or not pages.select_settings_tab(desired_tab):
+                    return PluginOperationResult.failed("invalid_argument", f"未知的设置标签 {tab_id}。")
             if self._page:
                 self._page.go("/settings")
             return PluginOperationResult.ok(message=f"已切换到设置标签 {tab_id}")
@@ -562,15 +617,30 @@ class Application:
         pages = core_context.metadata.get("core_pages")
         if isinstance(pages, Pages):
             self._core_pages = pages
+            try:
+                pages.set_route_registrar(core_context.register_route)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "注册核心设置路由回调失败: {error}",
+                    error=str(exc),
+                )
+            for context in self._plugin_contexts.values():
+                context.metadata["core_pages"] = pages
             return pages
         return None
 
     def _dequeue_permission_prompt(self) -> None:
-        if not self._permission_prompt_queue or self._page is None:
+        if not self._permission_prompt_queue:
             self._permission_prompt_active = False
             return
 
-        plugin_id, permission, on_granted, on_denied = self._permission_prompt_queue.pop(0)
+        if self._page is None:
+            self._reset_permission_prompts("页面尚未初始化，权限请求已取消。")
+            return
+
+        request = self._permission_prompt_queue.pop(0)
+        plugin_id = request.plugin_id
+        permission = request.permission
         runtime = self._plugin_manager.get_runtime(plugin_id)
         permission_info = KNOWN_PERMISSIONS.get(permission)
         plugin_name = runtime.name if runtime else plugin_id
@@ -592,12 +662,16 @@ class Application:
             if decision is not PermissionState.PROMPT:
                 self._set_permission_state(plugin_id, permission, decision)
             if decision is PermissionState.GRANTED:
-                on_granted()
+                result = request.on_granted()
             else:
-                if on_denied:
-                    on_denied()
+                if request.on_denied:
+                    result = request.on_denied()
                 else:
+                    result = PluginOperationResult.denied(permission)
+                if result.error == "permission_denied":
                     self._notify_permission_denied(plugin_id, permission)
+            request.result = result
+            request.completion.set()
             self._permission_prompt_active = False
             self._dequeue_permission_prompt()
 
@@ -613,10 +687,16 @@ class Application:
         self._permission_prompt_active = True
         self._permission_dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text("权限请求"),
+            title=ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE),ft.Text("权限请求")]),
             content=ft.Container(
                 width=420,
-                content=ft.Column(content_controls, spacing=12),
+                height=200,
+                content=ft.Column(
+                    content_controls,
+                    spacing=12,
+                    tight=True,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
             ),
             actions=[
                 ft.TextButton("稍后决定", on_click=_later),
@@ -632,6 +712,17 @@ class Application:
         if self._permission_dialog and self._page is not None:
             self._page.close(self._permission_dialog)
         self._permission_dialog = None
+
+    def _reset_permission_prompts(self, reason: str) -> None:
+        self._close_permission_dialog()
+        for request in self._permission_prompt_queue:
+            if request.result is None:
+                request.result = PluginOperationResult.failed(
+                    "permission_prompt_cancelled", reason
+                )
+                request.completion.set()
+        self._permission_prompt_queue.clear()
+        self._permission_prompt_active = False
 
     def _cleanup_ipc_subscriptions(self) -> None:
         for subscription_ids in list(self._ipc_plugin_subscriptions.values()):

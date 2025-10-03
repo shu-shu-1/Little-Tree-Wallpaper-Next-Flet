@@ -37,6 +37,7 @@ class PluginRuntimeInfo:
     permissions_required: tuple[str, ...] = tuple()
     permissions_granted: dict[str, bool] = field(default_factory=dict)
     permission_states: dict[str, PermissionState] = field(default_factory=dict)
+    permissions_pending: tuple[str, ...] = tuple()
     module_name: str | None = None
     plugin_type: PluginKind = PluginKind.FEATURE
     dependencies: tuple[PluginDependencySpec, ...] = tuple()
