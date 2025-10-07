@@ -1,7 +1,6 @@
 import orjson
 import os
 import toml
-import ltwtype
 
 DEFAULT_CONFIG = {
     "metadata": {"version": "1.0.0"},
@@ -32,7 +31,10 @@ DEFAULT_CONFIG = {
         "favorites_directory": "",
         "clear_cache_after_360_source": True,
     },
-    "wallpaper": {"auto_change": {"mode": "random", "interval_seconds": 600}},
+    "wallpaper": {
+        "auto_change": {"mode": "random", "interval_seconds": 600},
+        "allow_NSFW": False,
+    },
     "download": {
         "segment_size_kb": 200,
         "proxy": {"enabled": False, "type": "http", "server": ""},
@@ -54,6 +56,7 @@ DEFAULT_CONFIG = {
     },
 }
 
+
 def get_config_version(file_path: str) -> str:
     """
     获取配置文件的版本号
@@ -64,7 +67,9 @@ def get_config_version(file_path: str) -> str:
     with open(file_path, "rb") as f:
         config = orjson.loads(f.read())
     return config["metadata"]["version"]
-def check_config_file(file_path) -> ltwtype.ConfigState:
+
+
+def check_config_file(file_path):
     """
     检查指定的配置文件是否正常。
     1. 检查文件是否存在
@@ -93,10 +98,11 @@ def check_config_file(file_path) -> ltwtype.ConfigState:
             return "key_missing"
     return "normal"
 
-def fix_config_file(file_path: str, error_type: ltwtype.ConfigState):
+
+def fix_config_file(file_path: str, error_type):
     """
     修复配置文件
-    
+
     :param file_path: 配置文件的路径
     :param error_type: 错误类型
     :return bool: 修复成功返回True
@@ -105,78 +111,124 @@ def fix_config_file(file_path: str, error_type: ltwtype.ConfigState):
         reset_config_file(file_path)
     elif error_type == "low_version":
         if get_config_version() == "1.0.0":
-            ... # 当配置文件版本更新时，再进行编写
+            ...  # 当配置文件版本更新时，再进行编写
     elif error_type == "format_error":
         try:
             with open(file_path, "rb") as f:
                 old_config = toml.loads(f.read())
                 new_config = DEFAULT_CONFIG
                 # 迁移配置数据
-                if 'info' in old_config:
-                    new_config['metadata']['version'] = old_config['info']['version']
+                if "info" in old_config:
+                    new_config["metadata"]["version"] = old_config["info"]["version"]
 
-                if 'display' in old_config:
-                    new_config['ui']['language'] = old_config['display']['language']
-                    new_config['ui']['theme'] = old_config['display']['color_mode']
-                    new_config['ui']['window_background'] = old_config['display']['window_background_image_path']
-                    new_config['ui']['window_icon'] = old_config['display']['window_icon_path']
+                if "display" in old_config:
+                    new_config["ui"]["language"] = old_config["display"]["language"]
+                    new_config["ui"]["theme"] = old_config["display"]["color_mode"]
+                    new_config["ui"]["window_background"] = old_config["display"][
+                        "window_background_image_path"
+                    ]
+                    new_config["ui"]["window_icon"] = old_config["display"][
+                        "window_icon_path"
+                    ]
 
-                if 'update' in old_config:
-                    new_config['updates']['auto_check'] = bool(old_config['update']['enabled'])
-                    new_config['updates']['channel'] = old_config['update']['channel'].lower()
-                    if 'proxy' in old_config['update']:
-                        new_config['updates']['proxy']['enabled'] = bool(old_config['update']['proxy']['enabled'])
-                        new_config['updates']['proxy']['selected_index'] = old_config['update']['proxy']['proxy_index']
-                        new_config['updates']['proxy']['mirrors'] = old_config['update']['proxy']['proxy_list']
+                if "update" in old_config:
+                    new_config["updates"]["auto_check"] = bool(
+                        old_config["update"]["enabled"]
+                    )
+                    new_config["updates"]["channel"] = old_config["update"][
+                        "channel"
+                    ].lower()
+                    if "proxy" in old_config["update"]:
+                        new_config["updates"]["proxy"]["enabled"] = bool(
+                            old_config["update"]["proxy"]["enabled"]
+                        )
+                        new_config["updates"]["proxy"]["selected_index"] = old_config[
+                            "update"
+                        ]["proxy"]["proxy_index"]
+                        new_config["updates"]["proxy"]["mirrors"] = old_config[
+                            "update"
+                        ]["proxy"]["proxy_list"]
 
-                if 'data' in old_config:
-                    new_config['storage']['cache_directory'] = old_config['data']['cache_path']
-                    new_config['storage']['log_directory'] = old_config['data']['log_path']
-                    new_config['storage']['download_directory'] = old_config['data']['download_path']
-                    new_config['storage']['favorites_directory'] = old_config['data']['favorites_path']
-                    new_config['storage']['clear_cache_after_360_source'] = bool(old_config['data']['clear_cache_when_360_back'])
+                if "data" in old_config:
+                    new_config["storage"]["cache_directory"] = old_config["data"][
+                        "cache_path"
+                    ]
+                    new_config["storage"]["log_directory"] = old_config["data"][
+                        "log_path"
+                    ]
+                    new_config["storage"]["download_directory"] = old_config["data"][
+                        "download_path"
+                    ]
+                    new_config["storage"]["favorites_directory"] = old_config["data"][
+                        "favorites_path"
+                    ]
+                    new_config["storage"]["clear_cache_after_360_source"] = bool(
+                        old_config["data"]["clear_cache_when_360_back"]
+                    )
 
-                if 'automatic_wallpaper_change' in old_config:
-                    new_config['wallpaper']['auto_change']['mode'] = old_config['automatic_wallpaper_change']['mode']
-                    new_config['wallpaper']['auto_change']['interval_seconds'] = old_config['automatic_wallpaper_change']['interval_time']
+                if "automatic_wallpaper_change" in old_config:
+                    new_config["wallpaper"]["auto_change"]["mode"] = old_config[
+                        "automatic_wallpaper_change"
+                    ]["mode"]
+                    new_config["wallpaper"]["auto_change"]["interval_seconds"] = (
+                        old_config["automatic_wallpaper_change"]["interval_time"]
+                    )
 
-                if 'download' in old_config:
-                    new_config['download']['segment_size_kb'] = old_config['download']['segmented_download_size']
-                    if 'proxy' in old_config['download']:
-                        new_config['download']['proxy']['enabled'] = bool(old_config['download']['proxy']['enabled'])
-                        new_config['download']['proxy']['type'] = old_config['download']['proxy']['mode']
-                        new_config['download']['proxy']['server'] = old_config['download']['proxy']['server']
+                if "download" in old_config:
+                    new_config["download"]["segment_size_kb"] = old_config["download"][
+                        "segmented_download_size"
+                    ]
+                    if "proxy" in old_config["download"]:
+                        new_config["download"]["proxy"]["enabled"] = bool(
+                            old_config["download"]["proxy"]["enabled"]
+                        )
+                        new_config["download"]["proxy"]["type"] = old_config[
+                            "download"
+                        ]["proxy"]["mode"]
+                        new_config["download"]["proxy"]["server"] = old_config[
+                            "download"
+                        ]["proxy"]["server"]
 
-                if 'auto_start' in old_config:
-                    new_config['startup']['auto_start'] = bool(old_config['auto_start']['enabled'])
-                    new_config['startup']['script']['enabled'] = bool(old_config['auto_start']['script_enabled'])
-                    new_config['startup']['script']['path'] = old_config['auto_start']['script_path']
-                    new_config['startup']['wallpaper_change']['enabled'] = bool(old_config['auto_start']['change_wallpaper_enabled'])
-                    new_config['startup']['wallpaper_change']['source'] = old_config['auto_start']['change_wallpaper_mode']
-                    new_config['startup']['wallpaper_change']['auto_rotation'] = bool(old_config['auto_start']['automatic_wallpaper_change'])
-
+                if "auto_start" in old_config:
+                    new_config["startup"]["auto_start"] = bool(
+                        old_config["auto_start"]["enabled"]
+                    )
+                    new_config["startup"]["script"]["enabled"] = bool(
+                        old_config["auto_start"]["script_enabled"]
+                    )
+                    new_config["startup"]["script"]["path"] = old_config["auto_start"][
+                        "script_path"
+                    ]
+                    new_config["startup"]["wallpaper_change"]["enabled"] = bool(
+                        old_config["auto_start"]["change_wallpaper_enabled"]
+                    )
+                    new_config["startup"]["wallpaper_change"]["source"] = old_config[
+                        "auto_start"
+                    ]["change_wallpaper_mode"]
+                    new_config["startup"]["wallpaper_change"]["auto_rotation"] = bool(
+                        old_config["auto_start"]["automatic_wallpaper_change"]
+                    )
 
                 save_config_file(file_path, new_config)
         except toml.TomlDecodeError:
             reset_config_file(file_path)
-        
-        
 
 
 def reset_config_file(file_path: str) -> None:
     save_config_file(file_path, DEFAULT_CONFIG)
 
+
 def save_config_file(file_path: str, config: dict) -> None:
     # 分离文件路径和扩展名
     file_path_without_ext, _ = os.path.splitext(file_path)
     # 强制使用 .json 扩展名
-    json_file_path = file_path_without_ext + '.json'
-    
+    json_file_path = file_path_without_ext + ".json"
+
     try:
         # 删除原文件，如果存在的话
         if os.path.exists(file_path):
             os.remove(file_path)
-        
+
         # 删除同名的 JSON 文件，如果存在的话
         if os.path.exists(json_file_path) and json_file_path != file_path:
             os.remove(json_file_path)

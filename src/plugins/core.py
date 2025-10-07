@@ -38,7 +38,9 @@ class CorePlugin(Plugin):
             runtime_info = list(context.metadata.get("plugin_runtime", []))
 
         known_permissions = (
-            context.metadata.get("plugin_permissions") if isinstance(context.metadata.get("plugin_permissions"), dict) else {}
+            context.metadata.get("plugin_permissions")
+            if isinstance(context.metadata.get("plugin_permissions"), dict)
+            else {}
         )
         event_definitions = context.list_event_definitions()
 
@@ -72,6 +74,13 @@ class CorePlugin(Plugin):
                 content=pages.resource,
             ),
             AppNavigationView(
+                id="generate",
+                label="生成",
+                icon=ft.Icons.AUTO_AWESOME_OUTLINED,
+                selected_icon=ft.Icons.AUTO_AWESOME,
+                content=pages.generate,
+            ),
+            AppNavigationView(
                 id="sniff",
                 label="嗅探",
                 icon=ft.Icons.WIFI_FIND_OUTLINED,
@@ -101,7 +110,9 @@ class CorePlugin(Plugin):
         for view in navigation_views:
             context.add_navigation_view(view)
 
-        context.add_route_view(AppRouteView(route="/settings", builder=pages.build_settings_view))
+        context.add_route_view(
+            AppRouteView(route="/settings", builder=pages.build_settings_view)
+        )
         from app.plugins.base import PluginSettingsPage
 
         def _make_settings_route(entry: PluginSettingsPage) -> AppRouteView:

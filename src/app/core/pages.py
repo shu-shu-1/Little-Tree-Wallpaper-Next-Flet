@@ -135,6 +135,7 @@ class Pages:
 
         self.home = self._build_home()
         self.resource = self._build_resource()
+        self.generate = self._build_generate()
         self.sniff = self._build_sniff()
         self.favorite = self._build_favorite()
         self.test = self._build_test()
@@ -312,8 +313,6 @@ class Pages:
         registration = self._settings_page_map.get(plugin_id)
         runtime = self._resolve_plugin_runtime(plugin_id)
 
-        
-
         display_name = runtime.name if runtime else plugin_id
         description_text = (runtime.description if runtime else "") or ""
         if registration:
@@ -440,7 +439,6 @@ class Pages:
         )
 
         self._refresh_plugin_list()
-        
 
         body_controls: list[ft.Control] = [header, self._plugin_list_column]
 
@@ -865,7 +863,9 @@ class Pages:
             title=ft.Text(f"插件详情 - {runtime.name}"),
             content=ft.Container(
                 width=400,
-                content=ft.Column(info_rows, tight=True, spacing=4, scroll=ft.ScrollMode.AUTO),
+                content=ft.Column(
+                    info_rows, tight=True, spacing=4, scroll=ft.ScrollMode.AUTO
+                ),
             ),
             actions=[
                 ft.TextButton("关闭", on_click=lambda _: self._close_dialog()),
@@ -988,7 +988,7 @@ class Pages:
         try:
             self.plugin_service.set_enabled(identifier, enabled)
             self._show_snackbar("插件状态已更新，将在重新加载后生效。")
-            
+
             return True
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"更新插件启用状态失败: {exc}")
@@ -1012,7 +1012,7 @@ class Pages:
                 self._show_snackbar("权限已更新，将在重新加载后生效。")
             else:
                 self._show_snackbar("权限已更新，启用插件后生效。")
-            
+
             return True
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"更新插件权限失败: {exc}")
@@ -1051,7 +1051,7 @@ class Pages:
             # 更新列表，提示用户稍后手动重新加载
             self._refresh_plugin_list()
             self._show_snackbar("插件已删除，需要重新加载后生效。")
-            
+
         except Exception as exc:
             logger.error(f"删除插件失败: {exc}")
             self._show_snackbar(f"删除失败：{exc}", error=True)
@@ -1066,14 +1066,13 @@ class Pages:
         try:
             logger.info("重新加载插件…")
             self.plugin_service.reload()
-            
+
             self._show_snackbar("插件正在重新加载…")
             logger.info("重载插件命令已发送。")
-            
-        except Exception as exc: 
+
+        except Exception as exc:
             logger.error(f"重新加载插件失败: {exc}")
             self._show_snackbar(f"重新加载失败：{exc}", error=True)
-            
 
     def _open_dialog(self, dialog: ft.AlertDialog) -> None:
         self.page.dialog = dialog
@@ -1202,7 +1201,6 @@ class Pages:
             self._close_dialog()
             self._show_snackbar("插件已导入并保持禁用，可稍后在列表中启用。")
             self._refresh_plugin_list()
-            
 
         dialog = ft.AlertDialog(
             modal=True,
@@ -1252,7 +1250,6 @@ class Pages:
 
         self._show_snackbar("权限已保存，将在启用插件时生效。")
         self._refresh_plugin_list()
-        
 
     def _build_permission_catalog_section(self) -> ft.Control | None:
         self._sync_known_permissions()
@@ -1701,6 +1698,38 @@ class Pages:
             expand=True,
         )
 
+    def _build_generate(self):
+        return ft.Container(
+            ft.Column(
+                [
+                    ft.Text("生成", size=30),
+                    ft.Row(
+                        [
+                            ft.Column(
+                                [
+                                    ft.Dropdown(
+                                        label="服务提供商",
+                                        value="pollinations",
+                                        options=[
+                                            ft.DropdownOption(
+                                                key="pollinations",
+                                                text="Pollinations.ai",
+                                            )
+                                        ],
+                                    ),
+                                    
+                                    ft.TextField(label="提示词"),
+                                    ft.TextField(label="否定提示词"),
+                                    ft.FilledButton("生成"),
+                                ]
+                            )
+                        ]
+                    ),
+                ],
+                expand=True,
+            )
+        )
+
     def _build_bing_loading_indicator(self):
         return ft.Container(
             ft.Column(
@@ -1815,7 +1844,9 @@ class Pages:
             counter += 1
         return candidate
 
-    def _favorite_default_asset_path(self, item: FavoriteItem, source_path: Path) -> Path:
+    def _favorite_default_asset_path(
+        self, item: FavoriteItem, source_path: Path
+    ) -> Path:
         exports_dir = self._favorite_manager.localization_root().parent / "exports"
         exports_dir.mkdir(parents=True, exist_ok=True)
         suffix = source_path.suffix or ""
@@ -1902,9 +1933,7 @@ class Pages:
                 self._favorite_batch_done / self._favorite_batch_total
             )
         if self._favorite_localization_status_text is not None:
-            self._favorite_localization_status_text.value = (
-                f"已本地化 {self._favorite_batch_done}/{self._favorite_batch_total} 项收藏"
-            )
+            self._favorite_localization_status_text.value = f"已本地化 {self._favorite_batch_done}/{self._favorite_batch_total} 项收藏"
         for control in (
             self._favorite_localization_status_text,
             self._favorite_localization_progress_bar,
@@ -2027,9 +2056,7 @@ class Pages:
                 ft.Text("AI 正在分析…", size=11, color=ft.Colors.SECONDARY)
             )
         elif item.ai.status == "failed":
-            ai_controls.append(
-                ft.Text("AI 分析失败", size=11, color=ft.Colors.ERROR)
-            )
+            ai_controls.append(ft.Text("AI 分析失败", size=11, color=ft.Colors.ERROR))
 
         info_column = ft.Column(
             [
@@ -2097,7 +2124,9 @@ class Pages:
         localize_button = ft.IconButton(
             icon=ft.Icons.DOWNLOAD_FOR_OFFLINE,
             tooltip="本地化此收藏",
-            on_click=lambda _, item_id=item.id: self._handle_localize_single_item(item_id),
+            on_click=lambda _, item_id=item.id: self._handle_localize_single_item(
+                item_id
+            ),
         )
         if is_localized:
             localize_button.disabled = True
@@ -2240,11 +2269,7 @@ class Pages:
                 item.local_path,
             )
             return destination is not None
-        download_url = (
-            item.preview_url
-            or item.source.preview_url
-            or item.source.url
-        )
+        download_url = item.preview_url or item.source.preview_url or item.source.url
         if not download_url:
             logger.warning("收藏缺少可下载地址，跳过本地化: {item}", item=item.id)
             return False
@@ -2388,7 +2413,9 @@ class Pages:
                 target_item = self._favorite_manager.get_item(item_id) or item
                 local_path = await self._ensure_favorite_local_copy(target_item)
                 if not local_path:
-                    self._show_snackbar("无法准备壁纸文件，请尝试先本地化。", error=True)
+                    self._show_snackbar(
+                        "无法准备壁纸文件，请尝试先本地化。", error=True
+                    )
                     return
                 await asyncio.to_thread(ltwapi.set_wallpaper, local_path)
                 self._show_snackbar("壁纸设置成功。")
@@ -2903,8 +2930,7 @@ class Pages:
             label="收藏夹",
             value=initial_folder,
             options=[
-                ft.DropdownOption(key=folder.id, text=folder.name)
-                for folder in folders
+                ft.DropdownOption(key=folder.id, text=folder.name) for folder in folders
             ]
             or [ft.DropdownOption(key="default", text="默认收藏夹")],
             expand=True,
@@ -3965,6 +3991,11 @@ class Pages:
         )
 
     def build_settings_view(self):
+        import config as app_config
+        from app.paths import CONFIG_DIR
+        _save_config_file = app_config.save_config_file
+        DEFAULT_CONFIG = app_config.DEFAULT_CONFIG
+
         def tab_content(title: str, *controls: ft.Control):
             return ft.Container(
                 content=ft.Column(
@@ -4013,7 +4044,13 @@ class Pages:
                             weight=ft.FontWeight.BOLD,
                         ),
                         ft.Markdown(
-                            """Aimer | 200￥ 👑\n\nXiaoMu | 150￥""",
+                            """@[炫饭的芙芙](https://space.bilibili.com/1669914811) ❤️""", 
+                            # 老婆大人最棒啦
+                            selectable=True,
+                            auto_follow_links=True,
+                        ), 
+                        ft.Markdown(
+                            """@[Giampaolo-zzp](https://github.com/Giampaolo-zzp) | @茜语茜寻""",
                             selectable=True,
                             auto_follow_links=True,
                         ),
@@ -4042,7 +4079,7 @@ class Pages:
                         ),
                         ft.Text("（按照金额排序 | 相同金额按昵称排序）", size=10),
                         ft.Markdown(
-                            """炫饭的芙芙 | 100￥ 👑\n\nGiampaolo-zzp | 50￥\n\nKyle | 30￥\n\n昊阳（漩涡7人） | 8.88￥\n\n蔡亩 | 6￥\n\n小苗 | 6￥\n\nZero | 6￥\n\n遮天s忏悔 | 5.91￥\n\n青山如岱 | 5￥\n\nLYC(luis) | 1￥\n\nFuruya | 0.01￥\n\nwzr | 0.01￥""",
+                            """炫饭的芙芙 | 130￥ 👑\n\nGiampaolo-zzp | 50￥\n\nKyle | 30￥\n\n昊阳（漩涡7人） | 8.88￥\n\n蔡亩 | 6￥\n\n小苗 | 6￥\n\nZero | 6￥\n\n遮天s忏悔 | 5.91￥\n\n青山如岱 | 5￥\n\nLYC(luis) | 1￥\n\nFuruya | 0.01￥\n\nwzr | 0.01￥""",
                             selectable=True,
                             auto_follow_links=False,
                         ),
@@ -4067,18 +4104,88 @@ class Pages:
         download = tab_content(
             "下载",
         )
+        resource = tab_content(
+            "内容",
+            ft.Text("是否允许 NSFW 内容？"),
+            ft.Switch(value=False),
+        )
+
+        # expose controls so the save handler can read their values
+        # load current settings to initialize controls
+        try:
+            import json as _json
+            from pathlib import Path as _P
+
+            cfg_p = _P(CONFIG_DIR / "config.json")
+            if cfg_p.exists():
+                _current = _json.loads(cfg_p.read_text(encoding="utf-8"))
+            else:
+                _current = dict(DEFAULT_CONFIG)
+        except Exception:
+            _current = dict(DEFAULT_CONFIG)
+
+        theme_dropdown = ft.Dropdown(
+            label="界面主题",
+            value=_current.get("ui", {}).get("theme", "auto"),
+            options=[
+                ft.DropdownOption(key="auto", text="跟随系统"),
+                ft.DropdownOption(key="light", text="浅色"),
+                ft.DropdownOption(key="dark", text="深色"),
+            ],
+            on_change=self._change_theme_mode,
+            width=220,
+        )
+
+        lang_dropdown = ft.Dropdown(
+            label="界面语言",
+            value=_current.get("ui", {}).get("language", "zh-CN"),
+            options=[
+                ft.DropdownOption(key="zh-CN", text="中文 (简体)"),
+                ft.DropdownOption(key="en-US", text="English"),
+            ],
+            width=220,
+            tooltip="应用语言",
+        )
+
+        def _save_app_settings() -> None:
+            settings_path = str(CONFIG_DIR / "config.json")
+            # load existing configuration or defaults
+            try:
+                import json as _json
+                from pathlib import Path as _P
+
+                p = _P(settings_path)
+                if p.exists():
+                    data = _json.loads(p.read_text(encoding="utf-8"))
+                else:
+                    data = dict(DEFAULT_CONFIG)
+            except Exception:
+                data = dict(DEFAULT_CONFIG)
+
+            data.setdefault("ui", {})
+            data["ui"]["theme"] = theme_dropdown.value or "auto"
+            data["ui"]["language"] = lang_dropdown.value or "zh-CN"
+
+            try:
+                _save_config_file(settings_path, data)
+                # show a small confirmation
+                self.page.snack_bar = ft.SnackBar(ft.Text("设置已保存"))
+                self.page.open(self.page.snack_bar)
+                self.page.update()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error("保存应用设置失败: {error}", error=str(exc))
 
         ui = tab_content(
             "界面",
-            ft.Dropdown(
-                label="界面主题",
-                value="auto",
-                options=[
-                    ft.DropdownOption(key="auto", text="跟随系统"),
-                    ft.DropdownOption(key="light", text="浅色"),
-                    ft.DropdownOption(key="dark", text="深色"),
+            ft.Row(
+                [
+                    theme_dropdown,
+                    ft.Text("语言", size=14),
+                    lang_dropdown,
+                    ft.ElevatedButton("保存设置", on_click=lambda _:_save_app_settings()),
                 ],
-                on_change=self._change_theme_mode,
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
         about = tab_content(
@@ -4130,6 +4237,7 @@ class Pages:
             padding=12,
             tabs=[
                 ft.Tab(text="通用", icon=ft.Icons.SETTINGS, content=general),
+                ft.Tab(text="资源", icon=ft.Icons.WALLPAPER, content=resource),
                 ft.Tab(text="下载", icon=ft.Icons.DOWNLOAD, content=download),
                 ft.Tab(text="界面", icon=ft.Icons.PALETTE, content=ui),
                 ft.Tab(text="关于", icon=ft.Icons.INFO, content=about),

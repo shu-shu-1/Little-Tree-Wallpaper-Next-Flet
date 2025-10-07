@@ -186,9 +186,6 @@ This project follows the versioning conventions of [Semantic Versioning 2.0.0](h
 
 @[炫饭的芙芙](https://space.bilibili.com/1669914811)
 
-@[wsrscx](https://github.com/wsrscx)
-
-
 
 ## Star History / Star 趋势 🌟
 
@@ -235,3 +232,21 @@ context.open_settings_tab(SETTINGS_TAB_PLUGINS)
 ```
 
 Using the named constant improves readability and makes future reshuffles of the Settings tabs safer, since only the constant needs to be updated.
+
+
+## Application settings / 全局设置（开发者说明）
+
+This repository includes a small application-level settings system used to persist program preferences (UI theme, language, storage paths, update policy, etc.). The implementation stores settings as JSON in the platform-appropriate config directory (see `app.paths.CONFIG_DIR`).
+
+- Settings defaults are defined in `src/config.py` as `DEFAULT_CONFIG`.
+- A convenience helper `SettingsStore` is provided at `src/app/settings.py` with `get/set/save/reset/as_dict` APIs.
+- During startup the app instantiates a `SettingsStore(CONFIG_DIR / "config.json")` and exposes a read-only snapshot and path to plugins via `PluginContext` metadata under `metadata['app_settings']` and `metadata['app_settings_path']`.
+
+Developer note: the project prefers `orjson` for fast JSON operations (imported in `src/config.py`). Before running the app or tests locally, ensure `orjson` is available in your environment:
+
+```powershell
+# activate your venv, then
+python -m pip install orjson
+```
+
+If you prefer not to install `orjson`, I can add a small fallback so `src/config.py` uses the built-in `json` when `orjson` is missing.

@@ -46,6 +46,7 @@ from .plugins.config import PluginConfigStore
 from .core.pages import Pages
 from .ipc import IPCService
 from .ui_utils import build_watermark
+from .settings import SettingsStore
 
 
 class ApplicationPluginService:
@@ -109,6 +110,8 @@ class Application:
 
     def __init__(self) -> None:
         self._plugin_config = PluginConfigStore(CONFIG_DIR / "plugins.json")
+        # application-level persistent settings
+        self._settings_store = SettingsStore(CONFIG_DIR / "config.json")
         self._plugin_manager = PluginManager(
             search_paths=[PLUGINS_DIR],
             config_store=self._plugin_config,
@@ -243,6 +246,13 @@ class Application:
             metadata["plugin_runtime"] = self._plugin_manager.runtime_info
             metadata["plugin_events"] = self._event_bus.list_event_definitions()
             metadata["global_data"] = self._data_store.describe_namespaces()
+            # surface application settings path and a read-only snapshot to plugins
+            try:
+                metadata["app_settings"] = self._settings_store.as_dict()
+                metadata["app_settings_path"] = str(self._settings_store.path)
+            except Exception:
+                metadata["app_settings"] = {}
+                metadata["app_settings_path"] = ""
             permissions_map = ensure_permission_states(
                 manifest.permissions,
                 self._plugin_config.get_permissions(manifest.identifier),
