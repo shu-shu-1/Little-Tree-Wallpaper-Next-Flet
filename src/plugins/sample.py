@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 import flet as ft
@@ -15,6 +16,7 @@ from app.plugins import (
     PluginContext,
     PluginManifest,
     PluginEvent,
+    PluginPermissionError,
     PermissionState,
 )
 from app.constants import SETTINGS_TAB_PLUGINS
@@ -35,6 +37,9 @@ class SamplePlugin(Plugin):
             "app_home",
             "app_settings",
             "wallpaper_control",
+            "favorites_read",
+            "favorites_write",
+            "favorites_export",
         ),
     )
 
@@ -46,6 +51,7 @@ class SamplePlugin(Plugin):
         self._download_unsubscribe = None
         self._latest_download_path: str | None = None
         self._download_log: list[str] = []
+        self._demo_favorite_id: str | None = None
 
     def activate(self, context: PluginContext) -> None:  # type: ignore[override]
         if self._download_unsubscribe:
@@ -98,6 +104,10 @@ class SamplePlugin(Plugin):
         last_download_ref: ft.Ref[ft.Text] = ft.Ref[ft.Text]()
         operation_status_ref: ft.Ref[ft.Text] = ft.Ref[ft.Text]()
         set_wallpaper_button_ref: ft.Ref[ft.FilledTonalButton] = ft.Ref[ft.FilledTonalButton]()
+        favorite_summary_ref: ft.Ref[ft.Text] = ft.Ref[ft.Text]()
+        favorite_status_ref: ft.Ref[ft.Text] = ft.Ref[ft.Text]()
+        favorite_localize_button_ref: ft.Ref[ft.Control] = ft.Ref[ft.Control]()
+        favorite_export_button_ref: ft.Ref[ft.Control] = ft.Ref[ft.Control]()
 
         def open_details(_: ft.ControlEvent) -> None:
             context.page.go("/sample/details")
@@ -158,6 +168,169 @@ class SamplePlugin(Plugin):
                 )
             update_operation_status(f"{icon} {label}: {message}", outcome=outcome)
 
+        def set_favorite_status(message: str, outcome: str = "info") -> None:
+            label = favorite_status_ref.current
+            if label is None:
+                return
+            label.value = message
+            if outcome == "success":
+                label.color = ft.Colors.PRIMARY
+            elif outcome == "pending":
+                label.color = ft.Colors.AMBER
+            elif outcome == "error":
+                label.color = ft.Colors.ERROR
+            else:
+                label.color = ft.Colors.GREY
+            context.page.update()
+
+        def refresh_favorite_summary() -> None:
+            summary = favorite_summary_ref.current
+            if summary is None:
+                return
+            if not context.has_favorite_support():
+                summary.value = "收藏系统未启用或未授权。"
+                summary.color = ft.Colors.AMBER
+                context.page.update()
+                return
+            try:
+                folders = context.favorites.list_folders()
+                items = context.favorites.list_items()
+            except PluginPermissionError as exc:  # pragma: no cover - permissions guard
+                summary.value = f"缺少权限：{exc.permission}"
+                summary.color = ft.Colors.ERROR
+            except Exception as exc:  # pragma: no cover - defensive logging
+                context.logger.error("读取收藏数据失败: {error}", error=str(exc))
+                summary.value = f"无法读取收藏：{exc}"
+                summary.color = ft.Colors.ERROR
+            else:
+                summary.value = f"收藏夹 {len(folders)} 个 · 收藏 {len(items)} 条"
+                summary.color = ft.Colors.ON_SURFACE
+            context.page.update()
+
+        def update_favorite_buttons() -> None:
+            localize_button = favorite_localize_button_ref.current
+            if localize_button is not None:
+                can_localize = bool(
+                    self._demo_favorite_id
+                    and self._latest_download_path
+                    and Path(self._latest_download_path).exists()
+                )
+                localize_button.disabled = not can_localize
+            export_button = favorite_export_button_ref.current
+            if export_button is not None:
+                export_button.disabled = not bool(self._demo_favorite_id)
+            context.page.update()
+
+        def ensure_favorites_available(action_label: str) -> bool:
+            if not context.has_favorite_support():
+                set_favorite_status(f"收藏系统不可用，无法{action_label}。", "error")
+                return False
+            return True
+
+        def add_bing_to_favorites(_: ft.ControlEvent) -> None:
+            if not ensure_favorites_available("创建收藏"):
+                return
+            if not context.has_permission("resource_data"):
+                snapshot = None
+            else:
+                try:
+                    snapshot = context.latest_data("resource.bing")
+                except Exception:
+                    snapshot = None
+            if not snapshot:
+                set_favorite_status("暂无 Bing 数据，无法创建收藏。", "error")
+                return
+            payload = snapshot.get("payload", {}) or {}
+            title = payload.get("title") or "Bing 每日壁纸"
+            description = payload.get("copyright") or ""
+            image_url = payload.get("url") or payload.get("image_url") or snapshot.get("asset_url")
+            source = {
+                "type": "bing",
+                "identifier": snapshot.get("identifier") or image_url or title,
+                "title": title,
+                "url": image_url,
+                "preview_url": image_url,
+                "extra": dict(payload),
+            }
+            try:
+                item, created = context.favorites.add_or_update_item(
+                    folder_id="default",
+                    title=title,
+                    description=description,
+                    tags=["Bing", "每日壁纸"],
+                    source=source,
+                    preview_url=image_url,
+                    extra={"bing": dict(payload)},
+                )
+            except PluginPermissionError as exc:
+                set_favorite_status(f"缺少权限：{exc.permission}", "error")
+                return
+            except Exception as exc:  # pragma: no cover - defensive logging
+                context.logger.error("创建收藏失败: {error}", error=str(exc))
+                set_favorite_status(f"收藏失败：{exc}", "error")
+                return
+            self._demo_favorite_id = item.id
+            set_favorite_status(
+                "已添加到收藏" if created else "收藏已更新",
+                "success",
+            )
+            refresh_favorite_summary()
+            update_favorite_buttons()
+
+        def localize_demo_favorite(_: ft.ControlEvent) -> None:
+            if not ensure_favorites_available("本地化收藏"):
+                return
+            if not self._demo_favorite_id:
+                set_favorite_status("请先创建示例收藏。", "error")
+                return
+            if not self._latest_download_path or not Path(self._latest_download_path).exists():
+                set_favorite_status("没有可用的下载文件，请先在资源页下载壁纸。", "error")
+                update_favorite_buttons()
+                return
+            try:
+                results = context.favorites.localize_items_from_files(
+                    {self._demo_favorite_id: self._latest_download_path}
+                )
+            except PluginPermissionError as exc:
+                set_favorite_status(f"缺少权限：{exc.permission}", "error")
+                update_favorite_buttons()
+                return
+            except Exception as exc:  # pragma: no cover - defensive logging
+                context.logger.error("本地化收藏失败: {error}", error=str(exc))
+                set_favorite_status(f"本地化失败：{exc}", "error")
+                update_favorite_buttons()
+                return
+            destination = results.get(self._demo_favorite_id)
+            if destination:
+                set_favorite_status(f"本地化成功 → {destination}", "success")
+            else:
+                set_favorite_status("本地化完成，但未返回目标路径。", "pending")
+            refresh_favorite_summary()
+            update_favorite_buttons()
+
+        def export_demo_favorite(_: ft.ControlEvent) -> None:
+            if not ensure_favorites_available("导出收藏"):
+                return
+            if not self._demo_favorite_id:
+                set_favorite_status("请先创建示例收藏。", "error")
+                return
+            export_dir = context.plugin_data_dir(create=True) / "exports"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            target = export_dir / (
+                f"sample-favorite-{datetime.now().strftime('%Y%m%d-%H%M%S')}.ltwfav"
+            )
+            try:
+                exported = context.favorites.export_items(target, [self._demo_favorite_id])
+            except PluginPermissionError as exc:
+                set_favorite_status(f"缺少权限：{exc.permission}", "error")
+                return
+            except Exception as exc:  # pragma: no cover - defensive logging
+                context.logger.error("导出收藏失败: {error}", error=str(exc))
+                set_favorite_status(f"导出失败：{exc}", "error")
+                return
+            set_favorite_status(f"收藏已导出到 {exported}", "success")
+            update_favorite_buttons()
+
         def set_last_wallpaper(_: ft.ControlEvent) -> None:
             if not self._latest_download_path:
                 update_operation_status(
@@ -199,6 +372,7 @@ class SamplePlugin(Plugin):
             button = set_wallpaper_button_ref.current
             if button is not None:
                 button.disabled = not bool(file_path)
+            update_favorite_buttons()
             context.page.update()
             context.logger.info(
                 "示例插件收到下载完成事件，来源 {source}，动作 {action}",
@@ -317,6 +491,52 @@ class SamplePlugin(Plugin):
                 ],
             )
 
+            favorite_summary_text = ft.Text(
+                "收藏功能需要 favorites_* 权限。",
+                size=12,
+                color=ft.Colors.GREY,
+                ref=favorite_summary_ref,
+            )
+            favorite_status_text = ft.Text(
+                "准备好体验收藏 API 了吗？",
+                size=12,
+                color=ft.Colors.GREY,
+                ref=favorite_status_ref,
+            )
+            favorite_buttons_row = ft.Row(
+                wrap=True,
+                spacing=8,
+                run_spacing=8,
+                controls=[
+                    ft.FilledButton(
+                        text="收藏最新 Bing 壁纸",
+                        icon=ft.Icons.STAR,
+                        on_click=add_bing_to_favorites,
+                    ),
+                    ft.FilledTonalButton(
+                        text="使用下载文件本地化",
+                        icon=ft.Icons.DOWNLOAD_FOR_OFFLINE,
+                        disabled=True,
+                        ref=favorite_localize_button_ref,
+                        on_click=localize_demo_favorite,
+                    ),
+                    ft.OutlinedButton(
+                        text="导出示例收藏",
+                        icon=ft.Icons.FILE_UPLOAD,
+                        disabled=True,
+                        ref=favorite_export_button_ref,
+                        on_click=export_demo_favorite,
+                    ),
+                    ft.TextButton(
+                        text="刷新收藏统计",
+                        on_click=lambda _: refresh_favorite_summary(),
+                    ),
+                ],
+            )
+
+            refresh_favorite_summary()
+            update_favorite_buttons()
+
             return ft.Container(
                 expand=True,
                 padding=20,
@@ -381,6 +601,16 @@ class SamplePlugin(Plugin):
                         ),
                         operation_status_text,
                         operations_row,
+                        ft.Divider(),
+                        ft.Text("收藏接口演示", size=14, weight=ft.FontWeight.BOLD),
+                        ft.Text(
+                            "示例：将最新 Bing 壁纸添加到收藏、使用下载文件完成本地化，并导出收藏包。",
+                            size=11,
+                            color=ft.Colors.GREY,
+                        ),
+                        favorite_summary_text,
+                        favorite_buttons_row,
+                        favorite_status_text,
                     ],
                     alignment=ft.MainAxisAlignment.START,
                     horizontal_alignment=ft.CrossAxisAlignment.START,

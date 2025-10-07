@@ -23,6 +23,7 @@ from .permissions import (
 from .operations import PluginOperationResult, PluginPermissionError
 from .runtime import PluginRuntimeInfo, PluginStatus
 from .events import PluginEventBus, PluginEvent, EventDefinition, CORE_EVENT_DEFINITIONS
+from .favorites_api import FavoriteService
 from .data import (
     GlobalDataAccess,
     GlobalDataEntry,
@@ -34,6 +35,15 @@ from .data import (
     NamespaceOwnershipError,
     NamespaceRegistrationError,
     PermissionDenied,
+)
+from app.favorites import (
+    FavoriteAIInfo,
+    FavoriteAIResult,
+    FavoriteCollection,
+    FavoriteFolder,
+    FavoriteItem,
+    FavoriteManager,
+    FavoriteSource,
 )
 
 __all__ = [
@@ -72,4 +82,12 @@ __all__ = [
     "NamespaceOwnershipError",
     "NamespaceRegistrationError",
     "PermissionDenied",
+    "FavoriteService",
+    "FavoriteAIInfo",
+    "FavoriteAIResult",
+    "FavoriteCollection",
+    "FavoriteFolder",
+    "FavoriteItem",
+    "FavoriteManager",
+    "FavoriteSource",
 ]

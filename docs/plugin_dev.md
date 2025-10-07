@@ -1,6 +1,6 @@
-# 小树壁纸 Next 插件开发临时指南
+# 小树壁纸 Next 开发者临时指南
 
-> 本文档针对当前开发分支（2025-10-03）提供的插件 API。随着架构演进，接口可能发生变化，请保持关注仓库更新。
+> 本文档针对当前开发分支（2025-10-07）提供的 API。随着架构演进，接口可能发生变化，请保持关注仓库更新。
 
 ## 插件目录与命名
 
@@ -74,6 +74,13 @@ manifest = PluginManifest(
 - `add_bing_action(factory)`: 在“资源 → Bing 每日”操作行追加自定义按钮或其他控件。
 - `add_spotlight_action(factory)`: 在“资源 → Windows 聚焦”操作行追加控件。
 - `register_settings_page(label, builder, *, icon=None, button_label="插件设置", description=None)`: 注册插件的专属设置页面。插件管理面板会在对应插件卡片中显示一个“插件设置”按钮，并在新页面中渲染 `builder` 返回的控件。
+- 收藏管理接口（核心插件激活后可用，需在 manifest 中声明并获批对应的 `favorites_*` 权限；使用前可通过 `context.has_favorite_support()` 判断）：
+    - `context.favorites`：返回 `FavoriteService` 实例，包裹了全部收藏操作并在内部执行权限校验。历史属性 `context.favorite_manager` 仍可用，但会返回同一服务实例。
+    - 读取：`favorites.list_folders()` / `favorites.get_folder(id)` / `favorites.list_items(folder_id="__all__")` / `favorites.get_item(item_id)` / `favorites.find_by_source(source)`（需 `favorites_read`）。
+    - 写入：`favorites.create_folder(...)`、`favorites.update_folder(...)`、`favorites.delete_folder(...)`、`favorites.add_or_update_item(...)`、`favorites.update_item(...)`、`favorites.remove_item(...)`、`favorites.register_classifier(...)`、`favorites.classify_item(...)`（需 `favorites_write`）。
+    - 导入导出：`favorites.export_folders(target_path, folder_ids=None, include_assets=True)`、`favorites.import_package(path)`、`favorites.localize_items_from_files(mapping)`、`favorites.localization_root()`（需 `favorites_export`）。
+    相关数据类型（`FavoriteSource`、`FavoriteItem` 等）可直接从 `app.plugins` 导入。
+    相关数据类型（`FavoriteSource`、`FavoriteItem` 等）可直接从 `app.plugins` 导入。
 - 系统操作接口（返回 `PluginOperationResult`，详见下文）：
     - `open_route(route: str)`: 请求跳转到指定路由。需声明并获得 `app_route` 权限。
     - `switch_home(navigation_id: str)`: 切换首页侧边栏导航项（例如 `home`、`resource`）。需 `app_home` 权限。
@@ -127,15 +134,60 @@ if not config_file.exists():
 context.logger.info("配置文件位置: {}", config_file)
 ```
 
+### 收藏 API 示例
+
+以下示例演示如何在插件中“收藏”一张壁纸并保证去重（需要在 `PluginManifest.permissions` 中声明 `favorites_read` 与 `favorites_write`）：
+
+```python
+from app.plugins import FavoriteSource
+
+def collect_wallpaper(context: PluginContext, metadata: dict) -> None:
+    if not context.has_favorite_support():
+        context.logger.warning("收藏系统尚未就绪，已忽略收藏请求")
+        return
+
+    source = FavoriteSource(
+        type="custom",
+        identifier=metadata["id"],
+        title=metadata.get("title", "未命名壁纸"),
+        url=metadata.get("preview"),
+        extra={"plugin": context.manifest.identifier},
+    )
+
+    service = context.favorites
+    item, created = service.add_or_update_item(
+        folder_id="default",
+        title=source.title,
+        description=metadata.get("description", ""),
+        tags=["插件示例", metadata.get("category", "壁纸")],
+        source=source,
+        preview_url=source.url,
+        local_path=metadata.get("local_path"),
+    )
+
+    verb = "新增" if created else "更新"
+    context.logger.info("{}收藏: {} ({})", verb, item.title, item.id)
+```
+
 ## 权限管理
 
 插件权限支持三种持久化策略，可在“插件管理 → 管理权限”对话框或导入插件时的权限向导中切换：
 
 - **允许**：永久授予对应能力，后续调用不会再提示。
 - **禁用**：拒绝插件访问该能力，相关 API 会立即返回 `permission_denied`，但插件本身仍保持加载状态。
-- **每次询问**：每次调用相关 API 时都会弹出系统对话框。调用线程会同步阻塞，直到用户选择允许或拒绝。
+- **下次询问**：下次调用相关 API 时都会弹出系统对话框。调用线程会同步阻塞，直到用户选择允许或拒绝。
 
 当用户授权额外权限后，插件可立即重试相同操作；若用户拒绝，建议捕获 `PluginPermissionError` 并引导用户在设置中调整权限。
+
+### 收藏权限
+
+为了保护用户收藏数据，新版本引入以下三个权限：
+
+- `favorites_read`：允许插件读取收藏夹与收藏条目元数据。
+- `favorites_write`：允许插件创建、修改或删除收藏夹及收藏条目，并注册 AI 分类器。
+- `favorites_export`：允许插件导出收藏包、导入外部收藏以及写入本地化资源文件。
+
+如果插件仅需读取收藏信息，可只声明 `favorites_read`；任何写操作都需要额外申请 `favorites_write`，涉及导出或本地化的高级功能则需另行声明 `favorites_export`。
 
 ### 动态库权限
 
@@ -165,6 +217,95 @@ if snapshot:
 ```
 
 核心资源页会在加载 Bing / Spotlight 数据时写入 `resource.bing` 与 `resource.spotlight` 命名空间，并在事件 payload 中附带 `namespace` 与 `data_id` 字段，便于插件以 ID 回查最新快照。
+
+## 收藏系统与数据格式
+
+Little Tree Wallpaper Next 内置了一个收藏系统，用于存放用户在 Bing、Windows 聚焦以及其他来源中挑选出来的壁纸条目。收藏数据以 JSON 形式持久化在本地：
+
+- 存储路径：`{DATA_DIR}/favorites/favorites.json`（`DATA_DIR` 为通过 `platformdirs.user_data_dir` 计算出的应用数据目录）。
+- 文件版本号目前为 `1`，后续若有破坏性更新会通过 `version` 字段区分。
+- 结构顶层包含 `folders`、`items`、`folder_order` 三个键：
+
+```jsonc
+{
+    "version": 1,
+    "folders": {
+        "default": {
+            "id": "default",
+            "name": "默认收藏夹",
+            "description": "系统自动创建的默认收藏夹",
+            "order": 0,
+            "created_at": 1730793600.0,
+            "updated_at": 1730793600.0,
+            "metadata": {}
+        }
+    },
+    "items": {
+        "c9b1f0...": {
+            "id": "c9b1f0...",
+            "folder_id": "default",
+            "title": "Bing 每日壁纸",
+            "description": "2025-10-03：桂林漓江",
+            "tags": ["Bing", "每日壁纸"],
+            "source": {
+                "type": "bing",
+                "identifier": "20251003",
+                "title": "Bing 每日壁纸",
+                "url": "https://www.bing.com/...",
+                "preview_url": "https://www.bing.com/...",
+                "local_path": null,
+                "extra": {"copyright": "© ..."}
+            },
+            "preview_url": "https://www.bing.com/...",
+            "local_path": null,
+            "created_at": 1730793600.0,
+            "updated_at": 1730793600.0,
+            "ai": {
+                "status": "idle",
+                "suggested_tags": [],
+                "suggested_folder_id": null,
+                "metadata": {},
+                "updated_at": null
+            },
+            "extra": {"bing": {"startdate": "20251003"}}
+        }
+    },
+    "folder_order": ["default"]
+}
+```
+
+字段说明：
+
+- `FavoriteFolder`
+    - `id`: 收藏夹 ID，默认收藏夹恒为 `default`。
+    - `name` / `description`: 用户可编辑的名称与描述。
+    - `order`: 用于在 UI Tabs 中排序的整数，系统会根据 `folder_order` 自动维护。
+    - `metadata`: 预留对象，可在未来扩展颜色、图标等属性。
+- `FavoriteItem`
+    - `folder_id`: 归属的收藏夹 ID。
+    - `title` / `description`: 展示文本，允许用户编辑。
+    - `tags`: 标签字符串数组，UI 支持多标签检索。
+    - `source`: `FavoriteSource` 对象，描述收藏来源：
+        - `type`: 来源类型（`bing` / `windows_spotlight` / `system_wallpaper` / `custom` 等）。
+        - `identifier`: 来源唯一键，用于去重。
+        - `url`: 原始资源地址，可用于重新下载或打开详情页。
+        - `preview_url`: 预览图片地址，优先用于 UI 展示。
+        - `local_path`: 若资源已下载，会记录本地路径。
+        - `extra`: 保留原始 API 数据或额外上下文。
+    - `ai`: 预留给 AI 自动分类的字段，包含：
+        - `status`: `idle` / `pending` / `running` / `completed` / `failed`。
+        - `suggested_tags`: 模型产出的推荐标签。
+        - `suggested_folder_id`: 模型建议归档到的收藏夹。
+        - `metadata`: 自定义模型信息，如置信度、版本号等。
+    - `extra`: 其他与业务相关的扩展字段。
+
+核心代码通过 `app.favorites.FavoriteManager` 管理该文件，提供以下关键 API：
+
+- `list_folders()` / `create_folder()` / `rename_folder()` / `delete_folder()` / `reorder_folders()`
+- `add_or_update_item()` / `update_item()` / `remove_item()` / `find_by_source()` / `list_items()`
+- `set_classifier(classifier)` / `maybe_classify_item(item_id)`：用于挂接未来的 AI 自动分类逻辑。`classifier` 可返回 `FavoriteAIResult(tags, folder_id, metadata)`，系统会把结果写入 `ai` 字段并保留人工修改。
+
+> **注意**：收藏文件属于用户私有数据，插件若要访问请提前征得用户授权，并遵守隐私合规要求。核心 UI 在创建、编辑收藏后会自动刷新 Tabs，并调用 `maybe_classify_item()` 触发异步分析，开发者在实现 AI 模块时只需注册一个分类回调即可。
 
 ## 注册导航视图
 

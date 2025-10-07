@@ -80,6 +80,21 @@ KNOWN_PERMISSIONS: dict[str, PluginPermission] = {
         name="跨进程广播",
         description="允许插件通过内置 IPC 服务订阅、发送跨进程广播消息。",
     ),
+    "favorites_read": PluginPermission(
+        identifier="favorites_read",
+        name="收藏读取",
+        description="允许插件读取收藏夹及其中的收藏条目。",
+    ),
+    "favorites_write": PluginPermission(
+        identifier="favorites_write",
+        name="收藏写入",
+        description="允许插件创建、修改或删除收藏夹及收藏条目。",
+    ),
+    "favorites_export": PluginPermission(
+        identifier="favorites_export",
+        name="收藏导入导出",
+        description="允许插件导出收藏夹数据或导入外部收藏包，并访问本地化资源。",
+    ),
 }
 
 

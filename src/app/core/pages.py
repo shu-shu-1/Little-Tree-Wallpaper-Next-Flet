@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import re
+import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
@@ -16,8 +20,18 @@ from loguru import logger
 import ltwapi
 
 from app.constants import BUILD_VERSION, HITOKOTO_API, SHOW_WATERMARK, VER
-from app.paths import DATA_DIR, LICENSE_PATH
-from app.ui_utils import build_watermark, copy_files_to_clipboard, copy_image_to_clipboard
+from app.paths import LICENSE_PATH, CACHE_DIR
+from app.favorites import (
+    FavoriteFolder,
+    FavoriteItem,
+    FavoriteManager,
+    FavoriteSource,
+)
+from app.ui_utils import (
+    build_watermark,
+    copy_files_to_clipboard,
+    copy_image_to_clipboard,
+)
 from app.plugins import (
     AppRouteView,
     PluginPermission,
@@ -43,7 +57,7 @@ class Pages:
         page: ft.Page,
         bing_action_factories: list[Callable[[], ft.Control]] | None = None,
         spotlight_action_factories: list[Callable[[], ft.Control]] | None = None,
-    settings_pages: list["PluginSettingsPage"] | None = None,
+        settings_pages: list["PluginSettingsPage"] | None = None,
         event_bus: PluginEventBus | None = None,
         plugin_service: Optional[PluginService] = None,
         plugin_runtime: Optional[List[PluginRuntimeInfo]] = None,
@@ -55,10 +69,14 @@ class Pages:
         self.event_bus = event_bus
         self.plugin_service = plugin_service
         self._plugin_runtime_cache: List[PluginRuntimeInfo] = list(plugin_runtime or [])
-        self._known_permissions: Dict[str, PluginPermission] = dict(known_permissions or {})
+        self._known_permissions: Dict[str, PluginPermission] = dict(
+            known_permissions or {}
+        )
         self._sync_known_permissions()
         # Flet Colors compatibility: some versions may not expose SURFACE_CONTAINER_LOW
-        self._bgcolor_surface_low = getattr(ft.Colors, "SURFACE_CONTAINER_LOW", ft.Colors.SURFACE_CONTAINER_HIGHEST)
+        self._bgcolor_surface_low = getattr(
+            ft.Colors, "SURFACE_CONTAINER_LOW", ft.Colors.SURFACE_CONTAINER_HIGHEST
+        )
         self._event_definitions: List[EventDefinition] = list(event_definitions or [])
         self._plugin_list_column: Optional[ft.Column] = None
         self._plugin_file_picker: Optional[ft.FilePicker] = None
@@ -86,11 +104,34 @@ class Pages:
         self._settings_tabs = None
         self._settings_tab_indices: dict[str, int] = {}
         self._pending_settings_tab: str | None = None
-        self._reload_banner: ft.Banner | None = None
-        self._reload_banner_open = False
+        # reload banner removed: use no-op methods instead
         self._route_register: Callable[[AppRouteView], None] | None = None
 
         self._ensure_global_namespaces()
+
+        self._favorite_manager = FavoriteManager()
+        self._favorite_tabs: ft.Tabs | None = None
+        self._favorite_selected_folder: str = "__all__"
+        self._favorite_folder_dropdown: ft.Dropdown | None = None
+        self._favorite_form_fields: dict[str, ft.Control] = {}
+        self._favorite_edit_folder_button: ft.IconButton | None = None
+        self._favorite_delete_folder_button: ft.IconButton | None = None
+        self._favorite_localize_button: ft.IconButton | None = None
+        self._favorite_export_button: ft.IconButton | None = None
+        self._favorite_import_button: ft.IconButton | None = None
+        self._favorite_localization_status_text: ft.Text | None = None
+        self._favorite_localization_progress_bar: ft.ProgressBar | None = None
+        self._favorite_localization_status_row: ft.Row | None = None
+        self._favorite_localization_spinner: ft.ProgressRing | None = None
+        self._favorite_localizing_items: set[str] = set()
+        self._favorite_item_localize_controls: dict[
+            str, tuple[ft.IconButton, ft.Control]
+        ] = {}
+        self._favorite_item_wallpaper_buttons: dict[str, ft.IconButton] = {}
+        self._favorite_item_export_buttons: dict[str, ft.IconButton] = {}
+        self._favorite_batch_total: int = 0
+        self._favorite_batch_done: int = 0
+        self._favorite_preview_cache: dict[str, tuple[float, str]] = {}
 
         self.home = self._build_home()
         self.resource = self._build_resource()
@@ -103,6 +144,10 @@ class Pages:
 
     def _sync_known_permissions(self) -> None:
         self._known_permissions.update(KNOWN_PERMISSIONS)
+
+    @property
+    def favorite_manager(self) -> FavoriteManager:
+        return self._favorite_manager
 
     def _ensure_global_namespaces(self) -> None:
         if not self._global_data:
@@ -137,10 +182,8 @@ class Pages:
 
     def _build_plugin_settings_content(self) -> ft.Control:
         management_section = self._build_plugin_management_panel()
-        # plugin-specific settings pages are available from the plugin card buttons
-
-        # Only show the management panel here; plugin-specific pages are available
-        # via the per-plugin "插件设置" button which navigates to a dedicated view.
+        # 插件特定的设置页面可从插件卡片按钮获取
+        # 此处仅显示管理面板；插件特定页面可通过每个插件的“插件设置”按钮获取，该按钮会导航至专用视图。
         return ft.Container(
             content=ft.Column(
                 [
@@ -184,7 +227,7 @@ class Pages:
         try:
             view = self._make_plugin_settings_route(entry)
             self._route_register(view)
-        except Exception as exc:  # pragma: no cover - defensive logging
+        except Exception as exc:
             logger.warning(
                 "注册插件设置路由失败: {error}",
                 error=str(exc),
@@ -220,7 +263,7 @@ class Pages:
         return True
 
     def select_settings_tab_index(self, index: int) -> bool:
-        # Allow selecting by numeric index. If tabs not yet created, save pending index.
+        # 允许按数字索引进行选择。如果标签尚未创建，则保存待处理索引。
         try:
             if index < 0:
                 return False
@@ -228,10 +271,10 @@ class Pages:
             return False
         if self._settings_tabs is None:
             logger.info(f"延迟切换设置页面索引到 {index}")
-            # store as normalized string so existing pending logic can handle it
+            # 存储为标准化字符串，以便现有的待处理逻辑能够处理它
             self._pending_settings_tab = str(index)
             return True
-        # guard against out-of-range
+        # 防止超出范围
         if not getattr(self._settings_tabs, "tabs", None):
             return False
         if index >= len(self._settings_tabs.tabs):
@@ -259,61 +302,24 @@ class Pages:
         return f"/settings/plugin/{plugin_id}"
 
     def _handle_reload_request(self, _: ft.ControlEvent | None = None) -> None:
-        self._hide_reload_banner()
+        logger.debug("已点击重载按钮")
         self._reload_plugins()
 
-    def _show_reload_banner(self) -> None:
-        if not self.page:
-            return
-        if self._reload_banner is None:
-            self._reload_banner = ft.Banner(
-                bgcolor=ft.Colors.AMBER_100,
-                leading=ft.Icon(ft.Icons.RESTART_ALT, color=ft.Colors.AMBER_800),
-                content=ft.Text("插件权限已更新，需要重新加载后生效。"),
-                actions=[
-                    ft.FilledButton(
-                        "重新加载",
-                        icon=ft.Icons.RESTART_ALT,
-                        on_click=self._handle_reload_request,
-                    )
-                ],
-            )
-        if not self._reload_banner_open:
-            self.page.open(self._reload_banner)
-            self._reload_banner_open = True
-        else:
-            self.page.update()
-
-    def _hide_reload_banner(self) -> None:
-        if self.page and self._reload_banner and self._reload_banner_open:
-            self.page.close(self._reload_banner)
-            self._reload_banner_open = False
-            self.page.update()
-
-    def _sync_reload_banner(self) -> None:
-        if not self.plugin_service or not hasattr(self.plugin_service, "is_reload_required"):
-            self._hide_reload_banner()
-            return
-        try:
-            pending = self.plugin_service.is_reload_required()
-        except Exception:
-            pending = False
-        if pending:
-            self._show_reload_banner()
-        else:
-            self._hide_reload_banner()
+    # Banner-related functionality removed. Methods and UI have been deleted.
 
     def build_plugin_settings_view(self, plugin_id: str) -> ft.View:
         self._refresh_settings_registry()
         registration = self._settings_page_map.get(plugin_id)
         runtime = self._resolve_plugin_runtime(plugin_id)
 
+        
+
         display_name = runtime.name if runtime else plugin_id
         description_text = (runtime.description if runtime else "") or ""
         if registration:
             try:
                 plugin_control = registration.builder()
-            except Exception as exc:  # pragma: no cover - defensive logging
+            except Exception as exc:
                 message = f"插件设置内容构建失败：{exc}"
                 logger.error(message)
                 plugin_control = ft.Text(message, color=ft.Colors.ERROR)
@@ -407,17 +413,19 @@ class Pages:
                 ),
                 ft.Row(
                     [
-                        ft.IconButton(
+                        ft.TextButton(
+                            text="刷新列表",
                             icon=ft.Icons.REFRESH,
                             tooltip="刷新插件状态",
                             on_click=lambda _: self._refresh_plugin_list(),
                         ),
-                        ft.IconButton(
+                        ft.FilledTonalButton(
+                            text="重载插件",
                             icon=ft.Icons.RESTART_ALT,
                             tooltip="重新加载所有插件",
                             on_click=lambda _: self._reload_plugins(),
                         ),
-                        ft.FilledTonalButton(
+                        ft.FilledButton(
                             "导入插件 (.py)",
                             icon=ft.Icons.UPLOAD_FILE,
                             on_click=lambda _: self._open_import_picker(),
@@ -432,7 +440,7 @@ class Pages:
         )
 
         self._refresh_plugin_list()
-        self._sync_reload_banner()
+        
 
         body_controls: list[ft.Control] = [header, self._plugin_list_column]
 
@@ -538,7 +546,9 @@ class Pages:
                 )
             )
 
-        all_permissions = set(runtime.permissions_required) | set(runtime.permissions_granted.keys())
+        all_permissions = set(runtime.permissions_required) | set(
+            runtime.permissions_granted.keys()
+        )
         if all_permissions:
             action_buttons.append(
                 ft.TextButton(
@@ -633,7 +643,7 @@ class Pages:
                     bgcolor=ft.Colors.AMBER_50,
                     border_radius=6,
                     content=ft.Text(
-                        f"每次询问：{', '.join(prompt_permissions)}",
+                        f"下次询问：{', '.join(prompt_permissions)}",
                         size=11,
                         color=ft.Colors.AMBER_800,
                     ),
@@ -670,7 +680,9 @@ class Pages:
         if runtime.error:
             controls.append(ft.Text(f"错误：{runtime.error}", color=ft.Colors.ERROR))
 
-        controls.append(ft.Text(f"权限：{permissions_summary}", size=12, color=ft.Colors.GREY))
+        controls.append(
+            ft.Text(f"权限：{permissions_summary}", size=12, color=ft.Colors.GREY)
+        )
         controls.append(
             ft.Row(
                 controls=action_buttons,
@@ -726,7 +738,9 @@ class Pages:
                 parts.append(f"{spec.describe()}（已满足）")
         return "、".join(parts)
 
-    def _dependency_detail_controls(self, runtime: PluginRuntimeInfo) -> list[ft.Control]:
+    def _dependency_detail_controls(
+        self, runtime: PluginRuntimeInfo
+    ) -> list[ft.Control]:
         if not runtime.dependencies:
             return [ft.Text("无依赖", size=12, color=ft.Colors.GREY)]
         controls: list[ft.Control] = []
@@ -751,7 +765,9 @@ class Pages:
         return controls
 
     def _format_permissions(self, runtime: PluginRuntimeInfo) -> str:
-        keys = sorted(set(runtime.permission_states.keys()) | set(runtime.permissions_required))
+        keys = sorted(
+            set(runtime.permission_states.keys()) | set(runtime.permissions_required)
+        )
         if not keys:
             return "无需权限"
 
@@ -782,9 +798,14 @@ class Pages:
             ft.ListTile(title=ft.Text("版本"), subtitle=ft.Text(runtime.version)),
             ft.ListTile(
                 title=ft.Text("描述"),
-                subtitle=ft.Text(manifest.description if manifest else runtime.description or "无"),
+                subtitle=ft.Text(
+                    manifest.description if manifest else runtime.description or "无"
+                ),
             ),
-            ft.ListTile(title=ft.Text("作者"), subtitle=ft.Text(manifest.author if manifest else "未知")),
+            ft.ListTile(
+                title=ft.Text("作者"),
+                subtitle=ft.Text(manifest.author if manifest else "未知"),
+            ),
             ft.ListTile(
                 title=ft.Text("类型"),
                 subtitle=ft.Text(self._format_plugin_kind(runtime.plugin_type)),
@@ -805,7 +826,9 @@ class Pages:
                 ft.ListTile(
                     title=ft.Text("来源"),
                     subtitle=ft.Text(
-                        str(runtime.source_path) if runtime.source_path else runtime.module_name or "未知"
+                        str(runtime.source_path)
+                        if runtime.source_path
+                        else runtime.module_name or "未知"
                     ),
                 ),
                 ft.ListTile(
@@ -831,7 +854,9 @@ class Pages:
         info_rows.append(
             ft.ListTile(
                 title=ft.Text("依赖"),
-                subtitle=ft.Column(self._dependency_detail_controls(runtime), spacing=4),
+                subtitle=ft.Column(
+                    self._dependency_detail_controls(runtime), spacing=4
+                ),
             )
         )
 
@@ -840,7 +865,7 @@ class Pages:
             title=ft.Text(f"插件详情 - {runtime.name}"),
             content=ft.Container(
                 width=400,
-                content=ft.Column(info_rows, tight=True, spacing=4),
+                content=ft.Column(info_rows, tight=True, spacing=4, scroll=ft.ScrollMode.AUTO),
             ),
             actions=[
                 ft.TextButton("关闭", on_click=lambda _: self._close_dialog()),
@@ -852,7 +877,9 @@ class Pages:
 
     def _show_permission_dialog(self, runtime: PluginRuntimeInfo) -> None:
         self._sync_known_permissions()
-        requested = sorted(set(runtime.permission_states.keys()) | set(runtime.permissions_required))
+        requested = sorted(
+            set(runtime.permission_states.keys()) | set(runtime.permissions_required)
+        )
 
         if not requested:
             self._show_snackbar("该插件未请求任何权限。")
@@ -875,7 +902,9 @@ class Pages:
                 return
             for permission_id, choice in list(pending_choices.items()):
                 new_state = self._state_from_choice(choice)
-                if not self._update_permission_state(runtime.identifier, permission_id, new_state):
+                if not self._update_permission_state(
+                    runtime.identifier, permission_id, new_state
+                ):
                     _update_apply_state()
                     return
             pending_choices.clear()
@@ -921,7 +950,7 @@ class Pages:
                         value=initial_choice,
                         options=[
                             ft.DropdownOption(key="deny", text="禁用"),
-                            ft.DropdownOption(key="prompt", text="每次询问"),
+                            ft.DropdownOption(key="prompt", text="下次询问"),
                             ft.DropdownOption(key="allow", text="允许"),
                         ],
                         on_change=_on_choice,
@@ -929,7 +958,9 @@ class Pages:
                 )
             )
 
-        apply_button = ft.FilledButton("确定", icon=ft.Icons.CHECK, disabled=True, on_click=_submit)
+        apply_button = ft.FilledButton(
+            "确定", icon=ft.Icons.CHECK, disabled=True, on_click=_submit
+        )
         action_holder["button"] = apply_button
 
         dialog = ft.AlertDialog(
@@ -937,7 +968,9 @@ class Pages:
             title=ft.Text(f"权限管理 - {runtime.name}"),
             content=ft.Container(
                 width=420,
-                content=ft.Column(rows, tight=True, spacing=4, scroll=ft.ScrollMode.AUTO),
+                content=ft.Column(
+                    rows, tight=True, spacing=4, scroll=ft.ScrollMode.AUTO
+                ),
             ),
             actions=[
                 ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
@@ -955,7 +988,7 @@ class Pages:
         try:
             self.plugin_service.set_enabled(identifier, enabled)
             self._show_snackbar("插件状态已更新，将在重新加载后生效。")
-            self._sync_reload_banner()
+            
             return True
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"更新插件启用状态失败: {exc}")
@@ -979,7 +1012,7 @@ class Pages:
                 self._show_snackbar("权限已更新，将在重新加载后生效。")
             else:
                 self._show_snackbar("权限已更新，启用插件后生效。")
-            self._sync_reload_banner()
+            
             return True
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"更新插件权限失败: {exc}")
@@ -1018,8 +1051,8 @@ class Pages:
             # 更新列表，提示用户稍后手动重新加载
             self._refresh_plugin_list()
             self._show_snackbar("插件已删除，需要重新加载后生效。")
-            self._sync_reload_banner()
-        except Exception as exc:  # pragma: no cover - defensive logging
+            
+        except Exception as exc:
             logger.error(f"删除插件失败: {exc}")
             self._show_snackbar(f"删除失败：{exc}", error=True)
         finally:
@@ -1028,14 +1061,19 @@ class Pages:
     def _reload_plugins(self) -> None:
         if not self.plugin_service:
             self._show_snackbar("插件服务不可用。", error=True)
+            logger.warning("尝试重新加载插件，但插件服务不可用。")
             return
         try:
-            self._hide_reload_banner()
+            logger.info("重新加载插件…")
             self.plugin_service.reload()
+            
             self._show_snackbar("插件正在重新加载…")
-        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.info("重载插件命令已发送。")
+            
+        except Exception as exc: 
             logger.error(f"重新加载插件失败: {exc}")
             self._show_snackbar(f"重新加载失败：{exc}", error=True)
+            
 
     def _open_dialog(self, dialog: ft.AlertDialog) -> None:
         self.page.dialog = dialog
@@ -1047,7 +1085,9 @@ class Pages:
 
     def _ensure_plugin_file_picker(self) -> None:
         if self._plugin_file_picker is None:
-            self._plugin_file_picker = ft.FilePicker(on_result=self._handle_import_result)
+            self._plugin_file_picker = ft.FilePicker(
+                on_result=self._handle_import_result
+            )
         if self._plugin_file_picker not in self.page.overlay:
             self.page.overlay.append(self._plugin_file_picker)
             self.page.update()
@@ -1082,7 +1122,9 @@ class Pages:
             logger.warning(f"导入插件时解析 manifest 失败: {result.error}")
 
         if not result.identifier:
-            self._show_snackbar("插件已导入，但无法识别 manifest，将使用默认设置重新加载。")
+            self._show_snackbar(
+                "插件已导入，但无法识别 manifest，将使用默认设置重新加载。"
+            )
             try:
                 self.plugin_service.reload()
             except Exception as exc:  # pragma: no cover - defensive logging
@@ -1117,7 +1159,7 @@ class Pages:
                     value="prompt",
                     options=[
                         ft.DropdownOption(key="deny", text="禁用"),
-                        ft.DropdownOption(key="prompt", text="每次询问"),
+                        ft.DropdownOption(key="prompt", text="下次询问"),
                         ft.DropdownOption(key="allow", text="允许"),
                     ],
                 )
@@ -1126,14 +1168,20 @@ class Pages:
                     ft.Column(
                         [
                             selector,
-                            ft.Text(f"权限 ID：{perm}\n{detail}", size=12, color=ft.Colors.GREY),
+                            ft.Text(
+                                f"权限 ID：{perm}\n{detail}",
+                                size=12,
+                                color=ft.Colors.GREY,
+                            ),
                         ],
                         spacing=4,
                     )
                 )
         else:
             permission_controls.append(
-                ft.Text("该插件未请求额外权限，可直接加载。", size=12, color=ft.Colors.GREY)
+                ft.Text(
+                    "该插件未请求额外权限，可直接加载。", size=12, color=ft.Colors.GREY
+                )
             )
 
         warning_text: list[ft.Control] = []
@@ -1154,7 +1202,7 @@ class Pages:
             self._close_dialog()
             self._show_snackbar("插件已导入并保持禁用，可稍后在列表中启用。")
             self._refresh_plugin_list()
-            self._sync_reload_banner()
+            
 
         dialog = ft.AlertDialog(
             modal=True,
@@ -1169,7 +1217,9 @@ class Pages:
                             color=ft.Colors.GREY,
                         ),
                         *(warning_text or []),
-                        ft.Text(description, size=12) if description else ft.Container(),
+                        ft.Text(description, size=12)
+                        if description
+                        else ft.Container(),
                         ft.Divider(),
                         ft.Column(permission_controls, spacing=8),
                     ],
@@ -1185,7 +1235,9 @@ class Pages:
 
         self._open_dialog(dialog)
 
-    def _apply_import_permissions(self, identifier: str, toggles: dict[str, ft.Dropdown]) -> None:
+    def _apply_import_permissions(
+        self, identifier: str, toggles: dict[str, ft.Dropdown]
+    ) -> None:
         if not self.plugin_service:
             return
 
@@ -1200,7 +1252,7 @@ class Pages:
 
         self._show_snackbar("权限已保存，将在启用插件时生效。")
         self._refresh_plugin_list()
-        self._sync_reload_banner()
+        
 
     def _build_permission_catalog_section(self) -> ft.Control | None:
         self._sync_known_permissions()
@@ -1213,7 +1265,9 @@ class Pages:
                 title=ft.Text(f"{permission.name} ({permission.identifier})"),
                 subtitle=ft.Text(permission.description),
             )
-            for permission in sorted(self._known_permissions.values(), key=lambda p: p.identifier)
+            for permission in sorted(
+                self._known_permissions.values(), key=lambda p: p.identifier
+            )
         ]
 
         return ft.Column(
@@ -1343,7 +1397,9 @@ class Pages:
         payload_with_meta = dict(payload)
         payload_with_meta["namespace"] = "resource.bing"
         try:
-            snapshot = self._global_data.publish("resource.bing", entry_id, payload_with_meta)
+            snapshot = self._global_data.publish(
+                "resource.bing", entry_id, payload_with_meta
+            )
             self._bing_data_id = snapshot.get("identifier")
         except GlobalDataError as exc:
             logger.error(f"写入 Bing 全局数据失败: {exc}")
@@ -1409,7 +1465,9 @@ class Pages:
         payload["namespace"] = "resource.spotlight"
         return payload
 
-    def _emit_bing_action(self, action: str, success: bool, extra: Dict[str, Any] | None = None) -> None:
+    def _emit_bing_action(
+        self, action: str, success: bool, extra: Dict[str, Any] | None = None
+    ) -> None:
         payload = {
             "action": action,
             "success": success,
@@ -1504,7 +1562,9 @@ class Pages:
         finally:
             self.bing_loading = False
             self._publish_bing_data()
-            self._emit_resource_event("resource.bing.updated", self._bing_event_payload())
+            self._emit_resource_event(
+                "resource.bing.updated", self._bing_event_payload()
+            )
             self._refresh_bing_tab()
 
     async def _load_spotlight_wallpaper(self):
@@ -1524,7 +1584,9 @@ class Pages:
         finally:
             self.spotlight_loading = False
             self._publish_spotlight_data()
-            self._emit_resource_event("resource.spotlight.updated", self._spotlight_event_payload())
+            self._emit_resource_event(
+                "resource.spotlight.updated", self._spotlight_event_payload()
+            )
             self._refresh_spotlight_tab()
 
     def _refresh_bing_tab(self):
@@ -1576,7 +1638,13 @@ class Pages:
                             [
                                 ft.TextButton("导出", icon=ft.Icons.SAVE_ALT),
                                 ft.TextButton("更换", icon=ft.Icons.PHOTO_LIBRARY),
-                                ft.TextButton("收藏", icon=ft.Icons.STAR),
+                                ft.TextButton(
+                                    "收藏",
+                                    icon=ft.Icons.STAR,
+                                    on_click=lambda _: self._open_favorite_editor(
+                                        self._make_current_wallpaper_payload()
+                                    ),
+                                ),
                                 ft.TextButton(
                                     "刷新",
                                     tooltip="刷新当前壁纸信息",
@@ -1659,6 +1727,1386 @@ class Pages:
             padding=32,
         )
 
+    # ------------------------------------------------------------------
+    # favorite helpers
+    # ------------------------------------------------------------------
+    def _favorite_folders(self) -> List[FavoriteFolder]:
+        try:
+            return self._favorite_manager.list_folders()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error(f"加载收藏夹失败: {exc}")
+            return []
+
+    def _favorite_tab_ids(self, folders: List[FavoriteFolder]) -> List[str]:
+        return ["__all__"] + [folder.id for folder in folders]
+
+    def _build_favorite_tabs_list(self, folders: List[FavoriteFolder]) -> List[ft.Tab]:
+        self._favorite_item_localize_controls = {}
+        self._favorite_item_wallpaper_buttons = {}
+        self._favorite_item_export_buttons = {}
+        tabs: List[ft.Tab] = [
+            ft.Tab(
+                text="全部",
+                icon=ft.Icons.ALL_INBOX,
+                content=self._build_favorite_folder_view("__all__"),
+            )
+        ]
+        for folder in folders:
+            icon = ft.Icons.STAR if folder.id == "default" else ft.Icons.FOLDER_SPECIAL
+            tabs.append(
+                ft.Tab(
+                    text=folder.name,
+                    icon=icon,
+                    content=self._build_favorite_folder_view(folder.id),
+                )
+            )
+        return tabs
+
+    def _favorite_preview_source(self, item: FavoriteItem) -> tuple[str, str] | None:
+        for candidate in (
+            item.localization.local_path,
+            item.local_path,
+        ):
+            if not candidate:
+                continue
+            try:
+                path = Path(candidate)
+                if not path.exists():
+                    continue
+                resolved = path.resolve()
+                try:
+                    mtime = resolved.stat().st_mtime
+                except Exception:
+                    mtime = time.time()
+                cached = self._favorite_preview_cache.get(item.id)
+                if cached and abs(cached[0] - mtime) < 1e-6:
+                    return ("base64", cached[1])
+                data = resolved.read_bytes()
+                encoded = base64.b64encode(data).decode("ascii")
+                if len(self._favorite_preview_cache) >= 32:
+                    oldest_key = next(iter(self._favorite_preview_cache))
+                    self._favorite_preview_cache.pop(oldest_key, None)
+                self._favorite_preview_cache[item.id] = (mtime, encoded)
+                return ("base64", encoded)
+            except Exception as exc:
+                logger.warning("加载本地预览失败: {error}", error=str(exc))
+        if item.preview_url:
+            return ("url", item.preview_url)
+        if item.source.url:
+            return ("url", item.source.url)
+        return None
+
+    def _favorite_filename_slug(self, raw: str, fallback: str) -> str:
+        cleaned = "".join(
+            ch if (ch.isalnum() or ch in (" ", "-", "_")) else "_"
+            for ch in (raw or "").strip()
+        ).strip()
+        cleaned = re.sub(r"\s+", "-", cleaned)
+        return cleaned or fallback
+
+    def _favorite_default_package_path(self, item: FavoriteItem) -> Path:
+        exports_dir = self._favorite_manager.localization_root().parent / "exports"
+        exports_dir.mkdir(parents=True, exist_ok=True)
+        base_name = self._favorite_filename_slug(item.title or "favorite", item.id[:8])
+        candidate = (exports_dir / f"{base_name}.ltwfav").resolve()
+        counter = 1
+        while candidate.exists():
+            candidate = (exports_dir / f"{base_name}-{counter}.ltwfav").resolve()
+            counter += 1
+        return candidate
+
+    def _favorite_default_asset_path(self, item: FavoriteItem, source_path: Path) -> Path:
+        exports_dir = self._favorite_manager.localization_root().parent / "exports"
+        exports_dir.mkdir(parents=True, exist_ok=True)
+        suffix = source_path.suffix or ""
+        base_name = self._favorite_filename_slug(item.title or "favorite", item.id[:8])
+        candidate = (exports_dir / f"{base_name}{suffix}").resolve()
+        counter = 1
+        while candidate.exists():
+            candidate = (exports_dir / f"{base_name}-{counter}{suffix}").resolve()
+            counter += 1
+        return candidate
+
+    def _set_item_localizing(self, item_id: str, active: bool) -> None:
+        if active:
+            self._favorite_localizing_items.add(item_id)
+            self._favorite_preview_cache.pop(item_id, None)
+        else:
+            self._favorite_localizing_items.discard(item_id)
+        button: ft.IconButton | None = None
+        indicator: ft.Control | None = None
+        controls = self._favorite_item_localize_controls.get(item_id)
+        if controls:
+            button, indicator = controls
+        if indicator is not None:
+            indicator.visible = active
+            if indicator.page is not None:
+                indicator.update()
+        if button is not None:
+            button.visible = not active
+            if not active:
+                current_item = self._favorite_manager.get_item(item_id)
+                has_localized = (
+                    current_item is not None
+                    and current_item.localization.status == "completed"
+                    and current_item.localization.local_path
+                    and Path(current_item.localization.local_path).exists()
+                )
+                button.disabled = has_localized
+                button.tooltip = "已完成本地化" if has_localized else "本地化此收藏"
+            if button.page is not None:
+                button.update()
+        wallpaper_button = self._favorite_item_wallpaper_buttons.get(item_id)
+        if wallpaper_button is not None:
+            wallpaper_button.disabled = active
+            if wallpaper_button.page is not None:
+                wallpaper_button.update()
+        export_button = self._favorite_item_export_buttons.get(item_id)
+        if export_button is not None:
+            export_button.disabled = active
+            if export_button.page is not None:
+                export_button.update()
+
+    def _show_localization_progress(self, total: int) -> None:
+        self._favorite_batch_total = max(total, 0)
+        self._favorite_batch_done = 0
+        if self._favorite_localization_spinner is not None:
+            self._favorite_localization_spinner.visible = True
+        if self._favorite_localization_progress_bar is not None:
+            self._favorite_localization_progress_bar.value = 0.0
+            self._favorite_localization_progress_bar.visible = True
+        if self._favorite_localization_status_text is not None:
+            self._favorite_localization_status_text.value = (
+                f"正在本地化 0/{total} 项收藏…" if total else "正在本地化…"
+            )
+        if self._favorite_localization_status_row is not None:
+            self._favorite_localization_status_row.visible = True
+        for control in (
+            self._favorite_localization_status_text,
+            self._favorite_localization_progress_bar,
+            self._favorite_localization_spinner,
+            self._favorite_localization_status_row,
+        ):
+            if control is not None and control.page is not None:
+                control.update()
+
+    def _update_localization_progress(self, increment: int = 1) -> None:
+        if self._favorite_batch_total <= 0:
+            return
+        self._favorite_batch_done = min(
+            self._favorite_batch_total,
+            self._favorite_batch_done + max(0, increment),
+        )
+        if self._favorite_localization_progress_bar is not None:
+            self._favorite_localization_progress_bar.value = (
+                self._favorite_batch_done / self._favorite_batch_total
+            )
+        if self._favorite_localization_status_text is not None:
+            self._favorite_localization_status_text.value = (
+                f"已本地化 {self._favorite_batch_done}/{self._favorite_batch_total} 项收藏"
+            )
+        for control in (
+            self._favorite_localization_status_text,
+            self._favorite_localization_progress_bar,
+        ):
+            if control is not None and control.page is not None:
+                control.update()
+
+    def _finish_localization_progress(self, success: int, total: int) -> None:
+        if self._favorite_localization_spinner is not None:
+            self._favorite_localization_spinner.visible = False
+        if self._favorite_localization_progress_bar is not None:
+            self._favorite_localization_progress_bar.value = 1.0 if total else 0.0
+            self._favorite_localization_progress_bar.visible = total > 0
+        if self._favorite_localization_status_text is not None:
+            self._favorite_localization_status_text.value = (
+                f"本地化完成：成功 {success}/{total} 项" if total else "本地化完成"
+            )
+        for control in (
+            self._favorite_localization_status_text,
+            self._favorite_localization_progress_bar,
+            self._favorite_localization_spinner,
+            self._favorite_localization_status_row,
+        ):
+            if control is not None and control.page is not None:
+                control.update()
+
+        async def _hide_row_later() -> None:
+            await asyncio.sleep(2)
+            if self._favorite_localization_status_row is not None:
+                self._favorite_localization_status_row.visible = False
+                if self._favorite_localization_status_row.page is not None:
+                    self._favorite_localization_status_row.update()
+
+        if total > 0:
+            self.page.run_task(_hide_row_later)
+
+    def _build_favorite_folder_view(self, folder_id: str) -> ft.Control:
+        items = self._favorite_manager.list_items(
+            None if folder_id in (None, "__all__") else folder_id
+        )
+        if not items:
+            return ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Icon(ft.Icons.INBOX, size=48, color=ft.Colors.OUTLINE),
+                        ft.Text("这里还没有收藏，去添加一个吧~"),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=12,
+                ),
+                padding=32,
+                expand=True,
+            )
+
+        list_view = ft.ListView(spacing=12, expand=True)
+        for item in items:
+            list_view.controls.append(self._build_favorite_card(item))
+
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(
+                        f"共 {len(items)} 项收藏",
+                        size=12,
+                        color=ft.Colors.GREY,
+                    ),
+                    list_view,
+                ],
+                spacing=12,
+                expand=True,
+            ),
+            padding=16,
+            expand=True,
+        )
+
+    def _build_favorite_card(self, item: FavoriteItem) -> ft.Card:
+        preview_src = self._favorite_preview_source(item)
+        if preview_src:
+            source_type, value = preview_src
+            preview_kwargs: dict[str, Any] = {
+                "width": 160,
+                "height": 90,
+                "fit": ft.ImageFit.COVER,
+                "border_radius": 8,
+            }
+            if source_type == "base64":
+                preview_control = ft.Image(src_base64=value, **preview_kwargs)
+            else:
+                preview_control = ft.Image(src=value, **preview_kwargs)
+        else:
+            preview_control = ft.Container(
+                width=160,
+                height=90,
+                bgcolor=ft.Colors.SURFACE_VARIANT,
+                border_radius=8,
+                alignment=ft.alignment.center,
+                content=ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, color=ft.Colors.OUTLINE),
+            )
+
+        if item.tags:
+            tag_controls: List[ft.Control] = [
+                ft.Chip(label=ft.Text(tag), bgcolor=ft.Colors.SECONDARY_CONTAINER)
+                for tag in item.tags
+            ]
+        else:
+            tag_controls = [ft.Text("未添加标签", size=11, color=ft.Colors.GREY)]
+
+        ai_controls: List[ft.Control] = []
+        if item.ai.suggested_tags:
+            ai_controls.append(
+                ft.Text(
+                    f"AI 建议：{', '.join(item.ai.suggested_tags)}",
+                    size=11,
+                    color=ft.Colors.SECONDARY,
+                )
+            )
+        elif item.ai.status in {"pending", "running"}:
+            ai_controls.append(
+                ft.Text("AI 正在分析…", size=11, color=ft.Colors.SECONDARY)
+            )
+        elif item.ai.status == "failed":
+            ai_controls.append(
+                ft.Text("AI 分析失败", size=11, color=ft.Colors.ERROR)
+            )
+
+        info_column = ft.Column(
+            [
+                ft.Text(item.title, size=16, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    item.description or "暂无描述",
+                    size=12,
+                    color=ft.Colors.GREY,
+                ),
+                ft.Row(
+                    tag_controls,
+                    wrap=True,
+                    spacing=6,
+                    run_spacing=6,
+                ),
+            ],
+            spacing=6,
+            expand=True,
+        )
+
+        if item.source.title or item.source.type:
+            info_column.controls.append(
+                ft.Text(
+                    f"来源：{item.source.title or item.source.type}",
+                    size=11,
+                    color=ft.Colors.GREY,
+                )
+            )
+
+        localization = item.localization
+        if localization.status == "completed" and localization.local_path:
+            info_column.controls.append(
+                ft.Text(
+                    "已本地化",
+                    size=11,
+                    color=getattr(ft.Colors, "GREEN_400", ft.Colors.GREEN),
+                )
+            )
+        elif localization.status == "pending":
+            info_column.controls.append(
+                ft.Text("正在本地化…", size=11, color=ft.Colors.SECONDARY)
+            )
+        elif localization.status == "failed":
+            info_column.controls.append(
+                ft.Text(
+                    localization.message or "本地化失败",
+                    size=11,
+                    color=ft.Colors.ERROR,
+                )
+            )
+        else:
+            info_column.controls.append(
+                ft.Text("未本地化", size=11, color=ft.Colors.GREY)
+            )
+
+        if ai_controls:
+            info_column.controls.extend(ai_controls)
+
+        is_localized = (
+            item.localization.status == "completed"
+            and item.localization.local_path
+            and Path(item.localization.local_path).exists()
+        )
+
+        localize_button = ft.IconButton(
+            icon=ft.Icons.DOWNLOAD_FOR_OFFLINE,
+            tooltip="本地化此收藏",
+            on_click=lambda _, item_id=item.id: self._handle_localize_single_item(item_id),
+        )
+        if is_localized:
+            localize_button.disabled = True
+            localize_button.tooltip = "已完成本地化"
+        localize_indicator = ft.Container(
+            content=ft.ProgressRing(width=20, height=20),
+            alignment=ft.alignment.center,
+            width=40,
+            height=40,
+        )
+        is_localizing = (
+            item.id in self._favorite_localizing_items
+            or item.localization.status in {"pending"}
+        )
+        localize_button.visible = not is_localizing
+        localize_indicator.visible = is_localizing
+        localization_stack = ft.Stack(
+            controls=[localize_button, localize_indicator],
+            width=40,
+            height=40,
+        )
+        self._favorite_item_localize_controls[item.id] = (
+            localize_button,
+            localize_indicator,
+        )
+
+        set_wallpaper_button = ft.IconButton(
+            icon=ft.Icons.WALLPAPER,
+            tooltip="设为壁纸",
+            on_click=lambda _, item_id=item.id: self._handle_set_favorite_wallpaper(
+                item_id
+            ),
+            disabled=is_localizing,
+        )
+        export_button = ft.IconButton(
+            icon=ft.Icons.UPLOAD_FILE,
+            tooltip="导出此收藏",
+            on_click=lambda _, item_id=item.id: self._handle_export_single_item(
+                item_id
+            ),
+            disabled=is_localizing,
+        )
+        self._favorite_item_wallpaper_buttons[item.id] = set_wallpaper_button
+        self._favorite_item_export_buttons[item.id] = export_button
+
+        action_buttons: List[ft.Control] = [
+            localization_stack,
+            set_wallpaper_button,
+            export_button,
+            ft.IconButton(
+                icon=ft.Icons.EDIT,
+                tooltip="编辑收藏",
+                on_click=lambda _, item_id=item.id: self._edit_favorite(item_id),
+            ),
+            ft.IconButton(
+                icon=ft.Icons.DELETE_OUTLINE,
+                tooltip="移除收藏",
+                on_click=lambda _, item_id=item.id: self._remove_favorite(item_id),
+            ),
+        ]
+
+        if item.source.url:
+            action_buttons.append(
+                ft.IconButton(
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    tooltip="打开来源链接",
+                    on_click=lambda _, url=item.source.url: self.page.launch_url(url),
+                )
+            )
+
+        if item.local_path:
+            try:
+                local_uri = Path(item.local_path).resolve().as_uri()
+            except Exception:
+                local_uri = None
+            if local_uri:
+                action_buttons.append(
+                    ft.IconButton(
+                        icon=ft.Icons.FOLDER_OPEN,
+                        tooltip="打开本地文件",
+                        on_click=lambda _, uri=local_uri: self.page.launch_url(uri),
+                    )
+                )
+
+        body_row = ft.Row(
+            [preview_control, info_column],
+            spacing=16,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+        )
+
+        actions_row = ft.Row(
+            action_buttons,
+            alignment=ft.MainAxisAlignment.END,
+            spacing=4,
+        )
+
+        return ft.Card(
+            content=ft.Container(
+                content=ft.Column(
+                    [body_row, actions_row],
+                    spacing=12,
+                ),
+                padding=16,
+            )
+        )
+
+    def _parse_tag_input(self, raw: str) -> List[str]:
+        if not raw:
+            return []
+        normalized = raw.replace("，", ",").replace("、", ",")
+        tokens = re.split(r"[\s,;]+", normalized)
+        return [token.strip() for token in tokens if token.strip()]
+
+    def _update_favorite_folder_toolbar(self) -> None:
+        edit_button = self._favorite_edit_folder_button
+        delete_button = self._favorite_delete_folder_button
+        current_folder = self._favorite_selected_folder
+        manage_enabled = current_folder not in (None, "__all__")
+        if edit_button is not None:
+            edit_button.disabled = not manage_enabled
+            if edit_button.page is not None:
+                edit_button.update()
+        if delete_button is not None:
+            delete_enabled = manage_enabled and current_folder != "default"
+            delete_button.disabled = not delete_enabled
+            if delete_button.page is not None:
+                delete_button.update()
+
+    async def _localize_favorite_item(self, item: FavoriteItem) -> bool:
+        if (
+            item.localization.status == "completed"
+            and item.localization.local_path
+            and Path(item.localization.local_path).exists()
+        ):
+            return True
+        if item.local_path and Path(item.local_path).exists():
+            destination = await asyncio.to_thread(
+                self._favorite_manager.localize_item_from_file,
+                item.id,
+                item.local_path,
+            )
+            return destination is not None
+        download_url = (
+            item.preview_url
+            or item.source.preview_url
+            or item.source.url
+        )
+        if not download_url:
+            logger.warning("收藏缺少可下载地址，跳过本地化: {item}", item=item.id)
+            return False
+        downloads_dir = (
+            self._favorite_manager.localization_root() / "__downloads"
+        ).resolve()
+        downloads_dir.mkdir(parents=True, exist_ok=True)
+        temp_name = f"{item.id}-{uuid.uuid4().hex}"
+        downloaded_path = await asyncio.to_thread(
+            ltwapi.download_file,
+            download_url,
+            downloads_dir,
+            temp_name,
+        )
+        if not downloaded_path:
+            return False
+        destination = await asyncio.to_thread(
+            self._favorite_manager.localize_item_from_file,
+            item.id,
+            str(downloaded_path),
+        )
+        # 清理临时文件
+        try:
+            Path(downloaded_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+        return destination is not None
+
+    async def _ensure_favorite_local_copy(self, item: FavoriteItem) -> str | None:
+        for candidate in (item.localization.local_path, item.local_path):
+            if candidate and Path(candidate).exists():
+                return str(Path(candidate))
+        success = await self._localize_favorite_item(item)
+        if not success:
+            return None
+        refreshed = self._favorite_manager.get_item(item.id) or item
+        for candidate in (refreshed.localization.local_path, refreshed.local_path):
+            if candidate and Path(candidate).exists():
+                return str(Path(candidate))
+        return None
+
+    def _handle_localize_current_folder(self, _: ft.ControlEvent | None = None) -> None:
+        folder_id = self._favorite_selected_folder
+        items = self._favorite_manager.list_items(
+            None if folder_id in (None, "__all__") else folder_id
+        )
+        if not items:
+            self._show_snackbar("当前视图没有可本地化的收藏。")
+            return
+
+        button = self._favorite_localize_button
+        if button is not None:
+            button.disabled = True
+            button.update()
+
+        async def _runner() -> None:
+            success = 0
+            self._show_localization_progress(len(items))
+            for item in items:
+                self._favorite_manager.update_localization(
+                    item.id,
+                    status="pending",
+                    local_path=item.localization.local_path,
+                    folder_path=item.localization.folder_path,
+                )
+                self._set_item_localizing(item.id, True)
+                try:
+                    current_item = self._favorite_manager.get_item(item.id) or item
+                    if await self._localize_favorite_item(current_item):
+                        success += 1
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.error(f"本地化收藏失败: {exc}")
+                finally:
+                    self._set_item_localizing(item.id, False)
+                    self._update_localization_progress()
+            self._refresh_favorite_tabs()
+            if button is not None:
+                button.disabled = False
+                button.update()
+            self._finish_localization_progress(success, len(items))
+            self._show_snackbar(f"已本地化 {success}/{len(items)} 项收藏。")
+
+        self.page.run_task(_runner)
+
+    def _handle_localize_single_item(self, item_id: str) -> None:
+        item = self._favorite_manager.get_item(item_id)
+        if not item:
+            self._show_snackbar("未找到指定的收藏。", error=True)
+            return
+
+        self._favorite_manager.update_localization(
+            item_id,
+            status="pending",
+            local_path=item.localization.local_path,
+            folder_path=item.localization.folder_path,
+        )
+        self._set_item_localizing(item_id, True)
+
+        async def _runner() -> None:
+            try:
+                target_item = self._favorite_manager.get_item(item_id) or item
+                success = await self._localize_favorite_item(target_item)
+                if success:
+                    self._show_snackbar(f"收藏“{item.title}”已本地化。")
+                else:
+                    self._show_snackbar("本地化失败，请检查网络或文件。", error=True)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(f"本地化收藏失败: {exc}")
+                self._show_snackbar("本地化失败，请查看日志。", error=True)
+            finally:
+                self._set_item_localizing(item_id, False)
+                self._refresh_favorite_tabs()
+
+        self.page.run_task(_runner)
+
+    def _handle_set_favorite_wallpaper(self, item_id: str) -> None:
+        item = self._favorite_manager.get_item(item_id)
+        if not item:
+            self._show_snackbar("未找到指定的收藏。", error=True)
+            return
+
+        button = self._favorite_item_wallpaper_buttons.get(item_id)
+        if button is not None:
+            button.disabled = True
+            if button.page is not None:
+                button.update()
+
+        pre_existing_local = False
+        for candidate in (
+            item.localization.local_path,
+            item.local_path,
+        ):
+            if candidate and Path(candidate).exists():
+                pre_existing_local = True
+                break
+
+        async def _runner() -> None:
+            if not pre_existing_local:
+                self._set_item_localizing(item_id, True)
+            try:
+                target_item = self._favorite_manager.get_item(item_id) or item
+                local_path = await self._ensure_favorite_local_copy(target_item)
+                if not local_path:
+                    self._show_snackbar("无法准备壁纸文件，请尝试先本地化。", error=True)
+                    return
+                await asyncio.to_thread(ltwapi.set_wallpaper, local_path)
+                self._show_snackbar("壁纸设置成功。")
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(f"设置收藏壁纸失败: {exc}")
+                self._show_snackbar("设置壁纸失败，请查看日志。", error=True)
+            finally:
+                if not pre_existing_local:
+                    self._set_item_localizing(item_id, False)
+                    self._refresh_favorite_tabs()
+                refreshed_button = self._favorite_item_wallpaper_buttons.get(item_id)
+                if refreshed_button is not None:
+                    refreshed_button.disabled = False
+                    if refreshed_button.page is not None:
+                        refreshed_button.update()
+
+        self.page.run_task(_runner)
+
+    def _handle_export_single_item(self, item_id: str) -> None:
+        item = self._favorite_manager.get_item(item_id)
+        if not item:
+            self._show_snackbar("未找到指定的收藏。", error=True)
+            return
+
+        export_button = self._favorite_item_export_buttons.get(item_id)
+        if export_button is not None:
+            export_button.disabled = True
+            if export_button.page is not None:
+                export_button.update()
+
+        pre_existing_local = False
+        for candidate in (
+            item.localization.local_path,
+            item.local_path,
+        ):
+            if candidate and Path(candidate).exists():
+                pre_existing_local = True
+                break
+
+        if not pre_existing_local:
+            self._set_item_localizing(item_id, True)
+
+        package_path = self._favorite_default_package_path(item)
+
+        async def _runner() -> None:
+            try:
+                target_item = self._favorite_manager.get_item(item_id) or item
+                local_path = await self._ensure_favorite_local_copy(target_item)
+                if local_path:
+                    source = Path(local_path)
+                    export_path = self._favorite_default_asset_path(target_item, source)
+                    await asyncio.to_thread(shutil.copy2, source, export_path)
+                    self._show_snackbar(f"收藏文件已复制到 {export_path}。")
+                    return
+
+                exported_path = await asyncio.to_thread(
+                    self._favorite_manager.export_items,
+                    package_path,
+                    [item_id],
+                )
+                self._show_snackbar(f"收藏已导出到 {exported_path}。")
+            except ValueError as exc:
+                logger.error(f"导出收藏失败: {exc}")
+                self._show_snackbar(str(exc), error=True)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(f"导出收藏失败: {exc}")
+                self._show_snackbar("导出失败，请查看日志。", error=True)
+            finally:
+                if not pre_existing_local:
+                    self._set_item_localizing(item_id, False)
+                    self._refresh_favorite_tabs()
+                refreshed = self._favorite_item_export_buttons.get(item_id)
+                if refreshed is not None:
+                    refreshed.disabled = False
+                    if refreshed.page is not None:
+                        refreshed.update()
+
+        self.page.run_task(_runner)
+
+    def _open_export_dialog(self) -> None:
+        folders = self._favorite_folders()
+        if not folders:
+            self._show_snackbar("没有可导出的收藏夹。", error=True)
+            return
+
+        default_folder = self._favorite_selected_folder
+        selected_ids: set[str] = set()
+        if default_folder and default_folder not in ("__all__", ""):
+            selected_ids.add(default_folder)
+        elif default_folder == "__all__":
+            selected_ids.update(folder.id for folder in folders)
+
+        folder_checkboxes: list[tuple[ft.Checkbox, str]] = []
+        select_all_checkbox = ft.Checkbox(
+            label="全部收藏夹",
+            value=default_folder == "__all__",
+        )
+        export_button_holder: dict[str, ft.Control | None] = {"button": None}
+
+        def _sync_selection(_: ft.ControlEvent | None = None) -> None:
+            if select_all_checkbox.value:
+                selected_ids.clear()
+                selected_ids.update(folder.id for folder in folders)
+                for checkbox, _ in folder_checkboxes:
+                    checkbox.value = True
+            else:
+                selected_ids.clear()
+                for checkbox, folder_id in folder_checkboxes:
+                    if checkbox.value:
+                        selected_ids.add(folder_id)
+            button_control = export_button_holder["button"]
+            if isinstance(button_control, ft.Control):
+                button_control.disabled = not bool(selected_ids)
+                button_control.update()
+
+        for folder in folders:
+            checkbox = ft.Checkbox(
+                label=folder.name,
+                value=folder.id in selected_ids or not selected_ids,
+            )
+            checkbox.on_change = _sync_selection
+            folder_checkboxes.append((checkbox, folder.id))
+
+        select_all_checkbox.on_change = _sync_selection
+
+        exports_dir = self._favorite_manager.localization_root().parent / "exports"
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        default_path = (exports_dir / f"favorites-{timestamp}.ltwfav").resolve()
+        path_field = ft.TextField(
+            label="导出文件 (.ltwfav)",
+            value=str(default_path),
+            autofocus=True,
+            expand=True,
+        )
+
+        status_text = ft.Text("选择要导出的收藏夹，并指定导出文件路径。", size=12)
+
+        def _submit(_: ft.ControlEvent | None = None) -> None:
+            if not selected_ids:
+                self._show_snackbar("请至少选择一个收藏夹。", error=True)
+                return
+            target = Path(path_field.value).expanduser()
+
+            async def _runner() -> None:
+                export_button = export_button_holder["button"]
+                if isinstance(export_button, ft.Control):
+                    export_button.disabled = True
+                    export_button.update()
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    folder_list = list(selected_ids)
+                    await asyncio.to_thread(
+                        self._favorite_manager.export_folders,
+                        target,
+                        folder_list,
+                    )
+                    self._show_snackbar(f"收藏已导出到 {target}。")
+                    self._close_dialog()
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.error(f"导出收藏失败: {exc}")
+                    self._show_snackbar("导出失败，请检查日志。", error=True)
+                finally:
+                    if isinstance(export_button, ft.Control):
+                        export_button.disabled = False
+                        export_button.update()
+
+            self.page.run_task(_runner)
+
+        export_button = ft.FilledButton(
+            "导出",
+            icon=ft.Icons.CLOUD_UPLOAD,
+            on_click=_submit,
+        )
+        export_button_holder["button"] = export_button
+
+        content = ft.Container(
+            width=420,
+            content=ft.Column(
+                [
+                    status_text,
+                    select_all_checkbox,
+                    ft.Column([cb for cb, _ in folder_checkboxes], spacing=4),
+                    path_field,
+                ],
+                spacing=12,
+                tight=True,
+            ),
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("导出收藏"),
+            content=content,
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
+                export_button,
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self._open_dialog(dialog)
+        _sync_selection()  # 初始化按钮状态
+
+    def _open_import_dialog(self) -> None:
+        path_field = ft.TextField(
+            label="导入文件 (.ltwfav)",
+            autofocus=True,
+            expand=True,
+        )
+
+        status_text = ft.Text("选择导入包后，系统会合并收藏夹及收藏记录。", size=12)
+
+        def _submit(_: ft.ControlEvent | None = None) -> None:
+            path = Path(path_field.value).expanduser()
+            if not path.exists():
+                self._show_snackbar("指定的导入文件不存在。", error=True)
+                return
+
+            async def _runner() -> None:
+                import_button.disabled = True
+                import_button.update()
+                try:
+                    folders, items = await asyncio.to_thread(
+                        self._favorite_manager.import_folders,
+                        path,
+                    )
+                    self._show_snackbar(
+                        f"导入完成：新增收藏夹 {folders} 个，收藏 {items} 条。"
+                    )
+                    self._favorite_selected_folder = "__all__"
+                    self._refresh_favorite_tabs()
+                    self._close_dialog()
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.error(f"导入收藏失败: {exc}")
+                    self._show_snackbar("导入失败，请检查日志。", error=True)
+                finally:
+                    import_button.disabled = False
+                    import_button.update()
+
+            self.page.run_task(_runner)
+
+        import_button = ft.FilledButton(
+            "导入",
+            icon=ft.Icons.FILE_UPLOAD,
+            on_click=_submit,
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("导入收藏"),
+            content=ft.Container(
+                width=420,
+                content=ft.Column(
+                    [status_text, path_field],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
+                import_button,
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self._open_dialog(dialog)
+
+    def _on_favorite_tab_change(self, event: ft.ControlEvent) -> None:
+        folders = self._favorite_folders()
+        index = getattr(event.control, "selected_index", 0) if event.control else 0
+        if index <= 0 or not folders:
+            self._favorite_selected_folder = "__all__"
+        else:
+            normalized_index = min(index - 1, len(folders) - 1)
+            self._favorite_selected_folder = folders[normalized_index].id
+        self._update_favorite_folder_toolbar()
+        self.page.update()
+
+    def _refresh_favorite_tabs(self) -> None:
+        if not self._favorite_tabs:
+            return
+        folders = self._favorite_folders()
+        tab_ids = self._favorite_tab_ids(folders)
+        if self._favorite_selected_folder not in tab_ids:
+            self._favorite_selected_folder = "__all__"
+        tabs_control = self._favorite_tabs
+        tabs_control.tabs = self._build_favorite_tabs_list(folders)
+        tabs_control.selected_index = tab_ids.index(self._favorite_selected_folder)
+        if tabs_control.page is not None:
+            tabs_control.update()
+        self._update_favorite_folder_toolbar()
+        if self.page is not None and tabs_control.page is not None:
+            self.page.update()
+
+    def _select_favorite_folder(self, folder_id: str) -> None:
+        self._favorite_selected_folder = folder_id
+        self._refresh_favorite_tabs()
+
+    def _remove_favorite(self, item_id: str) -> None:
+        if self._favorite_manager.remove_item(item_id):
+            self._show_snackbar("已移除收藏。")
+            self._favorite_preview_cache.pop(item_id, None)
+            self._refresh_favorite_tabs()
+        else:
+            self._show_snackbar("未找到指定的收藏。", error=True)
+
+    def _edit_favorite(self, item_id: str) -> None:
+        item = self._favorite_manager.get_item(item_id)
+        if not item:
+            self._show_snackbar("未找到指定的收藏。", error=True)
+            return
+        payload = {
+            "title": item.title,
+            "description": item.description,
+            "tags": list(item.tags),
+            "source": item.source,
+            "preview_url": item.preview_url,
+            "local_path": item.local_path,
+            "extra": dict(item.extra),
+            "folder_id": item.folder_id,
+        }
+        self._open_favorite_editor(payload, item_id=item.id)
+
+    def _schedule_favorite_classification(self, item_id: str) -> None:
+        async def _runner() -> None:
+            await self._favorite_manager.maybe_classify_item(item_id)
+            self._refresh_favorite_tabs()
+
+        self.page.run_task(_runner)
+
+    def _open_new_folder_dialog(
+        self,
+        on_created: Callable[[FavoriteFolder], None] | None = None,
+    ) -> None:
+        name_field = ft.TextField(label="收藏夹名称", autofocus=True)
+        description_field = ft.TextField(
+            label="描述 (可选)",
+            multiline=True,
+            max_lines=3,
+        )
+
+        def _submit(_: ft.ControlEvent | None = None) -> None:
+            folder = self._favorite_manager.create_folder(
+                name_field.value or "",
+                description=description_field.value or "",
+            )
+            self._close_dialog()
+            self._show_snackbar("收藏夹已创建。")
+            self._favorite_selected_folder = folder.id
+            self._refresh_favorite_tabs()
+            if on_created:
+                on_created(folder)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("新建收藏夹"),
+            content=ft.Container(
+                width=380,
+                content=ft.Column(
+                    [name_field, description_field],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
+                ft.FilledTonalButton("创建", icon=ft.Icons.CHECK, on_click=_submit),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self._open_dialog(dialog)
+
+    def _handle_edit_current_folder(self, _: ft.ControlEvent | None = None) -> None:
+        folder_id = self._favorite_selected_folder
+        if folder_id in (None, "__all__"):
+            self._show_snackbar("请先选择一个具体的收藏夹。", error=True)
+            return
+        self._open_edit_folder_dialog(folder_id)
+
+    def _open_edit_folder_dialog(self, folder_id: str) -> None:
+        folder = self._favorite_manager.get_folder(folder_id)
+        if not folder:
+            self._show_snackbar("未找到要编辑的收藏夹。", error=True)
+            return
+
+        name_field = ft.TextField(
+            label="收藏夹名称",
+            value=folder.name,
+            autofocus=True,
+        )
+        description_field = ft.TextField(
+            label="描述 (可选)",
+            value=folder.description,
+            multiline=True,
+            max_lines=3,
+        )
+
+        def _submit(_: ft.ControlEvent | None = None) -> None:
+            updated = self._favorite_manager.rename_folder(
+                folder_id,
+                name=name_field.value,
+                description=description_field.value,
+            )
+            self._close_dialog()
+            if updated:
+                self._favorite_selected_folder = folder_id
+                self._show_snackbar("收藏夹已更新。")
+                self._refresh_favorite_tabs()
+            else:
+                self._show_snackbar("收藏夹更新失败。", error=True)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("编辑收藏夹"),
+            content=ft.Container(
+                width=380,
+                content=ft.Column(
+                    [name_field, description_field],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
+                ft.FilledButton("保存", icon=ft.Icons.SAVE, on_click=_submit),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self._open_dialog(dialog)
+
+    def _handle_delete_current_folder(self, _: ft.ControlEvent | None = None) -> None:
+        folder_id = self._favorite_selected_folder
+        if folder_id in (None, "__all__"):
+            self._show_snackbar("请选择要删除的收藏夹。", error=True)
+            return
+        if folder_id == "default":
+            self._show_snackbar("默认收藏夹无法删除。", error=True)
+            return
+        self._confirm_delete_folder(folder_id)
+
+    def _confirm_delete_folder(self, folder_id: str) -> None:
+        folder = self._favorite_manager.get_folder(folder_id)
+        if not folder:
+            self._show_snackbar("未找到要删除的收藏夹。", error=True)
+            return
+
+        def _delete(_: ft.ControlEvent | None = None) -> None:
+            success = self._favorite_manager.delete_folder(folder_id)
+            self._close_dialog()
+            if success:
+                self._favorite_selected_folder = "default"
+                self._show_snackbar("收藏夹已删除，内容已移动到默认收藏夹。")
+                self._refresh_favorite_tabs()
+            else:
+                self._show_snackbar("删除收藏夹失败。", error=True)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("删除收藏夹"),
+            content=ft.Text(
+                f"确定要删除收藏夹“{folder.name}”吗？该收藏夹中的所有收藏将被移动到默认收藏夹。"
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
+                ft.FilledTonalButton(
+                    "删除",
+                    icon=ft.Icons.DELETE_FOREVER,
+                    bgcolor=ft.Colors.ERROR_CONTAINER,
+                    color=ft.Colors.ON_ERROR_CONTAINER,
+                    on_click=_delete,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self._open_dialog(dialog)
+
+    def _open_favorite_editor(
+        self,
+        payload: Dict[str, Any] | None,
+        item_id: str | None = None,
+    ) -> None:
+        if not payload:
+            self._show_snackbar("当前没有可收藏的内容。", error=True)
+            return
+
+        folders = self._favorite_folders()
+
+        def _refresh_dropdown(selected: str | None = None) -> None:
+            folder_dropdown.options = [
+                ft.DropdownOption(key=folder.id, text=folder.name)
+                for folder in self._favorite_folders()
+            ]
+            valid_values = {option.key for option in folder_dropdown.options}
+            if selected and selected in valid_values:
+                folder_dropdown.value = selected
+            elif folder_dropdown.value not in valid_values and valid_values:
+                folder_dropdown.value = next(iter(valid_values))
+            folder_dropdown.update()
+
+        initial_folder = payload.get("folder_id")
+        if not initial_folder or initial_folder == "__all__":
+            initial_folder = (
+                self._favorite_selected_folder
+                if self._favorite_selected_folder != "__all__"
+                else "default"
+            )
+
+        folder_dropdown = ft.Dropdown(
+            label="收藏夹",
+            value=initial_folder,
+            options=[
+                ft.DropdownOption(key=folder.id, text=folder.name)
+                for folder in folders
+            ]
+            or [ft.DropdownOption(key="default", text="默认收藏夹")],
+            expand=True,
+        )
+
+        def _create_folder(_: ft.ControlEvent | None = None) -> None:
+            self._open_new_folder_dialog(
+                on_created=lambda folder: _refresh_dropdown(folder.id)
+            )
+
+        title_field = ft.TextField(
+            label="标题",
+            value=payload.get("title", ""),
+            autofocus=True,
+        )
+        description_field = ft.TextField(
+            label="描述",
+            value=payload.get("description", ""),
+            multiline=True,
+            max_lines=4,
+        )
+        tags_field = ft.TextField(
+            label="标签",
+            value=", ".join(payload.get("tags", [])),
+            helper_text="使用逗号、空格或分号分隔多个标签",
+        )
+
+        preview_src = payload.get("preview_url") or payload.get("local_path")
+        if not preview_src and isinstance(payload.get("source"), FavoriteSource):
+            preview_src = payload["source"].url
+
+        preview_control: ft.Control
+        if preview_src:
+            preview_control = ft.Image(
+                src=preview_src,
+                width=200,
+                height=110,
+                fit=ft.ImageFit.COVER,
+                border_radius=8,
+            )
+        else:
+            preview_control = ft.Container(
+                width=200,
+                height=110,
+                bgcolor=ft.Colors.SURFACE_VARIANT,
+                border_radius=8,
+                alignment=ft.alignment.center,
+                content=ft.Icon(ft.Icons.IMAGE_OUTLINED, color=ft.Colors.OUTLINE),
+            )
+
+        def _submit(_: ft.ControlEvent | None = None) -> None:
+            selected_folder = folder_dropdown.value or "default"
+            tags = self._parse_tag_input(tags_field.value)
+
+            if item_id:
+                self._favorite_manager.update_item(
+                    item_id,
+                    folder_id=selected_folder,
+                    title=title_field.value,
+                    description=description_field.value,
+                    tags=tags,
+                )
+                result_item = self._favorite_manager.get_item(item_id)
+                created = False
+                if result_item is None:
+                    self._show_snackbar("收藏更新失败。", error=True)
+                    return
+            else:
+                result_item, created = self._favorite_manager.add_or_update_item(
+                    folder_id=selected_folder,
+                    title=title_field.value or payload.get("title", ""),
+                    description=description_field.value or "",
+                    tags=tags,
+                    source=payload.get("source"),
+                    preview_url=payload.get("preview_url"),
+                    local_path=payload.get("local_path"),
+                    extra=payload.get("extra"),
+                    merge_tags=True,
+                )
+
+            self._favorite_selected_folder = selected_folder
+            self._close_dialog()
+            message = "收藏成功！" if created else "收藏已更新。"
+            self._show_snackbar(message)
+            self._refresh_favorite_tabs()
+            self._schedule_favorite_classification(result_item.id)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("编辑收藏" if item_id else "添加到收藏"),
+            content=ft.Container(
+                width=420,
+                content=ft.Column(
+                    [
+                        ft.Row(
+                            [
+                                folder_dropdown,
+                                ft.IconButton(
+                                    icon=ft.Icons.CREATE_NEW_FOLDER,
+                                    tooltip="新建收藏夹",
+                                    on_click=_create_folder,
+                                ),
+                            ],
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.END,
+                        ),
+                        preview_control,
+                        title_field,
+                        description_field,
+                        tags_field,
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
+                ft.FilledButton("保存", icon=ft.Icons.CHECK, on_click=_submit),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self._open_dialog(dialog)
+
+    def _make_current_wallpaper_payload(self) -> Dict[str, Any] | None:
+        path = self.wallpaper_path
+        if not path:
+            return None
+        try:
+            resolved = Path(path).resolve()
+            preview_uri = resolved.as_uri()
+        except Exception:
+            resolved = Path(path)
+            preview_uri = path
+        source = FavoriteSource(
+            type="system_wallpaper",
+            identifier=f"file::{resolved}",
+            title="当前系统壁纸",
+            url=None,
+            preview_url=preview_uri,
+            local_path=path,
+            extra={"origin": "home"},
+        )
+        return {
+            "title": resolved.name,
+            "description": "来自当前桌面的壁纸",
+            "tags": ["系统壁纸"],
+            "source": source,
+            "preview_url": preview_uri,
+            "local_path": path,
+            "extra": {"path": path},
+        }
+
+    def _make_bing_favorite_payload(self) -> Dict[str, Any] | None:
+        if not self.bing_wallpaper_url or not self.bing_wallpaper:
+            return None
+        identifier = self.bing_wallpaper.get("startdate") or self.bing_wallpaper_url
+        title = self.bing_wallpaper.get("title", "Bing 每日壁纸")
+        description = self.bing_wallpaper.get("copyright", "")
+        source = FavoriteSource(
+            type="bing",
+            identifier=str(identifier),
+            title=title,
+            url=self.bing_wallpaper_url,
+            preview_url=self.bing_wallpaper_url,
+            extra=dict(self.bing_wallpaper),
+        )
+        return {
+            "title": title,
+            "description": description,
+            "tags": ["Bing", "每日壁纸"],
+            "source": source,
+            "preview_url": self.bing_wallpaper_url,
+            "extra": {"bing": dict(self.bing_wallpaper)},
+        }
+
+    def _make_spotlight_favorite_payload(self) -> Dict[str, Any] | None:
+        if not self.spotlight_wallpaper or not self.spotlight_wallpaper_url:
+            return None
+        index = min(self.spotlight_current_index, len(self.spotlight_wallpaper) - 1)
+        data = self.spotlight_wallpaper[index]
+        url = data.get("url")
+        identifier = url or data.get("ctaUri") or f"spotlight-{index}"
+        title = data.get("title", "Windows 聚焦壁纸")
+        description = data.get("description", "")
+        source = FavoriteSource(
+            type="windows_spotlight",
+            identifier=str(identifier),
+            title=title,
+            url=url,
+            preview_url=url,
+            extra=dict(data),
+        )
+        return {
+            "title": title,
+            "description": description,
+            "tags": ["Windows Spotlight"],
+            "source": source,
+            "preview_url": url,
+            "extra": {"spotlight": dict(data)},
+        }
+
     def _build_bing_daily_content(self):
         copy_menu = None
 
@@ -1700,7 +3148,7 @@ class Pages:
 
             wallpaper_path = ltwapi.download_file(
                 url,
-                DATA_DIR / "Wallpaper",
+                CACHE_DIR / "wallpapers",
                 "Ltw-Wallpaper",
                 progress_callback=progress_callback,
             )
@@ -1757,7 +3205,12 @@ class Pages:
 
         def _handle_copy(action: str):
             nonlocal bing_loading_info, bing_pb
-            nonlocal set_button, favorite_button, download_button, copy_button, copy_menu
+            nonlocal \
+                set_button, \
+                favorite_button, \
+                download_button, \
+                copy_button, \
+                copy_menu
 
             if action == "link":
                 _copy_link()
@@ -1797,7 +3250,7 @@ class Pages:
             filename = _sanitize_filename(title, "Bing-Wallpaper")
             wallpaper_path = ltwapi.download_file(
                 self.bing_wallpaper_url,
-                DATA_DIR / "Wallpaper",
+                CACHE_DIR / "wallpapers",
                 filename,
                 progress_callback=progress_callback,
             )
@@ -1888,7 +3341,13 @@ class Pages:
             icon=ft.Icons.WALLPAPER,
             on_click=lambda e: _set_wallpaper(self.bing_wallpaper_url),
         )
-        favorite_button = ft.FilledTonalButton("收藏", icon=ft.Icons.STAR)
+        favorite_button = ft.FilledTonalButton(
+            "收藏",
+            icon=ft.Icons.STAR,
+            on_click=lambda _: self._open_favorite_editor(
+                self._make_bing_favorite_payload()
+            ),
+        )
         download_button = ft.FilledTonalButton("下载", icon=ft.Icons.DOWNLOAD)
         copy_button_content = ft.Row(
             controls=[
@@ -2084,12 +3543,13 @@ class Pages:
             self.page.update()
 
             filename = _sanitize_filename(
-                spotlight.get("title"), f"Windows-Spotlight-{self.spotlight_current_index + 1}"
+                spotlight.get("title"),
+                f"Windows-Spotlight-{self.spotlight_current_index + 1}",
             )
 
             wallpaper_path = ltwapi.download_file(
                 url,
-                DATA_DIR / "Wallpaper",
+                CACHE_DIR / "wallpapers",
                 filename,
                 progress_callback=progress_callback,
             )
@@ -2097,7 +3557,9 @@ class Pages:
             success = wallpaper_path is not None
             handled = False
             if success:
-                self._emit_download_completed("spotlight", normalized_action, wallpaper_path)
+                self._emit_download_completed(
+                    "spotlight", normalized_action, wallpaper_path
+                )
             if success and action == "set":
                 try:
                     ltwapi.set_wallpaper(wallpaper_path)
@@ -2236,7 +3698,13 @@ class Pages:
             icon=ft.Icons.WALLPAPER,
             on_click=lambda e: _handle_download("set"),
         )
-        favorite_button = ft.FilledTonalButton("收藏", icon=ft.Icons.STAR)
+        favorite_button = ft.FilledTonalButton(
+            "收藏",
+            icon=ft.Icons.STAR,
+            on_click=lambda _: self._open_favorite_editor(
+                self._make_spotlight_favorite_payload()
+            ),
+        )
         download_button = ft.FilledTonalButton(
             "下载",
             icon=ft.Icons.DOWNLOAD,
@@ -2297,7 +3765,9 @@ class Pages:
         )
 
         _update_details(0)
-        extra_spotlight_actions = self._build_plugin_actions(self.spotlight_action_factories)
+        extra_spotlight_actions = self._build_plugin_actions(
+            self.spotlight_action_factories
+        )
         spotlight_actions_row = ft.Row(
             [
                 *[
@@ -2348,11 +3818,137 @@ class Pages:
         )
 
     def _build_favorite(self):
+        self._favorite_tabs = ft.Tabs(
+            animation_duration=300,
+            expand=True,
+            on_change=self._on_favorite_tab_change,
+        )
+
+        self._favorite_edit_folder_button = ft.IconButton(
+            icon=ft.Icons.EDIT_NOTE,
+            tooltip="编辑当前收藏夹",
+            disabled=True,
+            on_click=self._handle_edit_current_folder,
+        )
+        self._favorite_delete_folder_button = ft.IconButton(
+            icon=ft.Icons.DELETE_SWEEP,
+            tooltip="删除当前收藏夹",
+            disabled=True,
+            on_click=self._handle_delete_current_folder,
+        )
+        self._favorite_localize_button = ft.IconButton(
+            icon=ft.Icons.DOWNLOAD_FOR_OFFLINE,
+            tooltip="本地化当前视图收藏",
+            on_click=self._handle_localize_current_folder,
+        )
+        self._favorite_export_button = ft.IconButton(
+            icon=ft.Icons.CLOUD_UPLOAD,
+            tooltip="导出收藏",
+            on_click=lambda _: self._open_export_dialog(),
+        )
+        self._favorite_import_button = ft.IconButton(
+            icon=ft.Icons.FILE_UPLOAD,
+            tooltip="导入收藏",
+            on_click=lambda _: self._open_import_dialog(),
+        )
+
+        navigation_row = ft.Row(
+            [
+                ft.TextButton(
+                    "查看全部",
+                    icon=ft.Icons.ALL_INBOX,
+                    on_click=lambda _: self._select_favorite_folder("__all__"),
+                ),
+            ],
+            spacing=8,
+        )
+
+        folder_actions = ft.Row(
+            controls=[
+                ft.FilledTonalButton(
+                    "新建收藏夹",
+                    icon=ft.Icons.CREATE_NEW_FOLDER,
+                    on_click=lambda _: self._open_new_folder_dialog(),
+                ),
+                self._favorite_edit_folder_button,
+                self._favorite_delete_folder_button,
+            ],
+            spacing=8,
+            run_spacing=8,
+            wrap=True,
+            alignment=ft.MainAxisAlignment.START,
+        )
+
+        data_actions = ft.Row(
+            controls=[
+                self._favorite_localize_button,
+                self._favorite_export_button,
+                self._favorite_import_button,
+                ft.IconButton(
+                    icon=ft.Icons.REFRESH,
+                    tooltip="刷新收藏列表",
+                    on_click=lambda _: self._refresh_favorite_tabs(),
+                ),
+            ],
+            spacing=8,
+            run_spacing=8,
+            wrap=True,
+            alignment=ft.MainAxisAlignment.START,
+        )
+
+        self._favorite_localization_spinner = ft.ProgressRing(width=18, height=18)
+        self._favorite_localization_spinner.visible = False
+        self._favorite_localization_status_text = ft.Text(
+            "",
+            size=11,
+            color=ft.Colors.GREY,
+        )
+        self._favorite_localization_progress_bar = ft.ProgressBar(
+            value=0.0,
+            expand=True,
+            height=6,
+        )
+        self._favorite_localization_progress_bar.visible = False
+        progress_row = ft.Row(
+            [
+                self._favorite_localization_spinner,
+                self._favorite_localization_status_text,
+                ft.Container(
+                    content=self._favorite_localization_progress_bar,
+                    expand=True,
+                ),
+            ],
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        progress_row.visible = False
+        self._favorite_localization_status_row = progress_row
+
+        toolbar = ft.Column(
+            [
+                navigation_row,
+                folder_actions,
+                data_actions,
+                progress_row,
+            ],
+            spacing=8,
+            tight=True,
+        )
+
+        self._refresh_favorite_tabs()
+
         return ft.Column(
             [
                 ft.Text("收藏", size=30),
-                ft.Text("收藏夹功能正在开发中，敬请期待~"),
+                ft.Text(
+                    "管理你的收藏、标签和收藏夹。",
+                    size=12,
+                    color=ft.Colors.GREY,
+                ),
+                ft.Container(toolbar, padding=ft.Padding(0, 12, 0, 12)),
+                ft.Container(self._favorite_tabs, expand=True),
             ],
+            spacing=8,
             expand=True,
         )
 

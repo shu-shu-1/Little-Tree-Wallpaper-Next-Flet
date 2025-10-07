@@ -17,6 +17,7 @@ from urllib.parse import urlparse, unquote
 import pycurl
 from typing import Callable, Optional, Dict
 from loguru import logger
+import platformdirs
 
 try:
     import magic
@@ -261,6 +262,35 @@ def set_wallpaper(path: str) -> None:
         raise FileNotFoundError(path)
 
     system = platform.system()
+
+    # 在设置系统壁纸前，将文件复制一份到应用数据目录下的 wallpaper 文件夹，便于用户管理
+    try:
+        data_dir = Path(
+            platformdirs.user_data_dir(
+                "Little-Tree-Wallpaper", "Little Tree Studio", "Next", ensure_exists=True
+            )
+        )
+        wallpaper_dir = data_dir / "wallpaper"
+        wallpaper_dir.mkdir(parents=True, exist_ok=True)
+        src = Path(path)
+        if src.is_file():
+            target = wallpaper_dir / src.name
+            # 若目标文件名已存在且内容相同则略过复制
+            if not target.exists() or target.stat().st_size != src.stat().st_size:
+                shutil.copy2(src, target)
+            # 清理 wallpaper 目录，保留当前文件（按文件名匹配）
+            for p in wallpaper_dir.iterdir():
+                try:
+                    if p.is_file() and p.name != target.name:
+                        p.unlink(missing_ok=True)
+                except Exception:
+                    # 忽略无法删除的文件
+                    pass
+            # 使用复制后的文件路径作为最终设置路径（确保使用 AppData 下的文件）
+            path = str(target)
+    except Exception:
+        # 若复制或清理失败，不影响正常设置壁纸，继续使用原始路径
+        pass
 
     # ---------- Windows ----------
     if system == "Windows":

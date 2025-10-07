@@ -372,8 +372,9 @@ class PluginManager:
             try:
                 context = context_factory(loaded.plugin, loaded.manifest)
             except Exception as exc:
+                name = loaded.manifest.identifier if loaded.manifest else (loaded.module_name or loaded.identifier)
                 logger.error(
-                    f"构建插件上下文失败 {loaded.manifest.identifier}: {exc}"
+                    f"构建插件上下文失败 {name}: {exc}"
                 )
                 if runtime:
                     runtime.status = PluginStatus.ERROR
@@ -383,14 +384,14 @@ class PluginManager:
             try:
                 loaded.plugin.activate(context)
                 logger.info(
-                    f"插件 {loaded.manifest.identifier} ({loaded.manifest.short_label()}) 已激活"
+                    f"插件 {loaded.manifest.identifier if loaded.manifest else loaded.identifier} ({loaded.manifest.short_label() if loaded.manifest else ''}) 已激活"
                 )
                 if runtime:
                     runtime.status = PluginStatus.ACTIVE
                     runtime.error = None
             except Exception as exc:
                 logger.error(
-                    f"插件 {loaded.manifest.identifier} 激活失败: {exc}"
+                    f"插件 {loaded.manifest.identifier if loaded.manifest else loaded.identifier} 激活失败: {exc}"
                 )
                 if runtime:
                     runtime.status = PluginStatus.ERROR
@@ -597,10 +598,9 @@ class PluginManager:
         return self._runtime.get(identifier)
 
     def has_pending_changes(self) -> bool:
-        """Return True when there are configuration changes that require a reload.
+        """当存在需要重新加载的配置更改时，返回True。
 
-        We compare persisted config (enabled/permission states) against the
-        in-memory runtime info to determine whether a reload is actually needed.
+        我们将持久化配置（启用/权限状态）与内存中的运行时信息进行比较，以确定是否确实需要重新加载。
         """
         try:
             for identifier, runtime in self._runtime.items():
@@ -608,8 +608,8 @@ class PluginManager:
                     cfg_enabled = self._config.is_enabled(identifier)
                 except Exception:
                     cfg_enabled = True
-                # Consider the currently *applied* enabled state based on runtime.status
-                # (ACTIVE/LOADED => applied enabled, DISABLED => applied disabled).
+                # 根据runtime.status考虑当前*已应用*的启用状态
+                #（ACTIVE/LOADED => 已应用启用，DISABLED => 已应用禁用）。
                 applied_enabled = getattr(runtime, "status", None) is not None and runtime.status != PluginStatus.DISABLED
                 if bool(applied_enabled) != bool(cfg_enabled):
                     return True
@@ -617,15 +617,13 @@ class PluginManager:
                     cfg_perms = self._config.get_permissions(identifier)
                 except Exception:
                     cfg_perms = {}
-                # Normalize keys and values: if any permission state differs, reload needed
+                # 标准化键和值：若任何权限状态不同，则需要重新加载
                 for perm, state in runtime.permission_states.items():
                     cfg_state = cfg_perms.get(perm)
                     if cfg_state is None:
-                        # missing in config -> treat as prompt/default vs runtime state
                         if state is not None and state.value != "prompt":
                             return True
                     else:
-                        # cfg_state is PermissionState; compare values
                         if getattr(cfg_state, "value", cfg_state) != getattr(state, "value", state):
                             return True
             return False

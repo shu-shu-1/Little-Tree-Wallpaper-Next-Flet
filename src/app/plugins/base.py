@@ -6,13 +6,21 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Protocol, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Protocol, Sequence, Tuple
 
 import flet as ft
 from loguru import logger as _loguru_logger
 
 from .permissions import PermissionState
-from .operations import PluginOperationResult
+from .operations import PluginOperationResult, PluginPermissionError
+from .favorites_api import FavoriteService
+from app.favorites import (
+    FavoriteAIResult,
+    FavoriteClassifier,
+    FavoriteFolder,
+    FavoriteItem,
+    FavoriteSource,
+)
 
 if TYPE_CHECKING:
     from loguru._logger import Logger
@@ -129,7 +137,7 @@ ActionFactory = Callable[[], ft.Control]
 
 
 class PluginService(Protocol):
-    """Operations exposed to privileged plugins for lifecycle management."""
+    """为生命周期管理向特权插件开放的操作。"""
 
     def list_plugins(self) -> list["PluginRuntimeInfo"]:
         ...
@@ -215,6 +223,7 @@ class PluginContext:
     event_bus: PluginEventBus | None = None
     metadata: dict[str, object] = field(default_factory=dict)
     global_data: GlobalDataAccess | None = None
+    favorite_service: FavoriteService | None = None
     _open_route_handler: Callable[[str], PluginOperationResult] | None = None
     _switch_home_handler: Callable[[str], PluginOperationResult] | None = None
     _open_settings_handler: Callable[[str | int], PluginOperationResult] | None = None
@@ -354,8 +363,146 @@ class PluginContext:
     def settings_tabs(self, value: list[PluginSettingsPage]) -> None:
         self.settings_pages = value
 
+    # ------------------------------------------------------------------
+    # favorites helpers
+    # ------------------------------------------------------------------
+    def _require_favorite_service(self) -> FavoriteService:
+        if not self.favorite_service:
+            raise RuntimeError("收藏系统当前不可用")
+        return self.favorite_service
+
+    @property
+    def favorites(self) -> FavoriteService:
+        """Direct accessor to the favorites service (requires permissions)."""
+
+        return self._require_favorite_service()
+
+    @property
+    def favorite_manager(self) -> FavoriteService | None:  # pragma: no cover - legacy adapter
+        """Backward-compatible alias returning :class:`FavoriteService`."""
+
+        return self.favorite_service
+
+    def has_favorite_support(self) -> bool:
+        return self.favorite_service is not None
+
+    def list_favorite_folders(self) -> list[FavoriteFolder]:
+        return self._require_favorite_service().list_folders()
+
+    def get_favorite_folder(self, folder_id: str) -> FavoriteFolder | None:
+        return self._require_favorite_service().get_folder(folder_id)
+
+    def create_favorite_folder(
+        self,
+        name: str,
+        *,
+        description: str = "",
+        metadata: Dict[str, Any] | None = None,
+    ) -> FavoriteFolder:
+        return self._require_favorite_service().create_folder(
+            name,
+            description=description,
+            metadata=metadata,
+        )
+
+    def update_favorite_folder(
+        self,
+        folder_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> bool:
+        return self._require_favorite_service().update_folder(
+            folder_id,
+            name=name,
+            description=description,
+        )
+
+    def delete_favorite_folder(
+        self,
+        folder_id: str,
+        *,
+        move_items_to: str | None = "default",
+    ) -> bool:
+        return self._require_favorite_service().delete_folder(
+            folder_id,
+            move_items_to=move_items_to,
+        )
+
+    def list_favorite_items(self, folder_id: str | None = None) -> list[FavoriteItem]:
+        return self._require_favorite_service().list_items(folder_id)
+
+    def get_favorite_item(self, item_id: str) -> FavoriteItem | None:
+        return self._require_favorite_service().get_item(item_id)
+
+    def find_favorite_by_source(
+        self, source: FavoriteSource | Dict[str, Any]
+    ) -> FavoriteItem | None:
+        return self._require_favorite_service().find_by_source(source)
+
+    def add_or_update_favorite_item(
+        self,
+        *,
+        folder_id: str | None,
+        title: str,
+        description: str = "",
+        tags: Sequence[str] | None = None,
+        source: FavoriteSource | Dict[str, Any] | None = None,
+        preview_url: str | None = None,
+        local_path: str | None = None,
+        extra: Dict[str, Any] | None = None,
+        merge_tags: bool = True,
+    ) -> tuple[FavoriteItem, bool]:
+        return self._require_favorite_service().add_or_update_item(
+            folder_id=folder_id,
+            title=title,
+            description=description,
+            tags=tags,
+            source=source,
+            preview_url=preview_url,
+            local_path=local_path,
+            extra=extra,
+            merge_tags=merge_tags,
+        )
+
+    def update_favorite_item(
+        self,
+        item_id: str,
+        *,
+        folder_id: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        tags: Sequence[str] | None = None,
+        extra: Dict[str, Any] | None = None,
+    ) -> bool:
+        return self._require_favorite_service().update_item(
+            item_id,
+            folder_id=folder_id,
+            title=title,
+            description=description,
+            tags=tags,
+            extra=extra,
+        )
+
+    def remove_favorite_item(self, item_id: str) -> bool:
+        return self._require_favorite_service().remove_item(item_id)
+
+    def register_favorite_classifier(
+        self, classifier: FavoriteClassifier | None
+    ) -> None:
+        self._require_favorite_service().register_classifier(classifier)
+
+    async def classify_favorite_item(self, item_id: str) -> FavoriteAIResult | None:
+        return await self._require_favorite_service().classify_item(item_id)
+
     def has_permission(self, permission: str) -> bool:
         return self.permissions.get(permission, PermissionState.PROMPT) is PermissionState.GRANTED
+
+    def ensure_permission(self, permission: str, message: str | None = None) -> None:
+        state = self.permissions.get(permission, PermissionState.PROMPT)
+        if state is PermissionState.GRANTED:
+            return
+        raise PluginPermissionError(permission, message)
 
     def plugin_data_path(self, *parts: str, create: bool = False) -> Path:
         path = self.data_path_factory(self.manifest.identifier, parts, create)
