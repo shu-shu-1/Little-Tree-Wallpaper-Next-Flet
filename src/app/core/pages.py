@@ -1717,7 +1717,6 @@ class Pages:
                                             )
                                         ],
                                     ),
-                                    
                                     ft.TextField(label="提示词"),
                                     ft.TextField(label="否定提示词"),
                                     ft.FilledButton("生成"),
@@ -3985,7 +3984,6 @@ class Pages:
             [
                 ft.Text("测试和调试", size=30),
                 ft.Text("这里是测试和调试专用区域"),
-                ft.Image(src=ASSET_DIR / "images" / "test.gif"),
             ],
             expand=True,
         )
@@ -3993,6 +3991,7 @@ class Pages:
     def build_settings_view(self):
         import config as app_config
         from app.paths import CONFIG_DIR
+
         _save_config_file = app_config.save_config_file
         DEFAULT_CONFIG = app_config.DEFAULT_CONFIG
 
@@ -4044,11 +4043,10 @@ class Pages:
                             weight=ft.FontWeight.BOLD,
                         ),
                         ft.Markdown(
-                            """@[炫饭的芙芙](https://space.bilibili.com/1669914811) ❤️""", 
-                            # 老婆大人最棒啦
+                            """@[炫饭的芙芙](https://space.bilibili.com/1669914811) ❤️""",
                             selectable=True,
                             auto_follow_links=True,
-                        ), 
+                        ),
                         ft.Markdown(
                             """@[Giampaolo-zzp](https://github.com/Giampaolo-zzp) | @茜语茜寻""",
                             selectable=True,
@@ -4107,7 +4105,9 @@ class Pages:
         resource = tab_content(
             "内容",
             ft.Text("是否允许 NSFW 内容？"),
-            ft.Switch(value=False),
+            ft.Switch(
+                value=False,
+            ),
         )
 
         # expose controls so the save handler can read their values
@@ -4182,7 +4182,9 @@ class Pages:
                     theme_dropdown,
                     ft.Text("语言", size=14),
                     lang_dropdown,
-                    ft.ElevatedButton("保存设置", on_click=lambda _:_save_app_settings()),
+                    ft.ElevatedButton(
+                        "保存设置", on_click=lambda _: _save_app_settings()
+                    ),
                 ],
                 spacing=12,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -4335,7 +4337,7 @@ class Pages:
                 ft.Container(
                     ft.Column(
                         [
-                            ft.Icon(ft.Icons.WARNING, color=ft.Colors.ORANGE),
+                            ft.Icon(ft.Icons.WARNING, color=ft.Colors.ORANGE, size=40),
                             ft.Text("测试版警告", size=30, weight=ft.FontWeight.BOLD),
                             ft.Text(
                                 "您正在使用小树壁纸 Next 的测试版。测试版可能包含不稳定的功能，甚至会导致数据丢失等严重问题。\n如果您不确定自己在做什么，请前往官网下载稳定版应用。",
