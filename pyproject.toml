@@ -9,10 +9,10 @@ authors = [
 ]
 dependencies = [
   "aiohttp>=3.12.14",
+  "requests>=2.32.3",
   "filetype>=1.2.0",
   "flet==0.28.3",
   "magic-python>=0.4.0",
-  "pycurl>=7.45.6",
   "python-magic>=0.4.27; platform_system != 'Windows'",
   "python-magic-bin>=0.4.14; platform_system == 'Windows'",
   "loguru>=0.7.3",
@@ -20,6 +20,9 @@ dependencies = [
   "pyperclip>=1.9.0",
   "orjson>=3.11.3",
 ]
+
+[dependency-groups]
+dev = ["flet[all]==0.28.3"]
 
 [tool.flet]
 # org name in reverse domain name notation, e.g. "com.mycompany".
@@ -39,10 +42,8 @@ copyright = "Copyright (C) 2025 by Little Tree Studio"
 [tool.flet.app]
 path = "src"
 
-[tool.uv]
-dev-dependencies = [
-    "flet[all]==0.28.3",
-]
+
+
 
 [tool.poetry]
 package-mode = false

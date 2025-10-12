@@ -47,6 +47,8 @@ If you like this project, please give it a star! ⭐️
 
 如果您喜欢这个项目，不妨点个 ⭐️ 吧！
 
+## 指南
+
 ## Test watermark / 测试版水印 🏷️
 
 A small, unobtrusive badge appears at the bottom-right when the app runs in non-stable mode. You can tweak or disable it:

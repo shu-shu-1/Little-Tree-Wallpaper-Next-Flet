@@ -47,6 +47,10 @@ from app.plugins import (
 )
 from app.plugins.events import EventDefinition, PluginEventBus
 
+from app.settings import SettingsStore
+
+app_config = SettingsStore()
+
 if TYPE_CHECKING:
     from app.plugins.base import PluginSettingsPage
 
@@ -1619,6 +1623,7 @@ class Pages:
             border_radius=10,
             fit=ft.ImageFit.COVER,
             tooltip="当前计算机的壁纸",
+            error_content=ft.Container(ft.Text("图片已失效，请刷新数据~"),padding=20)
         )
         self.hitokoto_loading = ft.ProgressRing(visible=False, width=24, height=24)
         self.hitokoto_text = ft.Text("", size=16, font_family="HITOKOTOFont")
@@ -3978,7 +3983,6 @@ class Pages:
         )
 
     def _build_test(self):
-        from app.paths import ASSET_DIR
 
         return ft.Column(
             [
@@ -3987,13 +3991,95 @@ class Pages:
             ],
             expand=True,
         )
+    def _handle_confirm_nsfw(self):
+        app_config.set("wallpaper.allow_nsfw", True)
+    def _confirm_nsfw(self):
+        # Checkboxes and state sync
+        adult_cb = ft.Checkbox(label="我已年满 18 周岁")
+        legal_cb = ft.Checkbox(label="我确认我所在国家或地区的法律允许浏览包含成人内容")
+
+        confirm_btn = ft.TextButton(
+            "确认",
+            disabled=True,
+            on_click=lambda _: self._handle_confirm_nsfw(),
+        )
+
+        def _sync_state(_: ft.ControlEvent | None = None) -> None:
+            confirm_btn.disabled = not (bool(adult_cb.value) and bool(legal_cb.value))
+            if confirm_btn.page is not None:
+                confirm_btn.update()
+
+        adult_cb.on_change = _sync_state
+        legal_cb.on_change = _sync_state
+
+        self._confirm_nsfw_dialog = ft.AlertDialog(
+            title=ft.Text("确认允许显示可能包含成人内容"),
+            content=ft.Column(
+                [
+                    ft.Text(
+                        "为遵守相关法律法规，我们不会向法律禁止地区和未成年人提供此类内容。继续之前，请确认以下事项："
+                    ),
+                    adult_cb,
+                    legal_cb,
+                ],
+                tight=True,
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
+                confirm_btn,
+            ],
+        )
+        self._open_dialog(self._confirm_nsfw_dialog)
 
     def build_settings_view(self):
-        import config as app_config
-        from app.paths import CONFIG_DIR
+        def _change_nsfw(e: ft.ControlEvent):
+            switch = getattr(e, "control", None)
+            if switch is None:
+                return
+            new_val = bool(getattr(switch, "value", False))
 
-        _save_config_file = app_config.save_config_file
-        DEFAULT_CONFIG = app_config.DEFAULT_CONFIG
+            # Turning off: no confirmation needed.
+            if not new_val:
+                app_config.set("wallpaper.allow_nsfw", False)
+                return
+
+            # Turning on: require confirmation. Revert switch to off first.
+            switch.value = False
+            if switch.page is not None:
+                switch.update()
+
+            # Show confirm dialog.
+            self._confirm_nsfw()
+
+            # Wire dialog buttons to apply/revert the switch value.
+            dlg = getattr(self, "_confirm_nsfw_dialog", None)
+            try:
+                if dlg and getattr(dlg, "actions", None):
+                    # actions = [cancel_btn, confirm_btn]
+                    cancel_btn = dlg.actions[0] if len(dlg.actions) > 0 else None
+                    confirm_btn = dlg.actions[1] if len(dlg.actions) > 1 else None
+
+                    if confirm_btn:
+                        def _on_confirm(_: ft.ControlEvent | None = None):
+                            self._handle_confirm_nsfw()
+                            switch.value = True
+                            if switch.page is not None:
+                                switch.update()
+                            self._close_dialog()
+                        confirm_btn.on_click = _on_confirm
+
+                    if cancel_btn:
+                        def _on_cancel(_: ft.ControlEvent | None = None):
+                            switch.value = False
+                            if switch.page is not None:
+                                switch.update()
+                            self._close_dialog()
+                        cancel_btn.on_click = _on_cancel
+            except Exception:
+                logger.error("Failed to wire dialog buttons")
+
+
+
 
         def tab_content(title: str, *controls: ft.Control):
             return ft.Container(
@@ -4106,27 +4192,16 @@ class Pages:
             "内容",
             ft.Text("是否允许 NSFW 内容？"),
             ft.Switch(
-                value=False,
+                value=app_config.get("wallpaper.allow_nsfw", False),
+                on_change=_change_nsfw,
             ),
         )
 
-        # expose controls so the save handler can read their values
-        # load current settings to initialize controls
-        try:
-            import json as _json
-            from pathlib import Path as _P
 
-            cfg_p = _P(CONFIG_DIR / "config.json")
-            if cfg_p.exists():
-                _current = _json.loads(cfg_p.read_text(encoding="utf-8"))
-            else:
-                _current = dict(DEFAULT_CONFIG)
-        except Exception:
-            _current = dict(DEFAULT_CONFIG)
 
         theme_dropdown = ft.Dropdown(
             label="界面主题",
-            value=_current.get("ui", {}).get("theme", "auto"),
+            value=app_config.get("ui.theme", "auto"),
             options=[
                 ft.DropdownOption(key="auto", text="跟随系统"),
                 ft.DropdownOption(key="light", text="浅色"),
@@ -4138,7 +4213,7 @@ class Pages:
 
         lang_dropdown = ft.Dropdown(
             label="界面语言",
-            value=_current.get("ui", {}).get("language", "zh-CN"),
+            value=app_config.get("ui.language", "zh-CN"),
             options=[
                 ft.DropdownOption(key="zh-CN", text="中文 (简体)"),
                 ft.DropdownOption(key="en-US", text="English"),
@@ -4147,33 +4222,7 @@ class Pages:
             tooltip="应用语言",
         )
 
-        def _save_app_settings() -> None:
-            settings_path = str(CONFIG_DIR / "config.json")
-            # load existing configuration or defaults
-            try:
-                import json as _json
-                from pathlib import Path as _P
 
-                p = _P(settings_path)
-                if p.exists():
-                    data = _json.loads(p.read_text(encoding="utf-8"))
-                else:
-                    data = dict(DEFAULT_CONFIG)
-            except Exception:
-                data = dict(DEFAULT_CONFIG)
-
-            data.setdefault("ui", {})
-            data["ui"]["theme"] = theme_dropdown.value or "auto"
-            data["ui"]["language"] = lang_dropdown.value or "zh-CN"
-
-            try:
-                _save_config_file(settings_path, data)
-                # show a small confirmation
-                self.page.snack_bar = ft.SnackBar(ft.Text("设置已保存"))
-                self.page.open(self.page.snack_bar)
-                self.page.update()
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.error("保存应用设置失败: {error}", error=str(exc))
 
         ui = tab_content(
             "界面",
@@ -4182,9 +4231,6 @@ class Pages:
                     theme_dropdown,
                     ft.Text("语言", size=14),
                     lang_dropdown,
-                    ft.ElevatedButton(
-                        "保存设置", on_click=lambda _: _save_app_settings()
-                    ),
                 ],
                 spacing=12,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -4361,8 +4407,12 @@ class Pages:
         value = e.control.value
         if value == "dark":
             self.page.theme_mode = ft.ThemeMode.DARK
+            app_config.set("ui.theme", "dark")
+            
         elif value == "light":
             self.page.theme_mode = ft.ThemeMode.LIGHT
+            app_config.set("ui.theme", "light")
         else:
-            self.page.theme_mode = None
+            self.page.theme_mode = ft.ThemeMode.SYSTEM
+            app_config.set("ui.theme", "auto")
         self.page.update()

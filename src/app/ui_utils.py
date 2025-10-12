@@ -9,11 +9,11 @@ from pathlib import Path
 from loguru import logger
 import flet as ft
 
-from .constants import SHOW_WATERMARK
+from .constants import SHOW_WATERMARK, BUILD_VERSION
 
 
 def build_watermark(
-    text: str = "小树壁纸Next测试版\n测试版本，不代表最终品质",
+    text: str = f"小树壁纸Next测试版\n测试版本，不代表最终品质\n{BUILD_VERSION}",
     opacity: float = 0.7,
     padding: int = 8,
     margin_rb: tuple[int, int] = (12, 12),

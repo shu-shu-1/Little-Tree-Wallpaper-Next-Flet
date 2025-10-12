@@ -8,7 +8,9 @@ from typing import Any, Dict
 
 from loguru import logger
 
-from config import DEFAULT_CONFIG, save_config_file
+from config import DEFAULT_CONFIG, save_config_file, get_config_file
+
+from app.paths import CONFIG_DIR
 
 
 class SettingsStore:
@@ -20,9 +22,9 @@ class SettingsStore:
     - expose the underlying dict for read-only operations
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path = CONFIG_DIR / "config.json") -> None:
         self._path = path
-        self._data: Dict[str, Any] = dict(DEFAULT_CONFIG)
+        self._data: Dict[str, Any] = dict(get_config_file(path))
         self._load()
 
     @property
@@ -56,10 +58,47 @@ class SettingsStore:
             logger.error("保存应用设置失败: {error}", error=str(exc))
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
+        """Get a value by key.
+
+        Supports dotted keys for nested dict access, e.g. 'a.b.c'. If the key
+        does not exist, returns `default`.
+        """
+        # fast path: direct top-level key
+        if key in self._data:
+            return self._data.get(key, default)
+
+        # support dotted path
+        if "." not in key:
+            return self._data.get(key, default)
+
+        cur: Any = self._data
+        for part in key.split("."):
+            if not isinstance(cur, dict) or part not in cur:
+                return default
+            cur = cur[part]
+        return cur
 
     def set(self, key: str, value: Any) -> None:
-        self._data[key] = value
+        """Set a value by key.
+
+        Supports dotted keys for nested dict assignment, creating intermediate
+        dicts as needed. Examples:
+          set('a.b.c', 1) -> {'a': {'b': {'c': 1}}}
+          set('top', 2) -> {'top': 2}
+        """
+        # simple assignment for top-level
+        if "." not in key:
+            self._data[key] = value
+            self.save()
+            return
+
+        parts = key.split(".")
+        cur: Dict[str, Any] = self._data
+        for part in parts[:-1]:
+            if part not in cur or not isinstance(cur[part], dict):
+                cur[part] = {}
+            cur = cur[part]
+        cur[parts[-1]] = value
         self.save()
 
     def reset(self) -> None:

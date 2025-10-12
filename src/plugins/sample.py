@@ -43,9 +43,7 @@ class SamplePlugin(Plugin):
         ),
     )
 
-    # 向后兼容旧代码路径
-    name = manifest.name
-    version = manifest.version
+
 
     def __init__(self) -> None:
         self._download_unsubscribe = None

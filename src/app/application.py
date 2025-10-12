@@ -48,6 +48,8 @@ from .ipc import IPCService
 from .ui_utils import build_watermark
 from .settings import SettingsStore
 
+app_config = SettingsStore()
+
 
 class ApplicationPluginService:
     """High-level plugin lifecycle helper exposed to privileged UI."""
@@ -139,6 +141,7 @@ class Application:
     def __call__(self, page: ft.Page) -> None:
         self._page = page
         self._build_app(page)
+        self._sync_theme(page)
 
     # ------------------------------------------------------------------
     # lifecycle helpers
@@ -426,6 +429,17 @@ class Application:
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error(f"插件启动钩子执行失败: {exc}")
 
+    def _sync_theme(self, page: ft.Page) -> None:
+        # 同步深/浅
+        match app_config.get("ui.theme", "system").lower():
+            case "light":
+                page.theme_mode = ft.ThemeMode.LIGHT
+            case "dark":
+                page.theme_mode = ft.ThemeMode.DARK
+            case _:
+                page.theme_mode = ft.ThemeMode.SYSTEM
+        logger.info(f"应用主题已设置为 {page.theme_mode.name}")
+
     def reload(self) -> None:
         # Proactively hide any open reload banners before rebuilding,
         # in case reload is triggered outside of Pages' handlers.
@@ -446,7 +460,9 @@ class Application:
         logger.debug("应用程序标记为不需要重新加载")
 
     def is_reload_required(self) -> bool:
-        logger.debug("应用程序检查是否需要重新加载: {state}", state=self._reload_required)
+        logger.debug(
+            "应用程序检查是否需要重新加载: {state}", state=self._reload_required
+        )
         return self._reload_required
 
     def _configure_page(self, page: ft.Page) -> None:
@@ -700,13 +716,22 @@ class Application:
                 context.metadata["core_pages"] = pages
                 try:
                     if context.manifest.identifier == "core":
-                        for perm in ("favorites_read", "favorites_write", "favorites_export"):
-                            context.permissions.setdefault(perm, PermissionState.GRANTED)
+                        for perm in (
+                            "favorites_read",
+                            "favorites_write",
+                            "favorites_export",
+                        ):
+                            context.permissions.setdefault(
+                                perm, PermissionState.GRANTED
+                            )
+
                         def ensure(_perm: str, ctx=context) -> None:
                             return None
                     else:
+
                         def ensure(permission: str, ctx=context) -> None:
                             ctx.ensure_permission(permission)
+
                     context.favorite_service = FavoriteService(
                         pages.favorite_manager,
                         ensure,

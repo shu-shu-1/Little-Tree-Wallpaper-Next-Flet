@@ -14,7 +14,7 @@ import shutil
 import hashlib
 import mimetypes
 from urllib.parse import urlparse, unquote
-import pycurl
+# NOTE: download_file moved from pycurl to requests streaming
 from typing import Callable, Optional, Dict
 from loguru import logger
 import platformdirs
@@ -547,75 +547,106 @@ def download_file(
 ) -> Optional[str]:
     logger.debug(f"开始下载：{url}")
 
-    req_headers = [
-        "User-Agent: Mozilla/5.0",
-        "Accept: */*",
-        "Connection: keep-alive",
-    ]
+    # 构造请求头（字典形式，便于 requests 直接使用）
+    req_headers_dict: Dict[str, str] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+    }
     if headers:
-        for k, v in headers.items():
-            req_headers.append(f"{k}: {v}")
+        # 覆盖/追加自定义头
+        req_headers_dict.update(headers)
 
     save_path = Path(save_path).expanduser().resolve()
     save_dir = save_path if save_path.is_dir() else save_path.parent
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    def _xferinfo(d_total: float, d_loaded: float, u_total: float, u_loaded: float):
-        if progress_callback and d_total > 0:
-            progress_callback(int(d_loaded), int(d_total))
 
-    c = pycurl.Curl()
-    try:
+    # 使用 requests 会话以复用连接、限制重定向次数
+    with requests.Session() as session:
+        session.headers.update(req_headers_dict)
+        session.max_redirects = 5  # 与原逻辑保持一致
+
         for attempt in range(1, max_retries + 1):
             start_offset = 0
             tmp_path = save_dir / f"{uuid.uuid4().hex}.tmp"
             mode = "wb"
 
+            # 失败后尝试断点续传：复用之前的临时文件
             if resume and attempt > 1:
                 tmp_files = list(save_dir.glob("*.tmp"))
                 if tmp_files:
                     tmp_path = tmp_files[0]
-                    start_offset = tmp_path.stat().st_size
-                    logger.debug("断点续传：从 {} 字节继续", start_offset)
-                    mode = "ab"
+                    try:
+                        start_offset = tmp_path.stat().st_size
+                    except Exception:
+                        start_offset = 0
+                    if start_offset > 0:
+                        logger.debug("断点续传：从 {} 字节继续", start_offset)
+                        mode = "ab"
 
             try:
-                header_io = io.BytesIO()
-                with open(tmp_path, mode) as f:
-                    c.setopt(pycurl.URL, url)
-                    c.setopt(pycurl.WRITEDATA, f)
-                    if start_offset:
-                        c.setopt(pycurl.RANGE, f"{start_offset}-")
-                    c.setopt(pycurl.HEADERFUNCTION, header_io.write)
-                    c.setopt(pycurl.FOLLOWLOCATION, 1)
-                    c.setopt(pycurl.MAXREDIRS, 5)
-                    c.setopt(pycurl.CONNECTTIMEOUT, timeout)
-                    c.setopt(pycurl.TIMEOUT, timeout)
-                    c.setopt(pycurl.HTTPHEADER, req_headers)
-                    c.setopt(pycurl.NOPROGRESS, 0)
-                    c.setopt(pycurl.XFERINFOFUNCTION, _xferinfo)
-                    c.perform()
+                # 按需设置 Range 头
+                request_headers = dict(req_headers_dict)
+                if start_offset > 0:
+                    request_headers["Range"] = f"bytes={start_offset}-"
 
-                http_code = c.getinfo(pycurl.HTTP_CODE)
-                if start_offset > 0 and http_code != 206:
-                    logger.warning("服务器不支持断点续传 HTTP {}，重新下载", http_code)
-                    tmp_path.unlink(missing_ok=True)
-                    continue
-                if http_code >= 400:
-                    raise pycurl.error(f"HTTP {http_code}")
+                # 发起流式请求
+                # timeout 同时用于连接和读取，以接近原 CONNECTTIMEOUT/TIMEOUT 语义
+                with session.get(
+                    url,
+                    headers=request_headers,
+                    stream=True,
+                    timeout=(timeout, timeout),
+                    allow_redirects=True,
+                ) as resp:
+                    status = resp.status_code
 
-                resp_headers = {}
-                for line in header_io.getvalue().decode(errors="ignore").splitlines():
-                    if ":" in line:
-                        k, v = line.split(":", 1)
-                        resp_headers[k.strip().lower()] = v.strip()
+                    # 不存在直接返回
+                    if status == 404:
+                        logger.error("资源不存在，放弃重试：{}", url)
+                        return None
+
+                    # 断点续传要求 206
+                    if start_offset > 0 and status != 206:
+                        logger.warning("服务器不支持断点续传 HTTP {}，重新下载", status)
+                        tmp_path.unlink(missing_ok=True)
+                        # 继续下一次尝试（不增加 start_offset）
+                        continue
+
+                    # 其他错误码统一失败
+                    if status >= 400:
+                        raise requests.HTTPError(f"HTTP {status}", response=resp)
+
+                    # 解析响应头供后续文件名/扩展名推断
+                    resp_headers = {k.lower(): v.strip() for k, v in resp.headers.items()}
+
+                    # 写入文件并回调进度
+                    total_from_server = 0
+                    try:
+                        total_from_server = int(resp.headers.get("Content-Length", "0"))
+                    except Exception:
+                        total_from_server = 0
+                    total_size = start_offset + (total_from_server or 0)
+
+                    bytes_written_this_round = 0
+                    chunk_size = 1024 * 1024  # 1MB，兼顾吞吐与响应
+                    with open(tmp_path, mode) as f:
+                        for chunk in resp.iter_content(chunk_size=chunk_size):
+                            if not chunk:
+                                continue
+                            f.write(chunk)
+                            bytes_written_this_round += len(chunk)
+                            # 仅当总大小可用时触发进度回调，保持与原逻辑一致（d_total>0）
+                            if progress_callback and total_size > 0:
+                                progress_callback(start_offset + bytes_written_this_round, total_size)
 
                 # ---------- 文件名 ----------
                 filename = custom_filename
                 if not filename:
                     cd = resp_headers.get("content-disposition", "")
                     match = re.findall(
-                        r'filename\*?=(?:[^\'"]*\'\'|["\']?)([^"\';]+)', cd, re.I
+                        r'filename\*?=(?:[^\'\"]*\'\'|["\']?)([^"\';]+)', cd, re.I
                     )
                     if match:
                         filename = unquote(match[-1].strip())
@@ -654,19 +685,18 @@ def download_file(
                 return str(target)
 
             except Exception as e:
-                if isinstance(e, pycurl.error) and "HTTP 404" in str(e):
-                    logger.error("资源不存在，放弃重试：{}", url)
-                    return None
+                # 重试控制
                 logger.warning("第 {}/{} 次尝试失败：{}", attempt, max_retries, e)
                 if attempt == max_retries:
                     logger.error("下载失败：{}", url)
                     return None
-                time.sleep(2**attempt)
+                time.sleep(2 ** attempt)
             finally:
-                if attempt == max_retries and tmp_path.exists():
-                    tmp_path.unlink(missing_ok=True)
-    finally:
-        c.close()
+                try:
+                    if attempt == max_retries and 'tmp_path' in locals() and tmp_path.exists():
+                        tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":

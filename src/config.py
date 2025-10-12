@@ -6,7 +6,7 @@ DEFAULT_CONFIG = {
     "metadata": {"version": "1.0.0"},
     "ui": {
         "language": "zh-CN",
-        "theme": "auto",
+        "theme": "system",
         "window_background": "",
         "window_icon": "./assets/icons/icon.ico",
     },
@@ -235,4 +235,41 @@ def save_config_file(file_path: str, config: dict) -> None:
     except Exception:
         pass
     with open(json_file_path, "wb") as f:
-        f.write(orjson.dumps(config))
+        f.write(orjson.dumps(config, option=orjson.OPT_INDENT_2))
+
+def get_config_file(file_path: str) -> dict:
+    base, _ = os.path.splitext(file_path)
+    json_path = base + ".json"
+
+    # Ensure directory exists
+    dirpath = os.path.dirname(json_path)
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
+
+    status = "file_not_exists"
+    if os.path.exists(json_path):
+        status = check_config_file(json_path)
+
+    if status == "normal":
+        try:
+            with open(json_path, "rb") as f:
+                return orjson.loads(f.read())
+        except orjson.JSONDecodeError:
+            status = "format_error"
+
+    if status in ("file_not_exists", "key_missing"):
+        reset_config_file(file_path)
+    elif status == "low_version":
+        # Migration not implemented; fallback to reset
+        reset_config_file(file_path)
+    elif status == "format_error":
+        try:
+            fix_config_file(json_path, "format_error")
+        except Exception:
+            reset_config_file(file_path)
+
+    try:
+        with open(os.path.splitext(file_path)[0] + ".json", "rb") as f:
+            return orjson.loads(f.read())
+    except Exception:
+        return DEFAULT_CONFIG

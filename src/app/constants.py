@@ -9,7 +9,7 @@ SETTINGS_TAB_PLUGINS = 4
 """Global constants for Little Tree Wallpaper Next."""
 
 VER = "0.2.0"
-BUILD = "20251003-056"
+BUILD = "20251011-early_testing"
 MODE = "TEST"
 BUILD_VERSION = f"v{VER} ({BUILD})"
 

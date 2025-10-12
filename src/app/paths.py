@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import platformdirs
+from loguru import logger
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ASSET_DIR = BASE_DIR / "assets"
@@ -33,3 +34,5 @@ DATA_DIR = Path(
 )
 
 PLUGINS_DIR = BASE_DIR / "plugins"
+
+logger.info(f"【启动】数据目录\n缓存目录: {CACHE_DIR}\n配置目录: {CONFIG_DIR}\n数据目录: {DATA_DIR}\n 插件目录: {PLUGINS_DIR}")
