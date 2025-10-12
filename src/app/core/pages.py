@@ -12,6 +12,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
+from urllib.parse import quote_plus, urlencode
+
 import aiohttp
 import flet as ft
 import pyperclip
@@ -137,6 +139,17 @@ class Pages:
         self._favorite_batch_done: int = 0
         self._favorite_preview_cache: dict[str, tuple[float, str]] = {}
 
+        self._generate_provider_dropdown: ft.Dropdown | None = None
+        self._generate_seed_field: ft.TextField | None = None
+        self._generate_width_field: ft.TextField | None = None
+        self._generate_height_field: ft.TextField | None = None
+        self._generate_enhance_switch: ft.Switch | None = None
+        self._generate_prompt_field: ft.TextField | None = None
+        self._generate_output_container: ft.Container | None = None
+        self._generate_status_text: ft.Text | None = None
+        self._generate_loading_indicator: ft.ProgressRing | None = None
+        self._generate_last_file: Path | None = None
+
         self.home = self._build_home()
         self.resource = self._build_resource()
         self.generate = self._build_generate()
@@ -146,6 +159,7 @@ class Pages:
 
         self.page.run_task(self._load_bing_wallpaper)
         self.page.run_task(self._load_spotlight_wallpaper)
+    # 模型列表加载已移除
 
     def _sync_known_permissions(self) -> None:
         self._known_permissions.update(KNOWN_PERMISSIONS)
@@ -1336,6 +1350,14 @@ class Pages:
         )
         self.page.open(snackbar)
 
+    @staticmethod
+    def _abbreviate_text(text: str, max_len: int = 80) -> str:
+        if len(text) <= max_len:
+            return text
+        if max_len <= 3:
+            return text[:max_len]
+        return text[: max_len - 3] + "..."
+
     # ------------------------------------------------------------------
     # plugin event helpers
     # ------------------------------------------------------------------
@@ -1704,35 +1726,364 @@ class Pages:
         )
 
     def _build_generate(self):
+        self._generate_provider_dropdown = ft.Dropdown(
+            label="服务提供商",
+            value="pollinations",
+            options=[
+                ft.DropdownOption(key="pollinations", text="Pollinations.ai"),
+            ],
+        )
+        self._generate_seed_field = ft.TextField(
+            label="种子（相同种子将生成相同图片）",
+            value="42",
+            input_filter=ft.NumbersOnlyInputFilter(),
+        )
+        self._generate_width_field = ft.TextField(
+            label="图片宽度",
+            value="1920",
+            input_filter=ft.NumbersOnlyInputFilter(),
+        )
+        self._generate_height_field = ft.TextField(
+            label="图片高度",
+            value="1080",
+            input_filter=ft.NumbersOnlyInputFilter(),
+        )
+        self._generate_enhance_switch = ft.Switch(
+            label="使用大模型优化提示词",
+            value=False,
+        )
+        self._generate_prompt_field = ft.TextField(
+            label="提示词",
+            min_lines=3,
+            max_lines=5,
+            multiline=True,
+        )
+
+        self._generate_loading_indicator = ft.ProgressRing(
+            width=20,
+            height=20,
+            stroke_width=2,
+            visible=False,
+        )
+        self._generate_status_text = ft.Text(
+            "填写提示词后点击生成，即可在右侧查看图片",
+            size=12,
+            color=ft.Colors.OUTLINE,
+        )
+
+        placeholder = ft.Column(
+            [
+                ft.Icon(ft.Icons.IMAGE, size=72, color=ft.Colors.OUTLINE),
+                ft.Text("生成的图片会展示在这里", color=ft.Colors.OUTLINE),
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=12,
+        )
+
+        self._generate_output_container = ft.Container(
+            expand=True,
+            border_radius=12,
+            bgcolor=self._bgcolor_surface_low,
+            alignment=ft.alignment.center,
+            padding=16,
+            content=placeholder,
+        )
+
+        left_panel = ft.Container(
+            width=360,
+            padding=16,
+            bgcolor=self._bgcolor_surface_low,
+            border_radius=12,
+            content=ft.Column(
+                [
+                    self._generate_provider_dropdown,
+                    self._generate_seed_field,
+                    self._generate_width_field,
+                    self._generate_height_field,
+                    self._generate_enhance_switch,
+                    self._generate_prompt_field,
+                    ft.FilledButton("生成", on_click=self._handle_generate_clicked),
+                ],
+                spacing=12,
+                tight=True,
+            ),
+        )
+
+        right_panel = ft.Container(
+            expand=True,
+            padding=16,
+            bgcolor=ft.Colors.SURFACE,
+            border_radius=12,
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            self._generate_loading_indicator,
+                            self._generate_status_text,
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    self._generate_output_container,
+                ],
+                spacing=16,
+                expand=True,
+            ),
+        )
+
         return ft.Container(
-            ft.Column(
+            content=ft.Column(
                 [
                     ft.Text("生成", size=30),
                     ft.Row(
                         [
-                            ft.Column(
-                                [
-                                    ft.Dropdown(
-                                        label="服务提供商",
-                                        value="pollinations",
-                                        options=[
-                                            ft.DropdownOption(
-                                                key="pollinations",
-                                                text="Pollinations.ai",
-                                            )
-                                        ],
-                                    ),
-                                    ft.TextField(label="提示词"),
-                                    ft.TextField(label="否定提示词"),
-                                    ft.FilledButton("生成"),
-                                ]
-                            )
-                        ]
+                            left_panel,
+                            right_panel,
+                        ],
+                        expand=True,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                        alignment=ft.MainAxisAlignment.START,
                     ),
                 ],
+                spacing=24,
                 expand=True,
-            )
+            ),
+            expand=True,
+            padding=16,
         )
+
+    def _handle_generate_error(self, message: str) -> None:
+        logger.error("Image generation failed: {message}", message=message)
+        self._set_generate_loading(False)
+        self._update_generate_status(message, error=True)
+        self._show_snackbar(message, error=True)
+
+    def _set_generate_loading(self, active: bool) -> None:
+        if self._generate_loading_indicator is None:
+            return
+        self._generate_loading_indicator.visible = active
+        if self._generate_loading_indicator.page is not None:
+            self._generate_loading_indicator.update()
+
+    def _update_generate_status(self, message: str, *, error: bool = False) -> None:
+        if self._generate_status_text is None:
+            return
+        self._generate_status_text.value = message
+        self._generate_status_text.color = (
+            ft.Colors.ERROR if error else ft.Colors.OUTLINE
+        )
+        if self._generate_status_text.page is not None:
+            self._generate_status_text.update()
+
+    def _set_generate_output_image(
+        self,
+        source: str,
+        *,
+        is_local_file: bool = False,
+    ) -> None:
+        if self._generate_output_container is None:
+            return
+        logger.debug(
+            "Updating preview image",
+            source=source,
+            local=is_local_file,
+        )
+        image_kwargs = dict(
+            fit=ft.ImageFit.CONTAIN,
+            expand=True,
+            border_radius=12,
+        )
+        if is_local_file:
+            try:
+                data = Path(source).read_bytes()
+            except Exception as exc:
+                logger.error(
+                    "Failed to read generated image file: {error}",
+                    error=str(exc),
+                )
+                raise
+            encoded = base64.b64encode(data).decode("ascii")
+            image_control = ft.Image(src_base64=encoded, **image_kwargs)
+        else:
+            image_control = ft.Image(src=source, **image_kwargs)
+
+        self._generate_output_container.content = image_control
+        if self._generate_output_container.page is not None:
+            self._generate_output_container.update()
+
+    def _handle_generate_clicked(self, _: ft.ControlEvent) -> None:
+        prompt = (self._generate_prompt_field.value or "").strip() if self._generate_prompt_field else ""
+        if not prompt:
+            self._handle_generate_error("请输入提示词。")
+            return
+
+        logger.info(
+            "Generate button clicked with prompt: {prompt}",
+            prompt=self._abbreviate_text(prompt, 120),
+        )
+
+        provider = (
+            (self._generate_provider_dropdown.value or "").strip().lower()
+            if self._generate_provider_dropdown
+            else "pollinations"
+        )
+        if provider not in ("pollinations", ""):
+            logger.error("Unsupported provider selected: {provider}", provider=provider)
+            self._handle_generate_error("当前仅支持 Pollinations.ai。")
+            return
+
+        width: int | None = None
+        if self._generate_width_field:
+            raw_width = (self._generate_width_field.value or "").strip()
+            if raw_width:
+                try:
+                    width = int(raw_width)
+                    if width <= 0:
+                        raise ValueError
+                except ValueError:
+                    logger.warning("Invalid width value: {value}", value=raw_width)
+                    self._handle_generate_error("图片宽度必须是正整数。")
+                    return
+
+        height: int | None = None
+        if self._generate_height_field:
+            raw_height = (self._generate_height_field.value or "").strip()
+            if raw_height:
+                try:
+                    height = int(raw_height)
+                    if height <= 0:
+                        raise ValueError
+                except ValueError:
+                    logger.warning("Invalid height value: {value}", value=raw_height)
+                    self._handle_generate_error("图片高度必须是正整数。")
+                    return
+
+        params: dict[str, str] = {}
+        seed = (self._generate_seed_field.value or "").strip() if self._generate_seed_field else ""
+        enhance = (
+            self._generate_enhance_switch.value
+            if self._generate_enhance_switch is not None
+            else False
+        )
+        allow_nsfw = bool(app_config.get("wallpaper.allow_nsfw", False))
+
+        if seed:
+            params["seed"] = seed
+        if width is not None:
+            params["width"] = str(width)
+        if height is not None:
+            params["height"] = str(height)
+        if enhance:
+            params["enhance"] = "true"
+        params["safe"] = "false" if allow_nsfw else "true"
+
+        base_url = "https://image.pollinations.ai/prompt/"
+        encoded_prompt = quote_plus(prompt)
+        request_url = f"{base_url}{encoded_prompt}"
+        if params:
+            request_url = f"{request_url}?{urlencode(params)}"
+        cache_token = str(int(time.time() * 1000))
+        cache_suffix = f"cb={cache_token}"
+        request_url = (
+            f"{request_url}&{cache_suffix}"
+            if params
+            else f"{request_url}?{cache_suffix}"
+        )
+
+        logger.info(
+            "Dispatching Pollinations request",
+            prompt=self._abbreviate_text(prompt, 120),
+            url=request_url,
+            width=width,
+            height=height,
+            seed=seed,
+            model="<default>",
+            enhance=enhance,
+            safe=params.get("safe"),
+        )
+
+        self._set_generate_loading(True)
+        self._update_generate_status("已发送生成请求，正在等待图像生成…")
+        self.page.run_task(
+            self._process_generate_request,
+            request_url,
+            prompt,
+            width,
+            height,
+            seed,
+            "",
+            enhance,
+            allow_nsfw,
+        )
+
+    async def _process_generate_request(
+        self,
+        request_url: str,
+        prompt: str,
+        width: int | None,
+        height: int | None,
+        seed: str,
+        model: str,
+        enhance: bool,
+        allow_nsfw: bool,
+    ) -> None:
+        cache_dir = CACHE_DIR / "generations"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        slug = self._favorite_filename_slug(prompt, "generation")
+        timestamp = int(time.time())
+        custom_name = f"{slug}-{timestamp}"
+
+        async def _download() -> str | None:
+            return await asyncio.to_thread(
+                ltwapi.download_file,
+                request_url,
+                cache_dir,
+                custom_name,
+                120,
+                3,
+                {"Accept": "image/*"},
+                None,
+                False,
+            )
+
+        try:
+            path_str = await _download()
+        except Exception as exc:  # pragma: no cover - network
+            logger.error(
+                "Error downloading generated image: {error}",
+                error=str(exc),
+            )
+            self._handle_generate_error("生成图片下载失败，请稍后重试。")
+            return
+
+        if not path_str:
+            self._handle_generate_error("生成图片失败，请稍后重试。")
+            return
+
+        path = Path(path_str)
+        self._generate_last_file = path
+        try:
+            self._set_generate_output_image(str(path), is_local_file=True)
+        except Exception:
+            self._handle_generate_error("加载生成的图片失败。")
+            return
+
+        self._update_generate_status(f"生成完成，已保存到 {path.name}")
+        logger.info(
+            "Generated image cached locally",
+            path=str(path),
+            prompt=self._abbreviate_text(prompt, 120),
+            width=width,
+            height=height,
+            seed=seed,
+            model="<default>",
+            enhance=enhance,
+            safe="false" if allow_nsfw else "true",
+        )
+        self._set_generate_loading(False)
+        self.page.update()
 
     def _build_bing_loading_indicator(self):
         return ft.Container(
@@ -4182,12 +4533,8 @@ class Pages:
             ),
             open=False,
         )
-        general = tab_content(
-            "通用",
-        )
-        download = tab_content(
-            "下载",
-        )
+        general = tab_content("通用")
+        download = tab_content("下载")
         resource = tab_content(
             "内容",
             ft.Text("是否允许 NSFW 内容？"),
@@ -4196,8 +4543,6 @@ class Pages:
                 on_change=_change_nsfw,
             ),
         )
-
-
 
         theme_dropdown = ft.Dropdown(
             label="界面主题",
@@ -4211,26 +4556,11 @@ class Pages:
             width=220,
         )
 
-        lang_dropdown = ft.Dropdown(
-            label="界面语言",
-            value=app_config.get("ui.language", "zh-CN"),
-            options=[
-                ft.DropdownOption(key="zh-CN", text="中文 (简体)"),
-                ft.DropdownOption(key="en-US", text="English"),
-            ],
-            width=220,
-            tooltip="应用语言",
-        )
-
-
-
         ui = tab_content(
             "界面",
             ft.Row(
                 [
                     theme_dropdown,
-                    ft.Text("语言", size=14),
-                    lang_dropdown,
                 ],
                 spacing=12,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,

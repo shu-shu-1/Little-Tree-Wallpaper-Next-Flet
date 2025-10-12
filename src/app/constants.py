@@ -5,11 +5,11 @@ values reflect the order of tabs in the main settings view (0-based).
 """
 
 # Index of the "Plugins" tab inside the Settings view (0-based).
-SETTINGS_TAB_PLUGINS = 4
+SETTINGS_TAB_PLUGINS = 5
 """Global constants for Little Tree Wallpaper Next."""
 
 VER = "0.2.0"
-BUILD = "20251011-early_testing"
+BUILD = "20251012-early_testing"
 MODE = "TEST"
 BUILD_VERSION = f"v{VER} ({BUILD})"
 

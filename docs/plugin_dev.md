@@ -66,6 +66,7 @@ manifest = PluginManifest(
 - `set_initial_route(route)`: 可选地改变初始路由。
 - `logger`: 已绑定插件 identifier 的 `loguru.Logger`，直接 `logger.info("...")` 即可。
 - `metadata`: 字典，可用于在插件及核心系统之间传递额外信息；也可通过 `context.add_metadata(key, value)` 辅助写入。
+- 权限辅助：`context.has_permission(id)` 检查当前授权；`context.request_permission(id, message=None)` 主动触发系统确认；`context.ensure_permission(id, message=None)` 确保已授权，否则抛出 `PluginPermissionError`。
 - 全局数据接口：
     - `register_data_namespace(identifier, *, description="", permission=None)`：注册命名空间，声明数据归属以及访问权限。
     - `publish_data(namespace_id, entry_id, payload)`：写入 / 更新命名空间中的数据条目。
@@ -171,27 +172,11 @@ def collect_wallpaper(context: PluginContext, metadata: dict) -> None:
 
 ## 权限管理
 
-插件权限支持三种持久化策略，可在“插件管理 → 管理权限”对话框或导入插件时的权限向导中切换：
-
-- **允许**：永久授予对应能力，后续调用不会再提示。
-- **禁用**：拒绝插件访问该能力，相关 API 会立即返回 `permission_denied`，但插件本身仍保持加载状态。
-- **下次询问**：下次调用相关 API 时都会弹出系统对话框。调用线程会同步阻塞，直到用户选择允许或拒绝。
-
-当用户授权额外权限后，插件可立即重试相同操作；若用户拒绝，建议捕获 `PluginPermissionError` 并引导用户在设置中调整权限。
-
-### 收藏权限
-
-为了保护用户收藏数据，新版本引入以下三个权限：
-
-- `favorites_read`：允许插件读取收藏夹与收藏条目元数据。
-- `favorites_write`：允许插件创建、修改或删除收藏夹及收藏条目，并注册 AI 分类器。
-- `favorites_export`：允许插件导出收藏包、导入外部收藏以及写入本地化资源文件。
-
-如果插件仅需读取收藏信息，可只声明 `favorites_read`；任何写操作都需要额外申请 `favorites_write`，涉及导出或本地化的高级功能则需另行声明 `favorites_export`。
-
-### 动态库权限
-
-导入 `.py` 格式插件时，管理器会扫描源码中的 `import` / `from` 语句，并为非白名单模块生成附加权限条目，例如 `python_import:requests`。白名单包含 `flet`、`datetime`、`time`、`json` 以及 `app.plugins` 命名空间下的模块，同时自动忽略标准库和插件自身的相对导入。这样用户可以在导入阶段明确插件依赖的外部库并决定是否授权。
+权限体系的状态说明、完整列表以及运行时授权流程已单独整理至
+[`docs/plugin_permissions.md`](./plugin_permissions.md)。
+开发插件时，当执行需要授权的操作（如收藏读写、路由跳转）且状态为
+“下次询问”时，`PluginContext.ensure_permission()` 会触发系统对话框，阻塞等待用户选择。
+若只需判断是否已授权，可调用 `context.has_permission("permission_id")`。
 
 ## 全局数据共享（Global Data Store）
 

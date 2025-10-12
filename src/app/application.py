@@ -105,6 +105,7 @@ class _PermissionPromptRequest:
     on_denied: Optional[Callable[[], PluginOperationResult]] = None
     result: PluginOperationResult | None = None
     completion: Event = field(default_factory=Event, repr=False)
+    message: str | None = None
 
 
 class Application:
@@ -284,6 +285,15 @@ class Application:
                 event_bus=self._event_bus,
                 metadata=metadata,
                 global_data=global_data_access,
+                    _permission_request_handler=(
+                        lambda permission_name,
+                        note=None,
+                        pid=manifest.identifier: self._prompt_permission_state(
+                            pid,
+                            permission_name,
+                            note,
+                        )
+                    ),
             )
             context._open_route_handler = (
                 lambda route, pid=manifest.identifier: self._open_route(pid, route)
@@ -505,6 +515,8 @@ class Application:
         permission: str,
         on_granted: Callable[[], PluginOperationResult],
         on_denied: Optional[Callable[[], PluginOperationResult]] = None,
+        *,
+        message: str | None = None,
     ) -> PluginOperationResult:
         state = self._plugin_config.get_permission_state(plugin_id, permission)
         if state is PermissionState.GRANTED:
@@ -522,6 +534,7 @@ class Application:
             permission=permission,
             on_granted=on_granted,
             on_denied=on_denied,
+            message=message,
         )
         self._permission_prompt_queue.append(request)
         if not self._permission_prompt_active:
@@ -530,6 +543,33 @@ class Application:
         return request.result or PluginOperationResult.failed(
             "permission_prompt_cancelled", "权限请求已取消。"
         )
+
+    def _prompt_permission_state(
+        self,
+        plugin_id: str,
+        permission: str,
+        message: str | None = None,
+    ) -> PermissionState:
+        state = self._plugin_config.get_permission_state(plugin_id, permission)
+        if state in (PermissionState.GRANTED, PermissionState.DENIED):
+            return state
+
+        def _noop_granted() -> PluginOperationResult:
+            return PluginOperationResult.ok()
+
+        def _noop_denied() -> PluginOperationResult:
+            return PluginOperationResult.failed("permission_not_granted")
+
+        result = self._ensure_permission(
+            plugin_id,
+            permission,
+            _noop_granted,
+            _noop_denied,
+            message=message,
+        )
+        if result.success:
+            return PermissionState.GRANTED
+        return self._plugin_config.get_permission_state(plugin_id, permission)
 
     def _open_route(self, plugin_id: str, route: str) -> PluginOperationResult:
         target_route = route or "/"
@@ -768,6 +808,8 @@ class Application:
         ]
         if permission_desc:
             content_controls.append(ft.Text(permission_desc, size=13))
+        if request.message:
+            content_controls.append(ft.Text(request.message, size=12))
 
         def _finish(decision: PermissionState) -> None:
             self._close_permission_dialog()

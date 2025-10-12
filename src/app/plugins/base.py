@@ -231,6 +231,9 @@ class PluginContext:
     _ipc_broadcast_handler: Callable[[str, dict], PluginOperationResult] | None = None
     _ipc_subscribe_handler: Callable[[str], PluginOperationResult] | None = None
     _ipc_unsubscribe_handler: Callable[[str], PluginOperationResult] | None = None
+    _permission_request_handler: (
+        Callable[[str, str | None], PermissionState] | None
+    ) = field(default=None, repr=False)
 
     def add_navigation_view(self, view: AppNavigationView) -> None:
         """Register a navigation destination for the application sidebar."""
@@ -498,8 +501,20 @@ class PluginContext:
     def has_permission(self, permission: str) -> bool:
         return self.permissions.get(permission, PermissionState.PROMPT) is PermissionState.GRANTED
 
+    def request_permission(
+        self, permission: str, *, message: str | None = None
+    ) -> PermissionState:
+        handler = self._permission_request_handler
+        if handler is None:
+            return self.permissions.get(permission, PermissionState.PROMPT)
+        state = handler(permission, message)
+        self.permissions[permission] = state
+        return state
+
     def ensure_permission(self, permission: str, message: str | None = None) -> None:
         state = self.permissions.get(permission, PermissionState.PROMPT)
+        if state is PermissionState.PROMPT:
+            state = self.request_permission(permission, message=message)
         if state is PermissionState.GRANTED:
             return
         raise PluginPermissionError(permission, message)
