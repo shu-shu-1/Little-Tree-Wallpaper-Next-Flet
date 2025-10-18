@@ -10,6 +10,9 @@ jobs:
   build-windows:
     name: Build Windows (flet build windows)
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: 1
+      PYTHONIOENCODING: utf-8
 
     steps:
       - name: Checkout
@@ -39,6 +42,10 @@ jobs:
       - name: Build Windows with flet
         shell: powershell
         run: |
+          # ensure console uses UTF-8 so rich can print special characters
+          chcp 65001 | Out-Null
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::UTF8
+          $OutputEncoding = New-Object -typename System.Text.UTF8Encoding
           flet build windows
 
       - name: Upload build artifacts
