@@ -38,7 +38,22 @@ jobs:
           $info = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $info) { Write-Error "Visual Studio with Desktop development with C++ workload not found"; exit 1 }
           Write-Host "Found Visual Studio at: $info"
-
+      # 新增：安装 Flutter
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+      
+      # 新增：启用 Windows 桌面并预缓存
+      - name: Configure Flutter for Windows
+        shell: powershell
+        run: |
+          chcp 65001 | Out-Null
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::UTF8
+          $OutputEncoding = New-Object -typename System.Text.UTF8Encoding
+          flutter config --enable-windows-desktop
+          flutter precache --windows
+          flutter doctor -v
       - name: Build Windows with flet
         shell: powershell
         run: |
@@ -46,7 +61,7 @@ jobs:
           chcp 65001 | Out-Null
           [Console]::OutputEncoding = [Text.UTF8Encoding]::UTF8
           $OutputEncoding = New-Object -typename System.Text.UTF8Encoding
-          flet build windows
+          flet build windows -vv
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
