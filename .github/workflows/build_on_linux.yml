@@ -15,12 +15,18 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: 'stable'
     - name: Set up Python 3.13
       uses: actions/setup-python@v3
       with:
         python-version: "3.13"
     - name: Install dependencies
       run: |
+        flutter --version
+        flutter doctor -v
         python -m pip install --upgrade pip
         pip install ruff
         pip install .
