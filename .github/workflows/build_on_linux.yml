@@ -15,10 +15,20 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Setup Flutter
-      uses: subosito/flutter-action@v2
-      with:
-        flutter-version: 'stable'
+    - name: Debug runner path
+      run: |
+        echo "PATH=$PATH"
+        uname -a
+    - name: Install Flutter (manual)
+      run: |
+        set -e
+        echo "Installing Flutter stable into $HOME/flutter"
+        rm -rf $HOME/flutter
+        git clone --depth 1 https://github.com/flutter/flutter.git -b stable $HOME/flutter
+        echo "$HOME/flutter/bin" >> $GITHUB_PATH
+        export PATH="$HOME/flutter/bin:$PATH"
+        flutter --version
+        flutter doctor -v
     - name: Set up Python 3.13
       uses: actions/setup-python@v3
       with:
