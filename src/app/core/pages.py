@@ -159,6 +159,7 @@ class Pages:
 
         self.page.run_task(self._load_bing_wallpaper)
         self.page.run_task(self._load_spotlight_wallpaper)
+
     # 模型列表加载已移除
 
     def _sync_known_permissions(self) -> None:
@@ -1645,7 +1646,7 @@ class Pages:
             border_radius=10,
             fit=ft.ImageFit.COVER,
             tooltip="当前计算机的壁纸",
-            error_content=ft.Container(ft.Text("图片已失效，请刷新数据~"),padding=20)
+            error_content=ft.Container(ft.Text("图片已失效，请刷新数据~"), padding=20),
         )
         self.hitokoto_loading = ft.ProgressRing(visible=False, width=24, height=24)
         self.hitokoto_text = ft.Text("", size=16, font_family="HITOKOTOFont")
@@ -1709,6 +1710,11 @@ class Pages:
                     content=self._build_spotlight_loading_indicator(),
                 ),
                 ft.Tab(text="搜索", icon=ft.Icons.SEARCH),
+                ft.Tab(
+                    text="IntelliMarkets 图片源",
+                    icon=ft.Icons.SUBJECT,
+                    content=self._build_im_page(),
+                ),
                 ft.Tab(text="其他", icon=ft.Icons.SUBJECT),
             ],
             animation_duration=300,
@@ -1913,7 +1919,11 @@ class Pages:
             self._generate_output_container.update()
 
     def _handle_generate_clicked(self, _: ft.ControlEvent) -> None:
-        prompt = (self._generate_prompt_field.value or "").strip() if self._generate_prompt_field else ""
+        prompt = (
+            (self._generate_prompt_field.value or "").strip()
+            if self._generate_prompt_field
+            else ""
+        )
         if not prompt:
             self._handle_generate_error("请输入提示词。")
             return
@@ -1960,7 +1970,11 @@ class Pages:
                     return
 
         params: dict[str, str] = {}
-        seed = (self._generate_seed_field.value or "").strip() if self._generate_seed_field else ""
+        seed = (
+            (self._generate_seed_field.value or "").strip()
+            if self._generate_seed_field
+            else ""
+        )
         enhance = (
             self._generate_enhance_switch.value
             if self._generate_enhance_switch is not None
@@ -2109,6 +2123,59 @@ class Pages:
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             padding=32,
+        )
+
+    def _build_im_page(self):
+        return ft.Container(
+            ft.Column(
+                [
+                    ft.Card(
+                        content=ft.Container(
+                            ft.Column(
+                                controls=[
+                                    ft.Row(
+                                        [   ft.Row([
+                                            ft.Icon(
+                                                ft.Icons.INFO,
+                                                size=25,
+                                                color=ft.Colors.PRIMARY,
+                                            ),
+                                            ft.Text(
+                                                spans=[
+                                                    ft.TextSpan(
+                                                        "图片源的搜集和配置文件由 SR 思锐团队提供 ©，图片内容责任由接口方承担",
+                                                        # ft.TextStyle(
+                                                        #     decoration=ft.TextDecoration.UNDERLINE,
+                                                        # ),
+                                                        url="https://github.com/IntelliMarkets/Wallpaper_API_Index",
+                                                    ),
+                                                ],
+                                            ),]),ft.Row([ft.TextButton("查看详情", icon=ft.Icons.OPEN_IN_NEW, url="https://github.com/IntelliMarkets/Wallpaper_API_Index")])
+                                         
+                                        ],
+                                        expand=True,
+                                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                    ),
+                                ],
+                                # alignment=ft.MainAxisAlignment.CENTER,
+                                # horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                            padding=10,
+                            expand=True,
+                        ),
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Row([]),
+                            ft.Row([ft.TextButton("刷新", icon=ft.Icons.REFRESH)]),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    ),
+                ],
+                # alignment=ft.MainAxisAlignment.CENTER,
+                # horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=5,
         )
 
     # ------------------------------------------------------------------
@@ -4334,7 +4401,6 @@ class Pages:
         )
 
     def _build_test(self):
-
         return ft.Column(
             [
                 ft.Text("测试和调试", size=30),
@@ -4342,8 +4408,10 @@ class Pages:
             ],
             expand=True,
         )
+
     def _handle_confirm_nsfw(self):
         app_config.set("wallpaper.allow_nsfw", True)
+
     def _confirm_nsfw(self):
         # Checkboxes and state sync
         adult_cb = ft.Checkbox(label="我已年满 18 周岁")
@@ -4411,26 +4479,27 @@ class Pages:
                     confirm_btn = dlg.actions[1] if len(dlg.actions) > 1 else None
 
                     if confirm_btn:
+
                         def _on_confirm(_: ft.ControlEvent | None = None):
                             self._handle_confirm_nsfw()
                             switch.value = True
                             if switch.page is not None:
                                 switch.update()
                             self._close_dialog()
+
                         confirm_btn.on_click = _on_confirm
 
                     if cancel_btn:
+
                         def _on_cancel(_: ft.ControlEvent | None = None):
                             switch.value = False
                             if switch.page is not None:
                                 switch.update()
                             self._close_dialog()
+
                         cancel_btn.on_click = _on_cancel
             except Exception:
                 logger.error("Failed to wire dialog buttons")
-
-
-
 
         def tab_content(title: str, *controls: ft.Control):
             return ft.Container(
@@ -4738,7 +4807,7 @@ class Pages:
         if value == "dark":
             self.page.theme_mode = ft.ThemeMode.DARK
             app_config.set("ui.theme", "dark")
-            
+
         elif value == "light":
             self.page.theme_mode = ft.ThemeMode.LIGHT
             app_config.set("ui.theme", "light")
