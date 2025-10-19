@@ -1670,47 +1670,50 @@ class Pages:
         refresh_btn = ft.IconButton(
             icon=ft.Icons.REFRESH, tooltip="刷新一言", on_click=self.refresh_hitokoto
         )
-        return ft.Column(
-            [
-                ft.Text("当前壁纸", size=30),
-                ft.Row(
-                    [
-                        self.img,
-                        ft.Column(
-                            [
-                                ft.TextButton("导出", icon=ft.Icons.SAVE_ALT),
-                                ft.TextButton("更换", icon=ft.Icons.PHOTO_LIBRARY),
-                                ft.TextButton(
-                                    "收藏",
-                                    icon=ft.Icons.STAR,
-                                    on_click=lambda _: self._open_favorite_editor(
-                                        self._make_current_wallpaper_payload()
+        return ft.Container(
+            ft.Column(
+                [
+                    ft.Text("当前壁纸", size=30),
+                    ft.Row(
+                        [
+                            self.img,
+                            ft.Column(
+                                [
+                                    ft.TextButton("导出", icon=ft.Icons.SAVE_ALT),
+                                    ft.TextButton("更换", icon=ft.Icons.PHOTO_LIBRARY),
+                                    ft.TextButton(
+                                        "收藏",
+                                        icon=ft.Icons.STAR,
+                                        on_click=lambda _: self._open_favorite_editor(
+                                            self._make_current_wallpaper_payload()
+                                        ),
                                     ),
-                                ),
-                                ft.TextButton(
-                                    "刷新",
-                                    tooltip="刷新当前壁纸信息",
-                                    icon=ft.Icons.REFRESH,
-                                    on_click=self._refresh_home,
-                                ),
-                            ],
-                            alignment=ft.MainAxisAlignment.END,
-                        ),
-                    ]
-                ),
-                self.file_name,
-                ft.Container(
-                    content=ft.Divider(height=1, thickness=1),
-                    margin=ft.margin.only(top=30),
-                ),
-                ft.Row(
-                    [self.hitokoto_loading, self.hitokoto_text, refresh_btn],
-                    alignment=ft.MainAxisAlignment.START,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                ft.Image(src=ASSET_DIR / "images" / "1.gif"),
-            ],
+                                    ft.TextButton(
+                                        "刷新",
+                                        tooltip="刷新当前壁纸信息",
+                                        icon=ft.Icons.REFRESH,
+                                        on_click=self._refresh_home,
+                                    ),
+                                ],
+                                alignment=ft.MainAxisAlignment.END,
+                            ),
+                        ]
+                    ),
+                    self.file_name,
+                    ft.Container(
+                        content=ft.Divider(height=1, thickness=1),
+                        margin=ft.margin.only(top=30),
+                    ),
+                    ft.Row(
+                        [self.hitokoto_loading, self.hitokoto_text, refresh_btn],
+                        alignment=ft.MainAxisAlignment.START,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Image(src=ASSET_DIR / "images" / "1.gif"),
+                ],
+            ),
             expand=True,
+            padding=16,
         )
 
     def _build_resource(self):
@@ -1736,16 +1739,19 @@ class Pages:
             ],
             animation_duration=300,
         )
-        return ft.Column(
-            [
-                ft.Text("资源", size=30),
-                ft.Container(
-                    content=self.resource_tabs,
-                    expand=True,
-                    clip_behavior=ft.ClipBehavior.HARD_EDGE,
-                ),
-            ],
+        return ft.Container(
+            ft.Column(
+                [
+                    ft.Text("资源", size=30),
+                    ft.Container(
+                        content=self.resource_tabs,
+                        expand=True,
+                        clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                    ),
+                ],
+            ),
             expand=True,
+            padding=16,
         )
 
     def _build_generate(self):
@@ -2151,24 +2157,36 @@ class Pages:
                             ft.Column(
                                 controls=[
                                     ft.Row(
-                                        [   ft.Row([
-                                            ft.Icon(
-                                                ft.Icons.INFO,
-                                                size=25,
-                                                color=ft.Colors.PRIMARY,
-                                            ),
-                                            ft.Text(
-                                                spans=[
-                                                    ft.TextSpan(
-                                                        "图片源的搜集和配置文件由 SR 思锐团队提供 ©，图片内容责任由接口方承担",
-                                                        # ft.TextStyle(
-                                                        #     decoration=ft.TextDecoration.UNDERLINE,
-                                                        # ),
-                                                        url="https://github.com/IntelliMarkets/Wallpaper_API_Index",
+                                        [
+                                            ft.Row(
+                                                [
+                                                    ft.Icon(
+                                                        ft.Icons.INFO,
+                                                        size=25,
+                                                        color=ft.Colors.PRIMARY,
                                                     ),
-                                                ],
-                                            ),]),ft.Row([ft.TextButton("查看详情", icon=ft.Icons.OPEN_IN_NEW, url="https://github.com/IntelliMarkets/Wallpaper_API_Index")])
-                                         
+                                                    ft.Text(
+                                                        spans=[
+                                                            ft.TextSpan(
+                                                                "图片源的搜集和配置文件由 SR 思锐团队提供 ©，图片内容责任由接口方承担",
+                                                                # ft.TextStyle(
+                                                                #     decoration=ft.TextDecoration.UNDERLINE,
+                                                                # ),
+                                                                url="https://github.com/IntelliMarkets/Wallpaper_API_Index",
+                                                            ),
+                                                        ],
+                                                    ),
+                                                ]
+                                            ),
+                                            ft.Row(
+                                                [
+                                                    ft.TextButton(
+                                                        "查看详情",
+                                                        icon=ft.Icons.OPEN_IN_NEW,
+                                                        url="https://github.com/IntelliMarkets/Wallpaper_API_Index",
+                                                    )
+                                                ]
+                                            ),
                                         ],
                                         expand=True,
                                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -4402,19 +4420,23 @@ class Pages:
 
         self._refresh_favorite_tabs()
 
-        return ft.Column(
-            [
-                ft.Text("收藏", size=30),
-                ft.Text(
-                    "管理你的收藏、标签和收藏夹。",
-                    size=12,
-                    color=ft.Colors.GREY,
-                ),
-                ft.Container(toolbar, padding=ft.Padding(0, 12, 0, 12)),
-                ft.Container(self._favorite_tabs, expand=True),
-            ],
-            spacing=8,
+        return ft.Container(
+            ft.Column(
+                [
+                    ft.Text("收藏", size=30),
+                    ft.Text(
+                        "管理你的收藏、标签和收藏夹。",
+                        size=12,
+                        color=ft.Colors.GREY,
+                    ),
+                    ft.Container(toolbar, padding=ft.Padding(0, 12, 0, 12)),
+                    ft.Container(self._favorite_tabs, expand=True),
+                ],
+                spacing=8,
+                expand=True,
+            ),
             expand=True,
+            padding=16,
         )
 
     def _build_test(self):
