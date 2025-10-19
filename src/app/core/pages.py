@@ -44,6 +44,7 @@ from app.plugins import (
     GlobalDataError,
     PluginImportResult,
     PluginKind,
+    PluginOperationResult,
     PermissionState,
     KNOWN_PERMISSIONS,
 )
@@ -55,6 +56,8 @@ app_config = SettingsStore()
 
 if TYPE_CHECKING:
     from app.plugins.base import PluginSettingsPage
+    from app.theme import ThemeManager
+    from app.plugins import PluginOperationResult
 
 
 class Pages:
@@ -70,6 +73,10 @@ class Pages:
         known_permissions: Optional[Dict[str, PluginPermission]] = None,
         event_definitions: Optional[List[EventDefinition]] = None,
         global_data: GlobalDataAccess | None = None,
+        theme_manager: "ThemeManager" | None = None,
+        theme_list_handler: Callable[[], "PluginOperationResult"] | None = None,
+        theme_apply_handler: Callable[[str], "PluginOperationResult"] | None = None,
+        theme_profiles: Optional[List[Dict[str, Any]]] = None,
     ):
         self.page = page
         self.event_bus = event_bus
@@ -139,6 +146,14 @@ class Pages:
         self._favorite_batch_done: int = 0
         self._favorite_preview_cache: dict[str, tuple[float, str]] = {}
 
+        self._theme_manager = theme_manager
+        self._theme_list_handler = theme_list_handler
+        self._theme_apply_handler = theme_apply_handler
+        self._theme_profiles: list[Dict[str, Any]] = list(theme_profiles or [])
+        self._theme_dropdown: ft.Dropdown | None = None
+        self._theme_summary_text: ft.Text | None = None
+        self._theme_apply_button: ft.Control | None = None
+
         self._generate_provider_dropdown: ft.Dropdown | None = None
         self._generate_seed_field: ft.TextField | None = None
         self._generate_width_field: ft.TextField | None = None
@@ -156,6 +171,8 @@ class Pages:
         self.sniff = self._build_sniff()
         self.favorite = self._build_favorite()
         self.test = self._build_test()
+
+        self._refresh_theme_profiles(initial=True)
 
         self.page.run_task(self._load_bing_wallpaper)
         self.page.run_task(self._load_spotlight_wallpaper)
@@ -4450,6 +4467,220 @@ class Pages:
         )
         self._open_dialog(self._confirm_nsfw_dialog)
 
+    def _refresh_theme_profiles(
+        self, *, initial: bool = False, show_feedback: bool = False
+    ) -> None:
+        if self._theme_list_handler is None:
+            if not initial and show_feedback:
+                self._show_snackbar("主题接口不可用。", error=True)
+            self._theme_profiles = []
+            self._populate_theme_dropdown()
+            return
+        try:
+            result = self._theme_list_handler()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error(f"刷新主题列表失败: {exc}")
+            if show_feedback:
+                self._show_snackbar("刷新主题列表失败。", error=True)
+            return
+
+        profiles: list[Dict[str, Any]] | None = None
+        message: str | None = None
+        if isinstance(result, PluginOperationResult):
+            message = result.message
+            if isinstance(result.data, list):
+                profiles = result.data
+        elif isinstance(result, list):
+            profiles = result
+
+        if profiles is not None:
+            self._theme_profiles = list(profiles)
+            self._populate_theme_dropdown()
+            if show_feedback:
+                note = message or "主题列表已更新。"
+                self._show_snackbar(note)
+        else:
+            if show_feedback or not initial:
+                self._show_snackbar(message or "无法获取主题列表。", error=True)
+
+    def _populate_theme_dropdown(self) -> None:
+        dropdown = self._theme_dropdown
+        if dropdown is None:
+            return
+
+        options: list[ft.DropdownOption] = []
+        current = self._get_active_theme_id()
+        for profile in self._theme_profiles:
+            identifier = str(profile.get("id", "")).strip()
+            if not identifier:
+                continue
+            name = str(profile.get("name") or identifier)
+            source = str(profile.get("source") or "")
+            suffix = ""
+            if source == "builtin":
+                suffix = "（内置）"
+            elif source == "file":
+                suffix = "（文件）"
+            elif source == "custom":
+                suffix = "（自定义）"
+            label = name if not suffix else f"{name} {suffix}"
+            options.append(ft.DropdownOption(key=identifier, text=label))
+        dropdown.options = options
+
+        if not options:
+            dropdown.value = None
+        else:
+            if current and any(opt.key == current for opt in options):
+                dropdown.value = current
+            else:
+                dropdown.value = options[0].key
+        should_refresh = dropdown.page is not None
+        self._update_theme_summary()
+        if should_refresh and self.page is not None:
+            self.page.update()
+
+    def _get_active_theme_id(self) -> str | None:
+        for profile in self._theme_profiles:
+            identifier = profile.get("id")
+            if profile.get("is_active") and isinstance(identifier, str):
+                return identifier
+        return None
+
+    def _find_theme_profile(self, identifier: str | None) -> Dict[str, Any] | None:
+        if not identifier:
+            return None
+        for profile in self._theme_profiles:
+            if str(profile.get("id")) == identifier:
+                return profile
+        return None
+
+    def _update_theme_summary(self) -> None:
+        if self._theme_summary_text is None or self._theme_dropdown is None:
+            return
+        profile = self._find_theme_profile(self._theme_dropdown.value)
+        if not profile:
+            self._theme_summary_text.value = ""
+        else:
+            lines: list[str] = []
+            source = profile.get("source")
+            if source == "builtin":
+                lines.append("来源：内置主题")
+            elif source == "file":
+                lines.append("来源：主题目录")
+            elif source == "custom":
+                lines.append("来源：自定义路径")
+            path = profile.get("path")
+            if isinstance(path, str) and path:
+                lines.append(f"文件：{path}")
+            summary = profile.get("summary")
+            if isinstance(summary, str) and summary:
+                lines.append(f"说明：{summary}")
+            self._theme_summary_text.value = "\n".join(lines)
+        attached = self._theme_summary_text.page is not None
+        if attached and self.page is not None:
+            self.page.update()
+
+    def _handle_theme_selection_change(self, _: ft.ControlEvent) -> None:
+        self._update_theme_summary()
+
+    def _handle_apply_theme(self, _: ft.ControlEvent | None = None) -> None:
+        if self._theme_apply_handler is None:
+            self._show_snackbar("主题应用接口不可用。", error=True)
+            return
+        if self._theme_dropdown is None or not self._theme_dropdown.value:
+            self._show_snackbar("请先选择一个主题。", error=True)
+            return
+        selection = str(self._theme_dropdown.value)
+        try:
+            result = self._theme_apply_handler(selection)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error(f"应用主题失败: {exc}")
+            self._show_snackbar("应用主题失败。", error=True)
+            return
+
+        if isinstance(result, PluginOperationResult):
+            if result.success:
+                self._show_snackbar(result.message or "主题已应用。")
+            elif result.error == "permission_pending":
+                self._show_snackbar(result.message or "等待用户授权。")
+            else:
+                self._show_snackbar(result.message or "主题应用失败。", error=True)
+        else:
+            self._show_snackbar("主题已应用。")
+
+        # 应用主题后刷新列表以同步新的激活状态。
+        self._refresh_theme_profiles(initial=True)
+
+    def _handle_refresh_theme_list(self, _: ft.ControlEvent | None = None) -> None:
+        self._refresh_theme_profiles(show_feedback=True)
+
+    def _open_theme_directory(self, _: ft.ControlEvent | None = None) -> None:
+        if self._theme_manager is None:
+            self._show_snackbar("主题目录不可用。", error=True)
+            return
+        try:
+            directory = self._theme_manager.themes_dir.resolve()
+            self.page.launch_url(directory.as_uri())
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error(f"打开主题目录失败: {exc}")
+            self._show_snackbar("无法打开主题目录。", error=True)
+
+    def _build_theme_settings_controls(self) -> list[ft.Control]:
+        dropdown = ft.Dropdown(
+            label="主题配置",
+            options=[],
+            value=None,
+            width=260,
+            on_change=self._handle_theme_selection_change,
+        )
+        self._theme_dropdown = dropdown
+
+        refresh_button = ft.IconButton(
+            icon=ft.Icons.REFRESH,
+            tooltip="刷新",
+            on_click=self._handle_refresh_theme_list,
+        )
+
+        apply_button = ft.FilledButton(
+            text="应用主题",
+            icon=ft.Icons.CHECK_CIRCLE,
+            on_click=self._handle_apply_theme,
+        )
+        self._theme_apply_button = apply_button
+
+        open_dir_button: ft.Control | None = None
+        if self._theme_manager is not None:
+            open_dir_button = ft.TextButton(
+                "打开主题目录",
+                icon=ft.Icons.FOLDER_OPEN,
+                on_click=self._open_theme_directory,
+            )
+
+        self._theme_summary_text = ft.Text(size=12, color=ft.Colors.GREY)
+        self._populate_theme_dropdown()
+
+        instructions = ft.Text(
+            "将符合格式的 JSON 主题文件放入主题目录即可在此选择。",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+
+        controls: list[ft.Control] = [
+            ft.Row(
+                [dropdown, refresh_button],
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.END,
+            ),
+            ft.Row(
+                [control for control in (apply_button, open_dir_button) if control],
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            self._theme_summary_text,
+            instructions,
+        ]
+        return controls
+
     def build_settings_view(self):
         def _change_nsfw(e: ft.ControlEvent):
             switch = getattr(e, "control", None)
@@ -4635,6 +4866,8 @@ class Pages:
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
+        theme_controls = self._build_theme_settings_controls()
+        theme = tab_content("主题", *theme_controls)
         about = tab_content(
             "关于",
             ft.Text(f"小树壁纸 Next v{VER}", size=16),
@@ -4687,6 +4920,7 @@ class Pages:
                 ft.Tab(text="资源", icon=ft.Icons.WALLPAPER, content=resource),
                 ft.Tab(text="下载", icon=ft.Icons.DOWNLOAD, content=download),
                 ft.Tab(text="界面", icon=ft.Icons.PALETTE, content=ui),
+                ft.Tab(text="主题", icon=ft.Icons.BRUSH, content=theme),
                 ft.Tab(text="关于", icon=ft.Icons.INFO, content=about),
                 ft.Tab(
                     text="插件",

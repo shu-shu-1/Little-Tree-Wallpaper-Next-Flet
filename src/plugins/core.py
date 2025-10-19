@@ -43,6 +43,11 @@ class CorePlugin(Plugin):
             else {}
         )
         event_definitions = context.list_event_definitions()
+        theme_manager = context.metadata.get("theme_manager")
+        theme_profiles = []
+        metadata_profiles = context.metadata.get("theme_profiles")
+        if isinstance(metadata_profiles, list):
+            theme_profiles = metadata_profiles
 
         pages = Pages(
             context.page,
@@ -55,6 +60,10 @@ class CorePlugin(Plugin):
             known_permissions=known_permissions,
             event_definitions=event_definitions,
             global_data=context.global_data,
+            theme_manager=theme_manager,
+            theme_list_handler=context.list_themes,
+            theme_apply_handler=context.set_theme_profile,
+            theme_profiles=theme_profiles,
         )
         context.metadata["core_pages"] = pages
 

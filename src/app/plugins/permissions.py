@@ -95,6 +95,16 @@ KNOWN_PERMISSIONS: dict[str, PluginPermission] = {
         name="收藏导入导出",
         description="允许插件导出收藏夹数据或导入外部收藏包，并访问本地化资源。",
     ),
+    "theme_read": PluginPermission(
+        identifier="theme_read",
+        name="读取主题列表",
+        description="允许插件获取应用可用的主题配置列表。",
+    ),
+    "theme_apply": PluginPermission(
+        identifier="theme_apply",
+        name="应用主题",
+        description="允许插件切换当前主题配置或调整主题背景。",
+    ),
 }
 
 

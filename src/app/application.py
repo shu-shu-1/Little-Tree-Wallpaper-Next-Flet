@@ -47,8 +47,14 @@ from .core.pages import Pages
 from .ipc import IPCService
 from .ui_utils import build_watermark
 from .settings import SettingsStore
+from .theme import ThemeManager
 
 app_config = SettingsStore()
+
+_AUTO_GRANTED_PERMISSIONS: Set[str] = {
+    "theme_read",
+    "theme_apply",
+}
 
 
 class ApplicationPluginService:
@@ -115,6 +121,7 @@ class Application:
         self._plugin_config = PluginConfigStore(CONFIG_DIR / "plugins.json")
         # application-level persistent settings
         self._settings_store = SettingsStore(CONFIG_DIR / "config.json")
+        self._theme_manager = ThemeManager(self._settings_store)
         self._plugin_manager = PluginManager(
             search_paths=[PLUGINS_DIR],
             config_store=self._plugin_config,
@@ -151,6 +158,8 @@ class Application:
         logger.info(f"Little Tree Wallpaper Next {BUILD_VERSION} 初始化")
 
         self._reload_required = False
+
+        self._theme_manager.reload()
 
         page.clean()
         self._close_permission_dialog()
@@ -254,9 +263,12 @@ class Application:
             try:
                 metadata["app_settings"] = self._settings_store.as_dict()
                 metadata["app_settings_path"] = str(self._settings_store.path)
+                metadata["theme_profiles"] = self._theme_manager.list_profiles()
             except Exception:
                 metadata["app_settings"] = {}
                 metadata["app_settings_path"] = ""
+                metadata["theme_profiles"] = []
+            metadata["theme_manager"] = self._theme_manager
             permissions_map = ensure_permission_states(
                 manifest.permissions,
                 self._plugin_config.get_permissions(manifest.identifier),
@@ -326,6 +338,17 @@ class Application:
                     pid, subscription_id
                 )
             )
+            context._theme_list_handler = (
+                lambda pid=manifest.identifier: self._list_themes(pid)
+            )
+            context._theme_apply_handler = (
+                lambda profile, pid=manifest.identifier: self._set_theme_profile(
+                    pid, profile
+                )
+            )
+            if self._plugin_manager.is_builtin(manifest.identifier):
+                for perm in _AUTO_GRANTED_PERMISSIONS:
+                    context.permissions.setdefault(perm, PermissionState.GRANTED)
             self._plugin_contexts[manifest.identifier] = context
             return context
 
@@ -362,6 +385,9 @@ class Application:
         content_container = ft.Container(
             expand=True, content=navigation_views[0].content
         )
+        self._theme_manager.apply_component_style(
+            "navigation_container", content_container
+        )
         self._navigation_container = content_container
 
         def on_nav_change(e: ft.ControlEvent) -> None:
@@ -376,18 +402,47 @@ class Application:
             destinations=nav_destinations,
             on_change=on_nav_change,
         )
+        self._theme_manager.apply_component_style("navigation_rail", navigation_rail)
         self._navigation_rail = navigation_rail
 
-        main_row = ft.Row(
-            [
-                navigation_rail,
-                ft.VerticalDivider(width=1),
-                content_container,
-            ],
+        nav_divider = ft.VerticalDivider(width=1)
+        self._theme_manager.apply_component_style("navigation_divider", nav_divider)
+
+        nav_divider_container = ft.Container(
+            content=nav_divider,
+            width=1,
             expand=True,
+            margin=0,
+            padding=0,
         )
 
-        stack_controls = [main_row]
+        nav_panel = ft.Container(
+            content=ft.Row(
+                [navigation_rail, nav_divider_container],
+                spacing=0,
+                tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.STRETCH,
+            ),
+            padding=0,
+            margin=0,
+        )
+        self._theme_manager.apply_component_style("navigation_panel", nav_panel)
+
+        main_row = ft.Row(
+            [nav_panel, content_container],
+            expand=True,
+            spacing=0,
+            vertical_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
+
+        stack_controls: list[ft.Control] = []
+        background_layer = self._theme_manager.build_background_layer()
+        overlay_layer = self._theme_manager.build_overlay_layer()
+        if background_layer is not None:
+            stack_controls.append(background_layer)
+        if overlay_layer is not None:
+            stack_controls.append(overlay_layer)
+        stack_controls.append(main_row)
         watermark = build_watermark()
         if isinstance(watermark, ft.Container) and watermark.content is not None:
             stack_controls.append(watermark)
@@ -405,18 +460,22 @@ class Application:
             )
         )
 
+        appbar = ft.AppBar(
+            leading=ft.Image(
+                str(ICO_PATH), width=24, height=24, fit=ft.ImageFit.CONTAIN
+            ),
+            title=ft.Text("小树壁纸 Next - Flet"),
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            actions=appbar_actions,
+        )
+        self._theme_manager.apply_component_style("app_bar", appbar)
+
         home_view = ft.View(
             "/",
             [ft.Stack(controls=stack_controls, expand=True)],
-            appbar=ft.AppBar(
-                leading=ft.Image(
-                    str(ICO_PATH), width=24, height=24, fit=ft.ImageFit.CONTAIN
-                ),
-                title=ft.Text("小树壁纸 Next - Flet"),
-                bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
-                actions=appbar_actions,
-            ),
+            appbar=appbar,
         )
+        self._theme_manager.apply_component_style("home_view", home_view)
 
         self._route_registry = dict(route_views)
 
@@ -441,13 +500,14 @@ class Application:
 
     def _sync_theme(self, page: ft.Page) -> None:
         # 同步深/浅
-        match app_config.get("ui.theme", "system").lower():
-            case "light":
-                page.theme_mode = ft.ThemeMode.LIGHT
-            case "dark":
-                page.theme_mode = ft.ThemeMode.DARK
-            case _:
-                page.theme_mode = ft.ThemeMode.SYSTEM
+        ui_theme = str(app_config.get("ui.theme", "system")).lower()
+        if ui_theme == "light":
+            page.theme_mode = ft.ThemeMode.LIGHT
+        elif ui_theme == "dark":
+            page.theme_mode = ft.ThemeMode.DARK
+        else:
+            preferred = self._theme_manager.preferred_theme_mode
+            page.theme_mode = preferred or ft.ThemeMode.SYSTEM
         logger.info(f"应用主题已设置为 {page.theme_mode.name}")
 
     def reload(self) -> None:
@@ -477,12 +537,16 @@ class Application:
 
     def _configure_page(self, page: ft.Page) -> None:
         page.title = f"小树壁纸 Next (Flet) | {BUILD_VERSION}"
+        font_family: str | None = None
         if UI_FONT_PATH.exists() and HITO_FONT_PATH.exists():
             page.fonts = {
                 "UIFont": str(UI_FONT_PATH),
                 "HITOKOTOFont": str(HITO_FONT_PATH),
             }
-            page.theme = ft.Theme(font_family="UIFont")
+            font_family = "UIFont"
+        self._theme_manager.apply_page_theme(page)
+        if font_family:
+            page.theme.font_family = font_family
 
     def _set_permission_state(
         self, plugin_id: str, permission: str, state: PermissionState
@@ -518,6 +582,8 @@ class Application:
         *,
         message: str | None = None,
     ) -> PluginOperationResult:
+        if self._plugin_manager.is_builtin(plugin_id) and permission in _AUTO_GRANTED_PERMISSIONS:
+            return on_granted()
         state = self._plugin_config.get_permission_state(plugin_id, permission)
         if state is PermissionState.GRANTED:
             return on_granted()
@@ -738,6 +804,50 @@ class Application:
 
         return self._ensure_permission(plugin_id, "ipc_broadcast", _granted)
 
+    def _list_themes(self, plugin_id: str) -> PluginOperationResult:
+        def _granted() -> PluginOperationResult:
+            try:
+                profiles = self._theme_manager.list_profiles()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error("获取主题列表失败: {error}", error=str(exc))
+                return PluginOperationResult.failed(
+                    "theme_list_failed", "无法读取主题列表。"
+                )
+            return PluginOperationResult.ok(data=profiles, message="主题列表已获取。")
+
+        return self._ensure_permission(plugin_id, "theme_read", _granted)
+
+    def _set_theme_profile(
+        self, plugin_id: str, profile: str
+    ) -> PluginOperationResult:
+        selection = (profile or "").strip()
+
+        def _granted() -> PluginOperationResult:
+            if not selection:
+                return PluginOperationResult.failed(
+                    "invalid_argument", "主题标识不能为空。"
+                )
+            try:
+                result = self._theme_manager.set_profile(selection)
+            except FileNotFoundError:
+                return PluginOperationResult.failed(
+                    "theme_not_found", f"未找到主题 {selection}。"
+                )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error("应用主题失败: {error}", error=str(exc))
+                return PluginOperationResult.failed(
+                    "theme_apply_failed", "无法应用所选主题。"
+                )
+
+            message = "主题已应用。"
+            if self._page is not None:
+                # 重新构建界面以应用新的背景与样式。
+                self.reload()
+                message = "主题已应用，界面正在重新加载。"
+            return PluginOperationResult.ok(data=result, message=message)
+
+        return self._ensure_permission(plugin_id, "theme_apply", _granted)
+
     def _extract_core_pages(self) -> Pages | None:
         core_context = self._plugin_contexts.get("core")
         if not core_context:
@@ -760,6 +870,8 @@ class Application:
                             "favorites_read",
                             "favorites_write",
                             "favorites_export",
+                            "theme_read",
+                            "theme_apply",
                         ):
                             context.permissions.setdefault(
                                 perm, PermissionState.GRANTED

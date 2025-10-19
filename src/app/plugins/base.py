@@ -234,6 +234,8 @@ class PluginContext:
     _permission_request_handler: (
         Callable[[str, str | None], PermissionState] | None
     ) = field(default=None, repr=False)
+    _theme_list_handler: Callable[[], PluginOperationResult] | None = None
+    _theme_apply_handler: Callable[[str], PluginOperationResult] | None = None
 
     def add_navigation_view(self, view: AppNavigationView) -> None:
         """Register a navigation destination for the application sidebar."""
@@ -294,6 +296,19 @@ class PluginContext:
         if not isinstance(subscription_id, str):
             return PluginOperationResult.failed("invalid_argument", "订阅 ID 无效。")
         return self._ipc_unsubscribe_handler(subscription_id)
+
+    def list_themes(self) -> PluginOperationResult:
+        if not self._theme_list_handler:
+            return PluginOperationResult.failed("operation_unavailable", "应用未提供主题管理接口。")
+        return self._theme_list_handler()
+
+    def set_theme_profile(self, profile: str) -> PluginOperationResult:
+        if not self._theme_apply_handler:
+            return PluginOperationResult.failed("operation_unavailable", "应用未提供主题管理接口。")
+        return self._theme_apply_handler(profile)
+
+    def apply_theme_profile(self, profile: str) -> PluginOperationResult:
+        return self.set_theme_profile(profile)
 
     def add_startup_hook(self, hook: StartupHook) -> None:
         """Register a callable to execute once the application is ready."""

@@ -7,6 +7,7 @@ DEFAULT_CONFIG = {
     "ui": {
         "language": "zh-CN",
         "theme": "system",
+        "theme_profile": "default",
         "window_background": "",
         "window_icon": "./assets/icons/icon.ico",
     },

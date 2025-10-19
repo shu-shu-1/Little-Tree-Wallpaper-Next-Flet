@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "name": "Aurora Green",
+  "palette": {
+    "mode": "seed",
+    "seed_color": "#22d3ee",
+    "preferred_mode": "dark",
+    "use_material3": true
+  },
+  "background": {
+    "image": "https://images.unsplash.com/photo-1469474968028-56623f02e42e?auto=format&fit=crop&w=1920&q=80",
+    "opacity": 0.4,
+    "fit": "cover",
+    "alignment": "center",
+    "repeat": "no_repeat"
+  },
+  "components": {
+    "page": {
+      "bgcolor": "#0B1120"
+    },
+    "app_bar": {
+      "bgcolor": "#0F172A",
+      "color": "#F8FAFC"
+    },
+    "navigation_rail": {
+      "bgcolor": "#111827",
+      "indicator_color": "#34D399"
+    },
+    "navigation_panel": {
+      "bgcolor": "#111827"
+    },
+    "navigation_container": {
+      "bgcolor": "#111827",
+      "opacity": 0.82
+    },
+    "home_view": {
+      "overlay_color": "#0F172A",
+      "overlay_opacity": 0.55
+    }
+  }
+}
