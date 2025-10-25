@@ -2,72 +2,59 @@ name: Build Windows
 
 on:
   push:
-    branches: [ "master" ]
   pull_request:
-    branches: [ "master" ]
+
+env:
+  FLUTTER_VERSION: "3.29.2"
+  PYTHONUTF8: "1"
+  FLET_CLI_NO_RICH_OUTPUT: "1"
 
 jobs:
-  build-windows:
-    name: Build Windows (flet build windows)
-    runs-on: windows-latest
-    env:
-      PYTHONUTF8: 1
-      PYTHONIOENCODING: utf-8
+  build-extension-sample:
+    runs-on: windows-2022
 
     steps:
-      - name: Checkout
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Upgrade pip and install flet and deps
-        shell: powershell
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          if (Test-Path requirements.txt) { pip install -r requirements.txt }
-          pip install flet
-
-      - name: Verify Visual Studio 2022 with Desktop C++ workload
-        shell: powershell
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) { Write-Error "vswhere not found on runner"; exit 1 }
-          $info = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $info) { Write-Error "Visual Studio with Desktop development with C++ workload not found"; exit 1 }
-          Write-Host "Found Visual Studio at: $info"
-      # 新增：安装 Flutter
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
-      
-      # 新增：启用 Windows 桌面并预缓存
-      - name: Configure Flutter for Windows
-        shell: powershell
-        run: |
-          chcp 65001 | Out-Null
-          [Console]::OutputEncoding = [Text.UTF8Encoding]::UTF8
-          $OutputEncoding = New-Object -typename System.Text.UTF8Encoding
-          flutter config --enable-windows-desktop
-          flutter precache --windows
-          flutter doctor -v
-      - name: Build Windows with flet
-        shell: powershell
-        run: |
-          # ensure console uses UTF-8 so rich can print special characters
-          chcp 65001 | Out-Null
-          [Console]::OutputEncoding = [Text.UTF8Encoding]::UTF8
-          $OutputEncoding = New-Object -typename System.Text.UTF8Encoding
-          flet build windows -vv
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
 
-      - name: Upload build artifacts
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Create virtual env with uv
+        run: |
+          uv venv
+          Get-ChildItem -Path . -Force
+      - name: Install flet[all] into the venv (via uv)
+        run: |
+          uv pip install "flet[all]"
+          uv pip list
+      - name: Verify Flet version
+        run: |
+          uv run flet --version
+      - name: Create Flet extension project
+        run: |
+          uv run flet create --template extension --project-name flet-spinkit
+          Get-ChildItem -Path . -Force
+      - name: Build extension
+        run: |
+          Set-Location examples/flet_spinkit_example
+          uv run flet build windows -v
+      - name: Upload build/windows as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flet-windows-build
-          path: |
-            ./build
-            ./dist
-            ./output
+          name: flet-spinkit-example-windows-${{ github.run_number }}
+          path: examples/flet_spinkit_example/build/windows/**
+          if-no-files-found: error
+          compression-level: 6

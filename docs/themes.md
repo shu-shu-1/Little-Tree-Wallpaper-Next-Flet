@@ -13,7 +13,7 @@
 
 ## 主题文件结构
 
-主题文件为 JSON 对象，推荐包含以下几个段落：
+主题文件为 JSON 对象，推荐包含以下几个段落。你可以按需删减字段，解析器会忽略未识别的键：
 
 ```json
 {
@@ -55,13 +55,13 @@
 
 主题支持两种颜色配置模式：
 
-- `seed`：通过 `seed_color` 指定单一主题色，Flet 会基于该颜色生成完整的色板。
-- `custom`：直接提供 `color_scheme` 字段，用以填充 `ft.ColorScheme` 的属性，例如 `primary`、`on_primary`、`surface` 等。可以同时指定 `brightness`（`light`/`dark`）。
-
-附加字段：
-
-- `preferred_mode`（可选）：`light` / `dark` / `system`。当应用设置为“跟随系统”时，主题可用此字段建议一个首选模式。
-- `use_material3`（布尔值，可选）：控制 `ft.Theme.use_material3`。
+- `mode`：取值 `seed` 或 `custom`。
+  - `seed`：通过 `seed_color` 指定单一主题色，Flet 会基于该颜色生成完整的色板。可选搭配 `preferred_mode`、`use_material3`。
+  - `custom`：直接提供 `color_scheme` 字段，对应 `ft.ColorScheme` 的属性，例如 `primary`、`on_primary`、`surface` 等。可以同时指定 `brightness`（`light`/`dark`）。
+- `seed_color`：六位或八位十六进制颜色。`mode` 为 `seed` 时必填。
+- `color_scheme`：`mode` 为 `custom` 时使用的色板字典，键名与 `ft.ColorScheme` 相同。
+- `preferred_mode`（可选）：`light` / `dark` / `system`。当应用设置为“跟随系统”时，主题会优先参考此字段。
+- `use_material3`（布尔值，可选）：控制 `ft.Theme.use_material3`，决定是否启用 Material 3 风格。
 
 所有颜色值均可使用：
 
@@ -77,27 +77,41 @@
 - `alignment`：`center`、`top_left`、`top`、`top_right`、`left`、`right`、`bottom_left`、`bottom`、`bottom_right`。
 - `repeat`：`no_repeat`、`repeat`、`repeat_x`、`repeat_y`。
 
+各字段含义：
+
+- `image`：图片路径或 URL。相对路径会依次在主题文件所在目录、`themes/` 目录以及配置目录中查找。留空则不渲染背景图。
+- `opacity`：背景图片的不透明度，0.0 表示完全透明，1.0 表示不透明。默认 1.0。
+- `fit`：图片缩放策略，决定图片如何填充可视区域：
+  - `cover`：按比例放大/缩小填满区域，可能裁剪。
+  - `contain`：完整显示图片，保持比例，可能留空白。
+  - `fill`：强制铺满，不保持比例。
+  - `fit_width` / `fit_height`：分别以宽/高为基准等比缩放。
+  - `scale_down`：若图片比容器大则缩小，否则保持原尺寸。
+  - `none`：保持原尺寸，不缩放。
+- `alignment`：图片锚点位置，如 `top_left`、`center`。决定未被覆盖区域的对齐方式。
+- `repeat`：平铺模式，`repeat` / `repeat_x` / `repeat_y` 用于纹理背景。
+
 背景层位于主界面最底层，与应用内容叠加。
 
 ### 组件样式（components）
 
-`components` 是一个以组件标识为键的对象，值为需要写入控件的属性字典。支持的组件标识当前包括：
+`components` 是一个以组件标识为键的对象，值为需要写入控件的属性字典。常见键及效果如下：
 
-- `page`：对应 `ft.Page`，可设置 `bgcolor`、`padding` 等直接属性。
-- `app_bar`：首页 `ft.AppBar`。
-- `navigation_rail`：侧边导航栏 `ft.NavigationRail`。
-- `navigation_panel`：包裹导航栏与分割线的容器，可统一设置背景色、内边距等。
-- `navigation_divider`：导航栏与内容区之间的分割线（`ft.VerticalDivider`）。
-- `navigation_container`：用于承载当前页面内容的 `ft.Container`。
-- `home_view`：首页 `ft.View`。
+- `page`：对应 `ft.Page`，可配置整体背景色、字体、内边距等；通常用于轻量调整全局基色。
+- `app_bar`：首页 `ft.AppBar`，可设置 `bgcolor`、`color`、`elevation` 等，影响标题栏外观。
+- `navigation_rail`：侧边导航栏 `ft.NavigationRail`，常用于设置 `bgcolor`、`indicator_color`、`selected_index` 等导航项样式。
+- `navigation_panel`：包裹导航栏与分割线的容器（`ft.Container`），适合应用统一背景、阴影或边距，让导航区域与内容区区隔。
+- `navigation_divider`：导航栏与内容区之间的垂直分割线（`ft.VerticalDivider`），可调整 `thickness`、`color`、`opacity`。
+- `navigation_container`：承载当前页面内容的 `ft.Container`，可设置背景或边距，配合主题提供内容区域底色。
+- `home_view`：首页 `ft.View`，可进一步细化首页内部样式。
 
 > 属性会直接通过 `setattr` 写入控件，因此请使用 Flet 控件支持的字段名称。带 `color` 的字段会自动尝试解析为 Flet 颜色常量或十六进制颜色。
 
-针对 `home_view`，当主题定义了背景图片时，还可以使用以下扩展键：
+针对 `home_view`，当主题定义背景图片时，还可以使用以下扩展键来控制叠加层：
 
-- `overlay_color`：叠加在背景图片上的遮罩颜色（默认读取 `bgcolor`）。
+- `overlay_color`：背景图片上的遮罩颜色，默认沿用 `bgcolor`。
 - `overlay_opacity`：遮罩透明度，范围 0.0~1.0，默认为 1.0。
-- `force_bgcolor`：若设为 `true`，即使存在背景图片也会直接将 `bgcolor` 应用于视图自身（禁用遮罩逻辑）。
+- `force_bgcolor`：设为 `true` 时忽略遮罩逻辑，直接使用 `bgcolor` 作为首页背景。
 
 ## 启用自定义主题
 
