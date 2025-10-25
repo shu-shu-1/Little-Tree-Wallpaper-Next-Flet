@@ -123,6 +123,30 @@ class FavoriteService:
             merge_tags=merge_tags,
         )
 
+    def add_local_item(
+        self,
+        *,
+        path: str,
+        folder_id: str | None = None,
+        title: str | None = None,
+        description: str = "",
+        tags: Sequence[str] | None = None,
+        source_title: str | None = None,
+        extra: dict | None = None,
+        merge_tags: bool = True,
+    ) -> tuple[FavoriteItem, bool]:
+        self._ensure_permission("favorites_write")
+        return self._manager.add_local_item(
+            path=path,
+            folder_id=folder_id,
+            title=title,
+            description=description,
+            tags=tags,
+            source_title=source_title,
+            extra=extra,
+            merge_tags=merge_tags,
+        )
+
     def update_item(
         self,
         item_id: str,

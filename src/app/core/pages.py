@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from dataclasses import dataclass
+import hashlib
+import io
 import json
+import mimetypes
+import os
 import re
 import shutil
+import tarfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Sequence, TYPE_CHECKING
 
-from urllib.parse import quote_plus, urlencode
+from urllib.parse import parse_qsl, quote, quote_plus, urlencode
 
 import aiohttp
 import flet as ft
@@ -54,6 +60,17 @@ from app.settings import SettingsStore
 
 app_config = SettingsStore()
 
+
+@dataclass(slots=True)
+class _IMParameterControl:
+    config: Dict[str, Any]
+    control: ft.Control
+    display: ft.Control
+    getter: Callable[[], Any]
+    setter: Callable[[Any], None]
+    key: str
+
+
 if TYPE_CHECKING:
     from app.plugins.base import PluginSettingsPage
     from app.theme import ThemeManager
@@ -93,6 +110,7 @@ class Pages:
         self._event_definitions: List[EventDefinition] = list(event_definitions or [])
         self._plugin_list_column: Optional[ft.Column] = None
         self._plugin_file_picker: Optional[ft.FilePicker] = None
+        self._favorite_file_picker: Optional[ft.FilePicker] = None
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
         self.bing_wallpaper = None
         self.bing_wallpaper_url = None
@@ -145,6 +163,7 @@ class Pages:
         self._favorite_batch_total: int = 0
         self._favorite_batch_done: int = 0
         self._favorite_preview_cache: dict[str, tuple[float, str]] = {}
+        self._favorite_add_local_button: ft.IconButton | None = None
 
         self._theme_manager = theme_manager
         self._theme_list_handler = theme_list_handler
@@ -165,6 +184,33 @@ class Pages:
         self._generate_loading_indicator: ft.ProgressRing | None = None
         self._generate_last_file: Path | None = None
 
+        # IntelliMarkets source marketplace state
+        self._im_sources_by_category: dict[str, list[dict[str, Any]]] = {}
+        self._im_total_sources: int = 0
+        self._im_loading: bool = False
+        self._im_error: str | None = None
+        self._im_selected_category: str | None = None
+        self._im_last_updated: float | None = None
+        self._im_status_text: ft.Text | None = None
+        self._im_loading_indicator: ft.ProgressRing | None = None
+        self._im_category_dropdown: ft.Dropdown | None = None
+        self._im_sources_list: ft.ListView | None = None
+        self._im_refresh_button: ft.TextButton | None = None
+        self._im_repo_owner = "IntelliMarkets"
+        self._im_repo_name = "Wallpaper_API_Index"
+        self._im_repo_branch = "main"
+        self._im_mirror_pref_dropdown: ft.Dropdown | None = None
+        self._im_source_dialog: ft.AlertDialog | None = None
+        self._im_active_source: dict[str, Any] | None = None
+        self._im_param_controls: list[_IMParameterControl] = []
+        self._im_cached_inputs: dict[str, dict[str, Any]] = {}
+        self._im_run_button: ft.Control | None = None
+        self._im_result_container: ft.Column | None = None
+        self._im_result_status_text: ft.Text | None = None
+        self._im_result_spinner: ft.ProgressRing | None = None
+        self._im_running: bool = False
+        self._im_last_results: list[dict[str, Any]] = []
+
         self.home = self._build_home()
         self.resource = self._build_resource()
         self.generate = self._build_generate()
@@ -176,6 +222,7 @@ class Pages:
 
         self.page.run_task(self._load_bing_wallpaper)
         self.page.run_task(self._load_spotlight_wallpaper)
+        self.page.run_task(self._load_im_sources)
 
     # 模型列表加载已移除
 
@@ -1118,6 +1165,71 @@ class Pages:
         if self.page.dialog is not None:
             self.page.close(self.page.dialog)
 
+    # -----------------------------
+    # 收藏：添加本地图片入口
+    # -----------------------------
+    def _ensure_favorite_file_picker(self) -> None:
+        if self._favorite_file_picker is None:
+            self._favorite_file_picker = ft.FilePicker(
+                on_result=self._handle_add_local_favorite_result
+            )
+        if self._favorite_file_picker not in self.page.overlay:
+            self.page.overlay.append(self._favorite_file_picker)
+            self.page.update()
+
+    def _open_add_local_favorite_picker(self) -> None:
+        self._ensure_favorite_file_picker()
+        if self._favorite_file_picker:
+            self._favorite_file_picker.pick_files(
+                allow_multiple=True,
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=[
+                    "jpg",
+                    "jpeg",
+                    "png",
+                    "webp",
+                    "bmp",
+                    "gif",
+                    "avif",
+                ],
+            )
+
+    def _handle_add_local_favorite_result(
+        self, event: ft.FilePickerResultEvent
+    ) -> None:
+        if not event.files:
+            return
+        count = 0
+        errors = 0
+        folder_id = (
+            self._favorite_selected_folder
+            if self._favorite_selected_folder not in {"__all__", "__default__"}
+            else None
+        )
+        for f in event.files:
+            try:
+                if not f.path:
+                    continue
+                item, created = self._favorite_manager.add_local_item(
+                    path=f.path,
+                    folder_id=folder_id,
+                )
+                if created:
+                    count += 1
+            except Exception as exc:
+                logger.error(f"添加本地收藏失败: {exc}")
+                errors += 1
+        # 刷新列表
+        self._refresh_favorite_tabs()
+        if count and not errors:
+            self._show_snackbar(f"已添加 {count} 项本地收藏。")
+        elif count and errors:
+            self._show_snackbar(
+                f"已添加 {count} 项本地收藏，{errors} 项失败。", error=True
+            )
+        elif errors:
+            self._show_snackbar("添加本地收藏失败。", error=True)
+
     def _ensure_plugin_file_picker(self) -> None:
         if self._plugin_file_picker is None:
             self._plugin_file_picker = ft.FilePicker(
@@ -1534,13 +1646,26 @@ class Pages:
         self._emit_resource_event("resource.spotlight.action", payload)
 
     def _get_license_text(self):
-        with open(LICENSE_PATH / "LXGWNeoXiHeiPlus-IPA-1.0.md", encoding="utf-8") as f1:
-            with open(LICENSE_PATH / "aiohttp.txt", encoding="utf-8") as f2:
-                with open(LICENSE_PATH / "Flet-Apache-2.0.txt", encoding="utf-8") as f3:
-                    with open(
-                        LICENSE_PATH / "LXGWWenKaiLite-OFL-1.1.txt", encoding="utf-8"
-                    ) as f4:
-                        return f"# LXGWNeoXiHeiPlus 字体\n\n{f1.read()}\n\n# aiohttp 库\n\n{f2.read()}\n\n# Flet 库\n\n{f3.read()}\n\n# LXGWWenKaiLite 字体\n\n{f4.read()}"
+        parts: list[str] = []
+        try:
+            files = sorted(
+                [p for p in LICENSE_PATH.iterdir() if p.is_file()],
+                key=lambda p: p.name.lower(),
+            )
+        except Exception as exc:
+            logger.error(f"读取许可证目录失败: {exc}")
+            return "暂无许可证信息"
+
+        for fp in files:
+            try:
+                content = fp.read_text(encoding="utf-8", errors="ignore")
+            except Exception as exc:
+                logger.error(f"读取许可证文件失败: {fp}: {exc}")
+                continue
+            title = fp.stem
+            parts.append(f"# {title}\n\n{content}\n\n---")
+
+        return "\n\n".join(parts) if parts else "暂无许可证信息"
 
     async def _load_hitokoto(self):
         try:
@@ -2149,69 +2274,1820 @@ class Pages:
         )
 
     def _build_im_page(self):
-        return ft.Container(
-            ft.Column(
-                [
-                    ft.Card(
-                        content=ft.Container(
-                            ft.Column(
-                                controls=[
-                                    ft.Row(
-                                        [
-                                            ft.Row(
-                                                [
-                                                    ft.Icon(
-                                                        ft.Icons.INFO,
-                                                        size=25,
-                                                        color=ft.Colors.PRIMARY,
-                                                    ),
-                                                    ft.Text(
-                                                        spans=[
-                                                            ft.TextSpan(
-                                                                "图片源的搜集和配置文件由 SR 思锐团队提供 ©，图片内容责任由接口方承担",
-                                                                # ft.TextStyle(
-                                                                #     decoration=ft.TextDecoration.UNDERLINE,
-                                                                # ),
-                                                                url="https://github.com/IntelliMarkets/Wallpaper_API_Index",
-                                                            ),
-                                                        ],
-                                                    ),
-                                                ]
-                                            ),
-                                            ft.Row(
-                                                [
-                                                    ft.TextButton(
-                                                        "查看详情",
-                                                        icon=ft.Icons.OPEN_IN_NEW,
-                                                        url="https://github.com/IntelliMarkets/Wallpaper_API_Index",
-                                                    )
-                                                ]
-                                            ),
-                                        ],
-                                        expand=True,
-                                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                                    ),
-                                ],
-                                # alignment=ft.MainAxisAlignment.CENTER,
-                                # horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                            ),
-                            padding=10,
+        info_card = ft.Card(
+            content=ft.Container(
+                ft.Column(
+                    controls=[
+                        ft.Row(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Icon(
+                                            ft.Icons.INFO,
+                                            size=25,
+                                            color=ft.Colors.PRIMARY,
+                                        ),
+                                        ft.Text(
+                                            spans=[
+                                                ft.TextSpan(
+                                                    "图片源的搜集和配置文件由 SR 思锐团队提供 ©，图片内容责任由接口方承担",
+                                                    url="https://github.com/IntelliMarkets/Wallpaper_API_Index",
+                                                ),
+                                            ],
+                                        ),
+                                    ]
+                                ),
+                                ft.Row(
+                                    [
+                                        ft.TextButton(
+                                            "查看仓库",
+                                            icon=ft.Icons.OPEN_IN_NEW,
+                                            url="https://github.com/IntelliMarkets/Wallpaper_API_Index",
+                                        )
+                                    ]
+                                ),
+                            ],
                             expand=True,
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         ),
+                    ],
+                ),
+                padding=10,
+                expand=True,
+            ),
+        )
+
+        self._im_loading_indicator = ft.ProgressRing(width=22, height=22, visible=False)
+        self._im_status_text = ft.Text("正在初始化 IntelliMarkets 图片源…", size=12)
+        self._im_category_dropdown = ft.Dropdown(
+            label="分类",
+            options=[],
+            on_change=self._on_im_category_change,
+            expand=True,
+        )
+        self._im_sources_list = ft.ListView(
+            expand=True,
+            spacing=12,
+            auto_scroll=False,
+            controls=[],
+        )
+
+        refresh_button = ft.TextButton(
+            "刷新",
+            icon=ft.Icons.REFRESH,
+            on_click=lambda _: self.page.run_task(self._load_im_sources, True),
+        )
+        self._im_refresh_button = refresh_button
+
+        status_row = ft.Row(
+            [
+                ft.Row(
+                    [self._im_loading_indicator, self._im_status_text],
+                    alignment=ft.MainAxisAlignment.START,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Row(
+                    [refresh_button],
+                    alignment=ft.MainAxisAlignment.END,
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        )
+
+        # 镜像优先级设置（默认优先 / 镜像优先）
+        current_pref = str(
+            app_config.get("im.mirror_preference", "default_first") or "default_first"
+        )
+        self._im_mirror_pref_dropdown = ft.Dropdown(
+            label="镜像优先级",
+            value=current_pref,
+            options=[
+                ft.DropdownOption(key="default_first", text="优先默认"),
+                ft.DropdownOption(key="mirror_first", text="优先镜像"),
+            ],
+            on_change=self._on_im_mirror_pref_change,
+            width=180,
+        )
+
+        filter_row = ft.Row(
+            [
+                self._im_category_dropdown,
+                self._im_mirror_pref_dropdown,
+            ],
+            alignment=ft.MainAxisAlignment.START,
+        )
+
+        content_column = ft.Column(
+            controls=[
+                info_card,
+                status_row,
+                filter_row,
+                ft.Container(
+                    content=self._im_sources_list,
+                    expand=True,
+                ),
+            ],
+            expand=True,
+            spacing=12,
+        )
+
+        self._refresh_im_ui()
+
+        return ft.Container(
+            content_column,
+            padding=5,
+            expand=True,
+        )
+
+    def _on_im_category_change(self, event: ft.ControlEvent) -> None:
+        selected = (
+            event.control.value if event and getattr(event, "control", None) else None
+        )
+        if not selected:
+            return
+        if selected == self._im_selected_category:
+            return
+        self._im_selected_category = selected
+        self._refresh_im_ui()
+
+    def _on_im_mirror_pref_change(self, event: ft.ControlEvent) -> None:
+        """Handle mirror preference change and persist setting, then reload sources."""
+        try:
+            value = (event.control.value or "default_first").strip()
+        except Exception:
+            value = "default_first"
+        if value not in ("default_first", "mirror_first"):
+            value = "default_first"
+        # persist setting without requiring DEFAULT_CONFIG changes
+        app_config.set("im.mirror_preference", value)
+        # trigger reloading sources to apply new order
+        if self.page:
+            self.page.run_task(self._load_im_sources, True)
+
+    # -----------------------------
+    # IntelliMarkets 专用镜像策略
+    # -----------------------------
+    def _im_tarball_candidates(self) -> list[str]:
+        owner = self._im_repo_owner
+        repo = self._im_repo_name
+        branch = self._im_repo_branch
+        # Build official and mirror lists separately for easy reordering
+        official = [
+            f"https://api.github.com/repos/{owner}/{repo}/tarball/{branch}",
+            f"https://codeload.github.com/{owner}/{repo}/tar.gz/{branch}",
+        ]
+        mirror = [
+            f"https://api.kkgithub.com/repos/{owner}/{repo}/tarball/{branch}",
+            f"https://codeload.kkgithub.com/{owner}/{repo}/tar.gz/{branch}",
+        ]
+        fallback = [
+            # kkgithub HTML archive as a final fallback
+            f"https://kkgithub.com/{owner}/{repo}/archive/refs/heads/{branch}.tar.gz",
+        ]
+
+        preference = str(
+            app_config.get("im.mirror_preference", "default_first") or "default_first"
+        )
+        if preference == "mirror_first":
+            return [*mirror, *official, *fallback]
+        return [*official, *mirror, *fallback]
+
+    def _im_raw_mirrors(self, relative_path: str) -> list[str]:
+        # 为 raw 文件构建镜像候选：jsDelivr、Statically
+        owner = self._im_repo_owner
+        repo = self._im_repo_name
+        branch = self._im_repo_branch
+        encoded_path = quote(relative_path, safe="/")
+        return [
+            f"https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{encoded_path}",
+            f"https://cdn.statically.io/gh/{owner}/{repo}/{branch}/{encoded_path}",
+        ]
+
+    def _im_request_headers(self, *, binary: bool = False) -> Dict[str, str]:
+        headers: Dict[str, str] = {
+            "User-Agent": f"LittleTreeWallpaperNext/{BUILD_VERSION}",
+        }
+        token = os.environ.get("GITHUB_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token.strip()}"
+        if not binary:
+            headers["Accept"] = "application/vnd.github+json"
+        return headers
+
+    async def _fetch_bytes_with_mirrors(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        *,
+        binary: bool = False,
+        timeout: float = 30.0,
+        candidates: list[str] | None = None,
+    ) -> bytes:
+        errors: list[str] = []
+        headers = self._im_request_headers(binary=binary)
+        trial_list = candidates if candidates else [url]
+        for candidate in trial_list:
+            try:
+                async with session.get(
+                    candidate, headers=headers, timeout=timeout
+                ) as resp:
+                    if resp.status == 200:
+                        return await resp.read()
+                    errors.append(f"{candidate} -> HTTP {resp.status}")
+            except Exception as exc:  # pragma: no cover - network variability
+                errors.append(f"{candidate}: {exc}")
+        raise RuntimeError("; ".join(errors))
+
+    def _build_github_raw_url(self, relative_path: str) -> str:
+        encoded = quote(relative_path, safe="/")
+        return (
+            f"https://raw.githubusercontent.com/{self._im_repo_owner}/"
+            f"{self._im_repo_name}/{self._im_repo_branch}/{encoded}"
+        )
+
+    def _build_github_html_url(self, relative_path: str) -> str:
+        encoded = quote(relative_path, safe="/")
+        return (
+            f"https://github.com/{self._im_repo_owner}/"
+            f"{self._im_repo_name}/blob/{self._im_repo_branch}/{encoded}"
+        )
+
+    def _build_mirror_url(self, mirror: str, raw_url: str) -> str:
+        base = mirror.rstrip("/")
+        return f"{base}/{raw_url}"
+
+    def _copy_im_link(self, url: str, label: str) -> None:
+        if not url:
+            self._show_snackbar("链接不可用", error=True)
+            return
+        try:
+            pyperclip.copy(url)
+        except Exception as exc:  # pragma: no cover - clipboard issues
+            logger.error(f"复制链接失败: {exc}")
+            self._show_snackbar("复制失败，请手动复制", error=True)
+            return
+        self._show_snackbar(f"{label}已复制")
+
+    def _build_im_source_card(self, source: Dict[str, Any]) -> ft.Control:
+        friendly_name = (
+            source.get("friendly_name") or source.get("file_name") or "未命名"
+        )
+        intro = source.get("intro") or ""
+        http_method = (source.get("func") or "GET").upper()
+        parameter_count = len(source.get("parameters") or [])
+        apicore_version = source.get("apicore_version") or "未知"
+        html_url = source.get("html_url") or ""
+
+        action_controls: list[ft.Control] = []
+        action_controls.append(
+            ft.FilledTonalButton(
+                "打开",
+                icon=ft.Icons.PLAY_ARROW,
+                on_click=lambda _=None, item=source: self._open_im_source_dialog(item),
+            )
+        )
+        if html_url:
+            action_controls.append(
+                ft.TextButton("查看 JSON", icon=ft.Icons.OPEN_IN_NEW, url=html_url)
+            )
+
+        meta_row = ft.Row(
+            [
+                ft.Container(
+                    ft.Text(http_method, color=ft.Colors.ON_PRIMARY),
+                    bgcolor=ft.Colors.PRIMARY,
+                    padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                    border_radius=6,
+                ),
+                ft.Text(f"APICORE {apicore_version}", size=12, color=ft.Colors.GREY),
+                ft.Text(f"参数 {parameter_count}", size=12, color=ft.Colors.GREY),
+            ],
+            spacing=12,
+        )
+
+        body_controls: list[ft.Control] = [
+            ft.Row(
+                [
+                    ft.Column(
+                        [
+                            ft.Text(friendly_name, size=16, weight=ft.FontWeight.BOLD),
+                            ft.Text(intro, size=12, color=ft.Colors.GREY),
+                        ],
+                        expand=True,
+                        spacing=4,
                     ),
                     ft.Row(
-                        controls=[
-                            ft.Row([]),
-                            ft.Row([ft.TextButton("刷新", icon=ft.Icons.REFRESH)]),
-                        ],
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        action_controls, spacing=8, alignment=ft.MainAxisAlignment.END
                     ),
                 ],
-                # alignment=ft.MainAxisAlignment.CENTER,
-                # horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.START,
             ),
-            padding=5,
+            meta_row,
+        ]
+
+        return ft.Card(
+            content=ft.Container(
+                ft.Column(body_controls, spacing=8),
+                padding=12,
+            )
         )
+
+    def _im_source_id(self, source: Dict[str, Any]) -> str:
+        candidate = (
+            source.get("path") or source.get("file_name") or source.get("friendly_name")
+        )
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        return f"source-{hashlib.sha1(json.dumps(source, sort_keys=True).encode('utf-8')).hexdigest()}"
+
+    def _open_im_source_dialog(self, source: Dict[str, Any]) -> None:
+        self._im_active_source = source
+        self._im_last_results = []
+        friendly_name = (
+            source.get("friendly_name") or source.get("file_name") or "未命名图片源"
+        )
+        intro = source.get("intro") or ""
+        method = (source.get("func") or "GET").upper()
+        endpoint = source.get("link") or "未提供"
+        parameter_controls = self._build_im_parameter_controls(source)
+        if not parameter_controls:
+            params_section: ft.Control = ft.Text(
+                "此图片源无需额外参数。", size=12, color=ft.Colors.GREY
+            )
+        else:
+            params_section = ft.Column(
+                [control.display for control in parameter_controls],
+                spacing=12,
+                tight=True,
+            )
+
+        self._im_param_controls = parameter_controls
+        self._im_run_button = ft.FilledButton(
+            "执行图片源",
+            icon=ft.Icons.PLAY_ARROW,
+            on_click=lambda _: self.page.run_task(self._execute_im_source),
+        )
+        self._im_result_status_text = ft.Text("尚未执行", size=12, color=ft.Colors.GREY)
+        self._im_result_spinner = ft.ProgressRing(width=20, height=20, visible=False)
+        self._im_result_container = ft.Column(
+            spacing=12, expand=True, scroll=ft.ScrollMode.AUTO
+        )
+
+        header_section = ft.Column(
+            [
+                ft.Text(friendly_name, size=18, weight=ft.FontWeight.BOLD),
+                ft.Text(intro, size=12, color=ft.Colors.GREY),
+                ft.Text(
+                    f"接口：{method} {endpoint}",
+                    size=12,
+                    color=ft.Colors.GREY,
+                    selectable=True,
+                ),
+            ],
+            spacing=4,
+            tight=True,
+        )
+
+        status_row = ft.Row(
+            [self._im_result_spinner, self._im_result_status_text],
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        results_panel = ft.Container(
+            content=self._im_result_container,
+            height=320,
+            bgcolor=self._bgcolor_surface_low,
+            border_radius=ft.border_radius.all(8),
+            padding=ft.padding.all(12),
+            expand=True,
+        )
+
+        content = ft.Container(
+            width=720,
+            content=ft.Column(
+                [
+                    header_section,
+                    ft.Text("参数", size=14, weight=ft.FontWeight.W_500),
+                    params_section,
+                    ft.Row(
+                        [self._im_run_button],
+                        alignment=ft.MainAxisAlignment.END,
+                    ),
+                    ft.Divider(),
+                    ft.Text("执行结果", size=14, weight=ft.FontWeight.W_500),
+                    status_row,
+                    results_panel,
+                ],
+                spacing=16,
+                expand=True,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("IntelliMarkets 图片源"),
+            content=content,
+            actions=[
+                ft.TextButton("关闭", on_click=lambda _: self._close_dialog()),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self._im_source_dialog = dialog
+        self._open_dialog(dialog)
+
+    def _set_im_status(self, message: str, *, error: bool = False) -> None:
+        if self._im_result_status_text is None:
+            return
+        self._im_result_status_text.value = message
+        self._im_result_status_text.color = ft.Colors.ERROR if error else ft.Colors.GREY
+        if self._im_result_status_text.page is not None:
+            self._im_result_status_text.update()
+
+    def _build_im_parameter_controls(
+        self, source: Dict[str, Any]
+    ) -> list[_IMParameterControl]:
+        parameters = (source.get("content") or {}).get("parameters") or []
+        source_id = self._im_source_id(source)
+        cached = self._im_cached_inputs.get(source_id, {})
+        controls: list[_IMParameterControl] = []
+        for index, param in enumerate(parameters):
+            try:
+                control = self._make_im_parameter_control(param or {}, cached, index)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(f"构建参数控件失败: {exc}")
+                continue
+            controls.append(control)
+        return controls
+
+    def _make_im_parameter_control(
+        self,
+        param: Dict[str, Any],
+        cached: Dict[str, Any],
+        index: int,
+    ) -> _IMParameterControl:
+        param_type = str(param.get("type") or "string").lower()
+        name = param.get("name")
+        key = name or f"__path_segment_{index}"
+        friendly = param.get("friendly_name") or name or f"参数 {index + 1}"
+        required = bool(param.get("required"))
+        split_str = param.get("split_str")
+        default_value = self._im_initial_param_value(param, cached.get(key))
+
+        def apply_default(setter: Callable[[Any], None]) -> None:
+            try:
+                setter(default_value)
+            except Exception:
+                pass
+
+        if param_type == "enum":
+            values = param.get("value") or []
+            friendly_values = param.get("friendly_value") or []
+            value_map: Dict[str, Any] = {}
+            options: list[ft.dropdown.Option] = []
+            for idx, raw in enumerate(values):
+                label = friendly_values[idx] if idx < len(friendly_values) else str(raw)
+                option_key = str(idx)
+                options.append(ft.dropdown.Option(text=label, key=option_key))
+                value_map[option_key] = raw
+
+            dropdown = ft.Dropdown(
+                label=friendly,
+                options=options,
+                value=None,
+                dense=True,
+            )
+
+            def getter() -> Any:
+                selected = dropdown.value
+                if selected is None:
+                    if required:
+                        raise ValueError("请选择一个选项")
+                    return None
+                return value_map.get(selected)
+
+            def setter(value: Any) -> None:
+                target_key = None
+                for option_key, raw in value_map.items():
+                    if raw == value or str(raw) == str(value):
+                        target_key = option_key
+                        break
+                dropdown.value = target_key
+                if dropdown.page is not None:
+                    dropdown.update()
+
+            apply_default(setter)
+            return _IMParameterControl(param, dropdown, dropdown, getter, setter, key)
+
+        if param_type in {"boolean", "bool"}:
+            switch = ft.Switch(label=friendly, value=bool(default_value or False))
+
+            def getter() -> bool:
+                return bool(switch.value)
+
+            def setter(value: Any) -> None:
+                switch.value = bool(value)
+                if switch.page is not None:
+                    switch.update()
+
+            apply_default(setter)
+            return _IMParameterControl(param, switch, switch, getter, setter, key)
+
+        if param_type in {"integer", "int"}:
+            field = ft.TextField(
+                label=friendly,
+                value="",
+                dense=True,
+                keyboard_type=ft.KeyboardType.NUMBER,
+            )
+
+            def getter() -> Any:
+                raw = (field.value or "").strip()
+                if not raw:
+                    if required:
+                        raise ValueError("请输入数值")
+                    return None
+                try:
+                    value = int(raw)
+                except ValueError:
+                    raise ValueError("请输入合法的整数") from None
+                if param.get("min_value") is not None and value < int(
+                    param.get("min_value")
+                ):
+                    raise ValueError(f"最小值为 {param.get('min_value')}")
+                if param.get("max_value") is not None and value > int(
+                    param.get("max_value")
+                ):
+                    raise ValueError(f"最大值为 {param.get('max_value')}")
+                return value
+
+            def setter(value: Any) -> None:
+                field.value = "" if value is None else str(value)
+                if field.page is not None:
+                    field.update()
+
+            apply_default(setter)
+            return _IMParameterControl(param, field, field, getter, setter, key)
+
+        if param_type in {"number", "float", "double"}:
+            field = ft.TextField(
+                label=friendly,
+                value="",
+                dense=True,
+                keyboard_type=ft.KeyboardType.NUMBER,
+            )
+
+            def getter() -> Any:
+                raw = (field.value or "").strip()
+                if not raw:
+                    if required:
+                        raise ValueError("请输入数值")
+                    return None
+                try:
+                    value = float(raw)
+                except ValueError:
+                    raise ValueError("请输入合法的数值") from None
+                if param.get("min_value") is not None and value < float(
+                    param.get("min_value")
+                ):
+                    raise ValueError(f"最小值为 {param.get('min_value')}")
+                if param.get("max_value") is not None and value > float(
+                    param.get("max_value")
+                ):
+                    raise ValueError(f"最大值为 {param.get('max_value')}")
+                return value
+
+            def setter(value: Any) -> None:
+                field.value = "" if value is None else str(value)
+                if field.page is not None:
+                    field.update()
+
+            apply_default(setter)
+            return _IMParameterControl(param, field, field, getter, setter, key)
+
+        if param_type in {"list", "array"}:
+            field = ft.TextField(
+                label=friendly,
+                value="",
+                dense=True,
+                multiline=True,
+                min_lines=1,
+                max_lines=4,
+                hint_text=f"使用{split_str or '换行'}分隔多个取值",
+            )
+
+            def getter() -> Any:
+                raw = (field.value or "").strip()
+                if not raw:
+                    if required:
+                        raise ValueError("请输入至少一个值")
+                    return []
+                values: list[str]
+                if split_str:
+                    values = [
+                        segment.strip()
+                        for segment in raw.split(split_str)
+                        if segment.strip()
+                    ]
+                else:
+                    tokens = re.split(r"[\s,;]+", raw)
+                    values = [segment.strip() for segment in tokens if segment.strip()]
+                if required and not values:
+                    raise ValueError("请输入至少一个值")
+                return values
+
+            def setter(value: Any) -> None:
+                if isinstance(value, list):
+                    field.value = (split_str or "\n").join(str(item) for item in value)
+                elif value is None:
+                    field.value = ""
+                else:
+                    field.value = str(value)
+                if field.page is not None:
+                    field.update()
+
+            apply_default(setter)
+            return _IMParameterControl(param, field, field, getter, setter, key)
+
+        # default: string parameter
+        field = ft.TextField(
+            label=friendly,
+            value="",
+            dense=True,
+        )
+
+        def getter() -> Any:
+            raw = field.value or ""
+            raw = raw.strip()
+            if not raw and required:
+                raise ValueError("请输入参数值")
+            return raw or None
+
+        def setter(value: Any) -> None:
+            field.value = "" if value in (None, "") else str(value)
+            if field.page is not None:
+                field.update()
+
+        apply_default(setter)
+        return _IMParameterControl(param, field, field, getter, setter, key)
+
+    def _im_initial_param_value(self, param: Dict[str, Any], cached_value: Any) -> Any:
+        if cached_value not in (None, ""):
+            return cached_value
+        param_type = str(param.get("type") or "string").lower()
+        value = param.get("value")
+        if param_type == "enum":
+            if isinstance(value, list) and value:
+                return value[0]
+            return None
+        if param_type in {"list", "array"}:
+            if isinstance(value, list):
+                return value
+            if isinstance(value, str) and value.strip():
+                return [value.strip()]
+            return []
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        return None
+
+    def _im_set_control_error(self, control: ft.Control, message: str | None) -> None:
+        if hasattr(control, "error_text"):
+            try:
+                control.error_text = message
+            except Exception:
+                pass
+            if control.page is not None:
+                control.update()
+
+    def _im_is_empty_value(self, value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str) and not value.strip():
+            return True
+        if isinstance(value, Sequence) and not value:
+            return True
+        return False
+
+    def _collect_im_parameters(self) -> list[tuple[Dict[str, Any], Any]]:
+        collected: list[tuple[Dict[str, Any], Any]] = []
+        errors = False
+        current_cache: dict[str, Any] = {}
+        for control in self._im_param_controls:
+            param = control.config
+            required = bool(param.get("required"))
+            try:
+                value = control.getter()
+            except ValueError as exc:
+                self._im_set_control_error(control.control, str(exc))
+                errors = True
+                continue
+            self._im_set_control_error(control.control, None)
+            if self._im_is_empty_value(value):
+                current_cache[control.key] = None
+                if required:
+                    self._im_set_control_error(control.control, "此参数为必填")
+                    errors = True
+                continue
+            current_cache[control.key] = value
+            collected.append((param, value))
+
+        if self._im_active_source is not None:
+            source_id = self._im_source_id(self._im_active_source)
+            self._im_cached_inputs[source_id] = current_cache
+
+        if errors:
+            raise ValueError("invalid parameters")
+        return collected
+
+    def _im_param_summary(
+        self, param_pairs: list[tuple[Dict[str, Any], Any]]
+    ) -> Dict[str, str]:
+        summary: Dict[str, str] = {}
+        for param, value in param_pairs:
+            label = param.get("friendly_name") or param.get("name") or "参数"
+            summary[label] = self._im_format_value(value)
+        return summary
+
+    def _build_im_request(
+        self,
+        source: Dict[str, Any],
+        param_pairs: list[tuple[Dict[str, Any], Any]],
+    ) -> Dict[str, Any]:
+        method = (source.get("func") or "GET").upper()
+        raw_url = (source.get("link") or "").strip()
+        if not raw_url:
+            raise ValueError("图片源缺少请求链接")
+
+        base_url, _, query_part = raw_url.partition("?")
+        base_url = base_url.rstrip("/")
+        query_pairs: list[tuple[str, str]] = []
+        if query_part:
+            existing_pairs = parse_qsl(query_part, keep_blank_values=True)
+            query_pairs.extend(existing_pairs)
+
+        path_segments: list[str] = []
+        body_payload: Dict[str, Any] = {}
+        headers = (source.get("content") or {}).get("headers") or {}
+
+        for param, value in param_pairs:
+            name = param.get("name")
+            prepared_query = self._im_prepare_param_value(param, value, as_query=True)
+            prepared_body = self._im_prepare_param_value(param, value, as_query=False)
+            if name in (None, ""):
+                values = (
+                    prepared_query
+                    if isinstance(prepared_query, list)
+                    else [prepared_query]
+                )
+                for segment in values:
+                    if segment is None:
+                        continue
+                    encoded = quote(str(segment).strip("/"))
+                    if encoded:
+                        path_segments.append(encoded)
+                continue
+
+            if method in {"GET", "DELETE"}:
+                if isinstance(prepared_query, list):
+                    for item in prepared_query:
+                        if item is None:
+                            continue
+                        query_pairs.append((name, str(item)))
+                elif prepared_query is not None:
+                    query_pairs.append((name, str(prepared_query)))
+            else:
+                if prepared_body is not None:
+                    body_payload[name] = prepared_body
+
+        final_url = base_url
+        if path_segments:
+            final_url = "/".join(
+                segment for segment in [base_url, *path_segments] if segment
+            )
+        if query_pairs:
+            final_url = f"{final_url}?{urlencode(query_pairs, doseq=True)}"
+
+        return {
+            "url": final_url,
+            "method": method,
+            "body": body_payload if body_payload else None,
+            "headers": headers,
+            "query_pairs": query_pairs,
+        }
+
+    def _im_prepare_param_value(
+        self, param: Dict[str, Any], value: Any, *, as_query: bool
+    ) -> Any:
+        split_str = param.get("split_str")
+        if isinstance(value, list):
+            if split_str and as_query:
+                return split_str.join(str(item) for item in value)
+            return [self._im_format_scalar(item, as_query=as_query) for item in value]
+        if isinstance(value, tuple):
+            return [self._im_format_scalar(item, as_query=as_query) for item in value]
+        return self._im_format_scalar(value, as_query=as_query)
+
+    def _im_format_scalar(self, value: Any, *, as_query: bool) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return "true" if value and as_query else ("false" if as_query else value)
+        if isinstance(value, (int, float)):
+            return str(value) if as_query else value
+        if isinstance(value, (str, bytes)):
+            return (
+                value.decode("utf-8", errors="ignore")
+                if isinstance(value, bytes)
+                else value
+            )
+        if isinstance(value, Sequence):
+            return [self._im_format_scalar(item, as_query=as_query) for item in value]
+        return json.dumps(value, ensure_ascii=False)
+
+    async def _execute_im_source(self) -> None:
+        if self._im_active_source is None:
+            self._show_snackbar("请先选择图片源。", error=True)
+            return
+        if self._im_running:
+            return
+
+        self._im_running = True
+        if self._im_run_button is not None:
+            self._im_run_button.disabled = True
+            if self._im_run_button.page is not None:
+                self._im_run_button.update()
+
+        if self._im_result_spinner is not None:
+            self._im_result_spinner.visible = True
+            if self._im_result_spinner.page is not None:
+                self._im_result_spinner.update()
+
+        self._set_im_status("正在执行图片源...")
+
+        try:
+            param_pairs = self._collect_im_parameters()
+        except ValueError:
+            self._set_im_status("参数填写不完整，请检查后重试。", error=True)
+            self._im_running = False
+            if self._im_run_button is not None:
+                self._im_run_button.disabled = False
+                if self._im_run_button.page is not None:
+                    self._im_run_button.update()
+            if self._im_result_spinner is not None:
+                self._im_result_spinner.visible = False
+                if self._im_result_spinner.page is not None:
+                    self._im_result_spinner.update()
+            return
+
+        try:
+            request_info = self._build_im_request(self._im_active_source, param_pairs)
+        except Exception as exc:
+            logger.error(f"构建请求失败: {exc}")
+            self._set_im_status(f"构建请求失败：{exc}", error=True)
+            self._im_running = False
+            if self._im_run_button is not None:
+                self._im_run_button.disabled = False
+                if self._im_run_button.page is not None:
+                    self._im_run_button.update()
+            if self._im_result_spinner is not None:
+                self._im_result_spinner.visible = False
+                if self._im_result_spinner.page is not None:
+                    self._im_result_spinner.update()
+            return
+
+        try:
+            result_payload = await self._fetch_im_source_result(
+                self._im_active_source, request_info, param_pairs
+            )
+        except Exception as exc:  # pragma: no cover - network errors
+            logger.error(f"执行图片源失败: {exc}")
+            self._set_im_status(f"执行失败：{exc}", error=True)
+            self._emit_im_source_event(
+                "resource.im_source.executed",
+                {
+                    "success": False,
+                    "source": self._im_active_source,
+                    "request": request_info,
+                    "error": str(exc),
+                    "timestamp": time.time(),
+                },
+            )
+        else:
+            images = result_payload.get("images", [])
+            self._im_last_results = images
+            count = len(images)
+            if count:
+                self._set_im_status(f"执行成功，获取到 {count} 张图片。")
+            else:
+                self._set_im_status("执行成功，但未返回图片。", error=True)
+            self._update_im_results_view(result_payload)
+            event_payload = {
+                "success": True,
+                "source": self._im_active_source,
+                "request": request_info,
+                "images": [image.get("local_path") for image in images],
+                "timestamp": time.time(),
+                "parameters": self._im_param_summary(param_pairs),
+            }
+            self._emit_im_source_event("resource.im_source.executed", event_payload)
+        finally:
+            self._im_running = False
+            if self._im_run_button is not None:
+                self._im_run_button.disabled = False
+                if self._im_run_button.page is not None:
+                    self._im_run_button.update()
+            if self._im_result_spinner is not None:
+                self._im_result_spinner.visible = False
+                if self._im_result_spinner.page is not None:
+                    self._im_result_spinner.update()
+
+    async def _fetch_im_source_result(
+        self,
+        source: Dict[str, Any],
+        request_info: Dict[str, Any],
+        param_pairs: list[tuple[Dict[str, Any], Any]],
+    ) -> Dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=90)
+        method = request_info["method"]
+        url = request_info["url"]
+        headers = request_info.get("headers") or {}
+        body = request_info.get("body")
+
+        request_kwargs: dict[str, Any] = {"headers": headers}
+        if body and method not in {"GET", "HEAD"}:
+            request_kwargs["json"] = body
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.request(method, url, **request_kwargs) as resp:
+                status = resp.status
+                response_headers = {k: v for k, v in resp.headers.items()}
+                content_type = response_headers.get("Content-Type", "")
+                raw_bytes = await resp.read()
+
+                if status >= 400:
+                    snippet = raw_bytes.decode("utf-8", errors="ignore")[:200]
+                    raise RuntimeError(f"HTTP {status}: {snippet}")
+
+                image_cfg = ((source.get("content") or {}).get("response") or {}).get(
+                    "image"
+                ) or {}
+                response_type = (image_cfg.get("content_type") or "URL").upper()
+                content_type_main = (content_type or "").split(";")[0].lower()
+
+                payload: Any | None = None
+                binary_payload: bytes | None = None
+
+                if response_type == "BINARY" and not content_type_main.startswith(
+                    "application/json"
+                ):
+                    binary_payload = raw_bytes
+                else:
+                    text_payload = (
+                        raw_bytes.decode("utf-8", errors="ignore") if raw_bytes else ""
+                    )
+                    if text_payload:
+                        try:
+                            payload = json.loads(text_payload)
+                        except json.JSONDecodeError as exc:
+                            if response_type == "BINARY":
+                                binary_payload = raw_bytes
+                            else:
+                                raise RuntimeError(f"解析接口响应失败：{exc}") from exc
+                    else:
+                        payload = {}
+
+                return await self._process_im_response(
+                    source,
+                    request_info,
+                    param_pairs,
+                    payload,
+                    binary_payload,
+                    response_headers,
+                    content_type_main,
+                )
+
+    async def _process_im_response(
+        self,
+        source: Dict[str, Any],
+        request_info: Dict[str, Any],
+        param_pairs: list[tuple[Dict[str, Any], Any]],
+        payload: Any,
+        binary_content: bytes | None,
+        headers: Dict[str, str],
+        content_type: str,
+    ) -> Dict[str, Any]:
+        response_cfg = (source.get("content") or {}).get("response") or {}
+        image_cfg = response_cfg.get("image") or {}
+        response_type = (image_cfg.get("content_type") or "URL").upper()
+        storage_dir = self._im_storage_dir(source)
+        timestamp = time.time()
+        param_summary = self._im_param_summary(param_pairs)
+
+        images: list[Dict[str, Any]] = []
+
+        if response_type == "BINARY":
+            if not binary_content:
+                raise RuntimeError("接口未返回图片数据")
+            path = await asyncio.to_thread(
+                self._im_save_image_bytes,
+                storage_dir,
+                binary_content,
+                0,
+                headers.get("Content-Type"),
+            )
+            preview = self._im_make_preview_data(path)
+            image_entry = {
+                "id": uuid.uuid4().hex,
+                "local_path": str(path),
+                "original_url": None,
+                "source_id": self._im_source_id(source),
+                "source_path": source.get("path"),
+                "source_title": source.get("friendly_name") or source.get("file_name"),
+                "parameters": param_summary,
+                "executed_at": timestamp,
+                "preview_mime": preview[0] if preview else None,
+                "preview_base64": preview[1] if preview else None,
+                "details": [],
+            }
+            images.append(image_entry)
+        else:
+            if payload is None:
+                raise RuntimeError("接口未返回 JSON 数据")
+            image_values = self._extract_im_path_values(payload, image_cfg.get("path"))
+            if not image_values:
+                raise RuntimeError("未在响应中找到图片链接")
+
+            for idx, raw in enumerate(image_values):
+                if raw in (None, ""):
+                    continue
+                if isinstance(raw, dict):
+                    raw = (
+                        raw.get("url")
+                        or raw.get("src")
+                        or raw.get("image")
+                        or raw.get("href")
+                    )
+                if raw in (None, ""):
+                    continue
+
+                local_path: Path | None = None
+                original_url: str | None = None
+
+                if image_cfg.get("is_base64"):
+                    try:
+                        data_bytes = base64.b64decode(str(raw))
+                    except Exception as exc:  # pragma: no cover - invalid payload
+                        logger.error(f"解码 Base64 图片失败: {exc}")
+                        continue
+                    local_path = await asyncio.to_thread(
+                        self._im_save_image_bytes,
+                        storage_dir,
+                        data_bytes,
+                        idx,
+                        headers.get("Content-Type"),
+                    )
+                else:
+                    original_url = str(raw)
+                    download_path = await asyncio.to_thread(
+                        self._im_download_via_url,
+                        original_url,
+                        storage_dir,
+                    )
+                    if not download_path:
+                        continue
+                    local_path = Path(download_path)
+
+                if local_path is None:
+                    continue
+
+                preview = self._im_make_preview_data(local_path)
+                image_entry = {
+                    "id": uuid.uuid4().hex,
+                    "local_path": str(local_path),
+                    "original_url": original_url,
+                    "source_id": self._im_source_id(source),
+                    "source_path": source.get("path"),
+                    "source_title": source.get("friendly_name")
+                    or source.get("file_name"),
+                    "parameters": param_summary,
+                    "executed_at": timestamp,
+                    "preview_mime": preview[0] if preview else None,
+                    "preview_base64": preview[1] if preview else None,
+                    "details": [],
+                }
+                images.append(image_entry)
+
+        per_image_details: list[list[tuple[str, str]]] = [
+            [] for _ in range(len(images))
+        ]
+        global_details: list[tuple[str, str]] = []
+
+        others_sections = response_cfg.get("others") or []
+        if payload is not None:
+            for section in others_sections:
+                entries = section.get("data") or []
+                for item in entries:
+                    label = (
+                        item.get("friendly_name")
+                        or section.get("friendly_name")
+                        or item.get("name")
+                        or "附加信息"
+                    )
+                    values = self._extract_im_path_values(payload, item.get("path"))
+                    if not values:
+                        continue
+                    mapping = bool(
+                        item.get("one-to-one-mapping") or item.get("one_to_one_mapping")
+                    )
+                    if mapping:
+                        for idx, value in enumerate(values):
+                            if idx < len(per_image_details):
+                                formatted = self._im_format_value(value)
+                                if formatted:
+                                    per_image_details[idx].append((label, formatted))
+                    else:
+                        formatted = self._im_format_value(values)
+                        if formatted:
+                            global_details.append((label, formatted))
+
+        for idx, image in enumerate(images):
+            image["details"] = (
+                per_image_details[idx] if idx < len(per_image_details) else []
+            )
+            image["global_details"] = global_details
+            image["favorite_identifier"] = f"{image['source_id']}:{image['id']}"
+
+        return {
+            "images": images,
+            "global_details": global_details,
+            "parameters": param_summary,
+            "headers": headers,
+            "source": source,
+            "request": request_info,
+            "timestamp": timestamp,
+        }
+
+    def _im_storage_dir(self, source: Dict[str, Any]) -> Path:
+        slug = self._favorite_filename_slug(
+            source.get("friendly_name") or source.get("file_name") or "intellimarkets",
+            "intellimarkets",
+        )
+        directory = (CACHE_DIR / "intellimarkets" / slug).resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def _im_save_image_bytes(
+        self,
+        directory: Path,
+        data: bytes,
+        index: int,
+        content_type: str | None,
+    ) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        ext = None
+        if content_type:
+            ext = mimetypes.guess_extension(content_type)
+        if not ext:
+            ext = ".jpg"
+        filename = f"{int(time.time())}-{index}{ext}"
+        path = directory / filename
+        path.write_bytes(data)
+        return path
+
+    def _im_download_via_url(self, url: str, directory: Path) -> str | None:
+        try:
+            return ltwapi.download_file(url, save_path=str(directory))
+        except Exception as exc:  # pragma: no cover - network errors
+            logger.error(f"下载图片失败：{exc}")
+            return None
+
+    def _im_make_preview_data(self, path: Path) -> tuple[str, str] | None:
+        try:
+            data = path.read_bytes()
+        except Exception as exc:  # pragma: no cover - filesystem errors
+            logger.error(f"读取图片失败：{exc}")
+            return None
+        mime, _ = mimetypes.guess_type(path.name)
+        if not mime:
+            mime = "image/jpeg"
+        encoded = base64.b64encode(data).decode("ascii")
+        return mime, encoded
+
+    def _im_parse_path_tokens(self, path: str | None) -> list[tuple[str, Any]]:
+        if not path:
+            return []
+        tokens: list[tuple[str, Any]] = []
+        buffer = []
+        i = 0
+        while i < len(path):
+            ch = path[i]
+            if ch == ".":
+                if buffer:
+                    tokens.append(("key", "".join(buffer)))
+                    buffer.clear()
+                i += 1
+                continue
+            if ch == "[":
+                if buffer:
+                    tokens.append(("key", "".join(buffer)))
+                    buffer.clear()
+                j = path.find("]", i)
+                if j == -1:
+                    break
+                content = path[i + 1 : j]
+                if content == "*":
+                    tokens.append(("wildcard", None))
+                else:
+                    try:
+                        tokens.append(("index", int(content)))
+                    except ValueError:
+                        tokens.append(("key", content))
+                i = j + 1
+                continue
+            buffer.append(ch)
+            i += 1
+        if buffer:
+            tokens.append(("key", "".join(buffer)))
+        return tokens
+
+    def _extract_im_path_values(self, payload: Any, path: str | None) -> list[Any]:
+        tokens = self._im_parse_path_tokens(path)
+        if not tokens:
+            if payload in (None, ""):
+                return []
+            if isinstance(payload, list):
+                return payload
+            return [payload]
+
+        results: list[Any] = []
+
+        def traverse(current: Any, index: int) -> None:
+            if index >= len(tokens):
+                results.append(current)
+                return
+            token_type, token_value = tokens[index]
+            if token_type == "key":
+                if isinstance(current, dict) and token_value in current:
+                    traverse(current[token_value], index + 1)
+            elif token_type == "index":
+                if isinstance(current, Sequence) and not isinstance(
+                    current, (str, bytes)
+                ):
+                    try:
+                        traverse(current[token_value], index + 1)
+                    except (IndexError, TypeError):
+                        return
+            elif token_type == "wildcard":
+                if isinstance(current, dict):
+                    for value in current.values():
+                        traverse(value, index + 1)
+                elif isinstance(current, Sequence) and not isinstance(
+                    current, (str, bytes)
+                ):
+                    for value in current:
+                        traverse(value, index + 1)
+
+        traverse(payload, 0)
+        return results
+
+    def _im_format_value(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "是" if value else "否"
+        if isinstance(value, (int, float, str)):
+            return str(value)
+        if isinstance(value, dict):
+            try:
+                return json.dumps(value, ensure_ascii=False)
+            except Exception:
+                return str(value)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            formatted = [
+                self._im_format_value(item) for item in value if item not in (None, "")
+            ]
+            return "、".join(filter(None, formatted))
+        return str(value)
+
+    def _update_im_results_view(self, payload: Dict[str, Any]) -> None:
+        if self._im_result_container is None:
+            return
+        self._im_result_container.controls.clear()
+        images = payload.get("images") or []
+        if not images:
+            self._im_result_container.controls.append(
+                ft.Text("暂无图片结果。", size=12, color=ft.Colors.GREY)
+            )
+        else:
+            for image in images:
+                self._im_result_container.controls.append(
+                    self._build_im_result_card(image, payload)
+                )
+        if self._im_result_container.page is not None:
+            self._im_result_container.update()
+
+    def _build_im_result_card(
+        self,
+        result: Dict[str, Any],
+        payload: Dict[str, Any],
+    ) -> ft.Control:
+        preview_base64 = result.get("preview_base64")
+        preview_control: ft.Control
+        if preview_base64:
+            preview_control = ft.Image(
+                src_base64=preview_base64,
+                width=220,
+                height=124,
+                fit=ft.ImageFit.COVER,
+            )
+        else:
+            preview_control = ft.Container(
+                width=220,
+                height=124,
+                bgcolor=self._bgcolor_surface_low,
+                alignment=ft.alignment.center,
+                content=ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, color=ft.Colors.GREY),
+            )
+
+        local_path = result.get("local_path")
+        file_name = Path(local_path).name if local_path else "未知文件"
+        original_url = result.get("original_url")
+
+        parameter_texts: list[ft.Control] = []
+        parameters = payload.get("parameters") or result.get("parameters") or {}
+        if parameters:
+            parameter_texts.append(
+                ft.Text("请求参数", size=12, weight=ft.FontWeight.W_500)
+            )
+            for key, value in parameters.items():
+                parameter_texts.append(
+                    ft.Text(f"{key}：{value}", size=12, selectable=True)
+                )
+
+        detail_texts: list[ft.Control] = []
+        for label, value in result.get("details") or []:
+            detail_texts.append(ft.Text(f"{label}：{value}", size=12, selectable=True))
+
+        for label, value in payload.get("global_details") or []:
+            detail_texts.append(ft.Text(f"{label}：{value}", size=12, selectable=True))
+
+        result_id = result.get("id")
+
+        actions: list[ft.Control] = [
+            ft.IconButton(
+                icon=ft.Icons.WALLPAPER,
+                tooltip="设为壁纸",
+                on_click=lambda _, rid=result_id: self.page.run_task(
+                    self._handle_im_set_wallpaper,
+                    rid,
+                ),
+            ),
+            ft.IconButton(
+                icon=ft.Icons.CONTENT_COPY,
+                tooltip="复制图片",
+                on_click=lambda _, rid=result_id: self.page.run_task(
+                    self._handle_im_copy_image,
+                    rid,
+                ),
+            ),
+            ft.IconButton(
+                icon=ft.Icons.COPY_ALL,
+                tooltip="复制图片文件",
+                on_click=lambda _, rid=result_id: self.page.run_task(
+                    self._handle_im_copy_file,
+                    rid,
+                ),
+            ),
+            ft.IconButton(
+                icon=ft.Icons.BOOKMARK_ADD,
+                tooltip="加入收藏",
+                on_click=lambda _, rid=result_id: self._handle_im_add_favorite(rid),
+            ),
+        ]
+
+        if original_url:
+            actions.append(
+                ft.IconButton(
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    tooltip="打开原始链接",
+                    on_click=lambda _, url=original_url: self.page.launch_url(url),
+                )
+            )
+
+        # 移除“打开所在文件夹”操作，按需保留其他操作
+
+        info_column = ft.Column(
+            [
+                ft.Text(file_name, size=14, weight=ft.FontWeight.BOLD, selectable=True),
+                ft.Text(
+                    original_url or "本地文件",
+                    size=12,
+                    color=ft.Colors.GREY,
+                    selectable=True,
+                ),
+                ft.Column(parameter_texts, spacing=4),
+                ft.Column(detail_texts, spacing=4),
+                ft.Row(actions, spacing=8, wrap=True),
+            ],
+            spacing=8,
+            expand=True,
+        )
+
+        return ft.Card(
+            content=ft.Container(
+                ft.Row(
+                    [preview_control, info_column],
+                    spacing=16,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                ),
+                padding=12,
+            )
+        )
+
+    def _find_im_result(self, result_id: str | None) -> Dict[str, Any] | None:
+        if result_id is None:
+            return None
+        for item in self._im_last_results:
+            if item.get("id") == result_id:
+                return item
+        return None
+
+    async def _handle_im_set_wallpaper(self, result_id: str | None) -> None:
+        result = self._find_im_result(result_id)
+        if not result:
+            self._show_snackbar("未找到图片。", error=True)
+            return
+        path = result.get("local_path")
+        if not path:
+            self._show_snackbar("图片文件不存在。", error=True)
+            return
+        try:
+            await asyncio.to_thread(ltwapi.set_wallpaper, path)
+        except Exception as exc:  # pragma: no cover - platform specific errors
+            logger.error(f"设置壁纸失败：{exc}")
+            self._show_snackbar("设置壁纸失败，请查看日志。", error=True)
+            self._emit_im_source_event(
+                "resource.im_source.action",
+                {
+                    "action": "set_wallpaper",
+                    "success": False,
+                    "result": result,
+                    "error": str(exc),
+                },
+            )
+            return
+        self._show_snackbar("已设置为壁纸。")
+        self._emit_im_source_event(
+            "resource.im_source.action",
+            {
+                "action": "set_wallpaper",
+                "success": True,
+                "result": result,
+            },
+        )
+
+    async def _handle_im_copy_image(self, result_id: str | None) -> None:
+        result = self._find_im_result(result_id)
+        if not result:
+            self._show_snackbar("未找到图片。", error=True)
+            return
+        path = result.get("local_path")
+        if not path:
+            self._show_snackbar("图片文件不存在。", error=True)
+            return
+        try:
+            await asyncio.to_thread(copy_image_to_clipboard, path)
+        except Exception as exc:  # pragma: no cover - platform dependent
+            logger.error(f"复制图片失败：{exc}")
+            self._show_snackbar("复制图片失败。", error=True)
+            self._emit_im_source_event(
+                "resource.im_source.action",
+                {
+                    "action": "copy_image",
+                    "success": False,
+                    "result": result,
+                    "error": str(exc),
+                },
+            )
+            return
+        self._show_snackbar("已复制图片到剪贴板。")
+        self._emit_im_source_event(
+            "resource.im_source.action",
+            {
+                "action": "copy_image",
+                "success": True,
+                "result": result,
+            },
+        )
+
+    async def _handle_im_copy_file(self, result_id: str | None) -> None:
+        result = self._find_im_result(result_id)
+        if not result:
+            self._show_snackbar("未找到图片。", error=True)
+            return
+        path = result.get("local_path")
+        if not path:
+            self._show_snackbar("图片文件不存在。", error=True)
+            return
+        try:
+            await asyncio.to_thread(copy_files_to_clipboard, [path])
+        except Exception as exc:  # pragma: no cover - platform dependent
+            logger.error(f"复制图片文件失败：{exc}")
+            self._show_snackbar("复制图片文件失败。", error=True)
+            self._emit_im_source_event(
+                "resource.im_source.action",
+                {
+                    "action": "copy_file",
+                    "success": False,
+                    "result": result,
+                    "error": str(exc),
+                },
+            )
+            return
+        self._show_snackbar("已将图片文件复制到剪贴板。")
+        self._emit_im_source_event(
+            "resource.im_source.action",
+            {
+                "action": "copy_file",
+                "success": True,
+                "result": result,
+            },
+        )
+
+    def _handle_im_add_favorite(self, result_id: str | None) -> None:
+        result = self._find_im_result(result_id)
+        if not result:
+            self._show_snackbar("未找到图片。", error=True)
+            return
+        local_path = result.get("local_path")
+        if not local_path:
+            self._show_snackbar("图片文件不存在。", error=True)
+            return
+        folder_id = (
+            self._favorite_selected_folder
+            if self._favorite_selected_folder not in {"__all__", "__default__"}
+            else None
+        )
+        favorite_source = FavoriteSource(
+            type="intellimarkets",
+            identifier=result.get("favorite_identifier") or uuid.uuid4().hex,
+            title=result.get("source_title") or "IntelliMarkets",
+            url=result.get("original_url"),
+            preview_url=result.get("original_url"),
+            local_path=str(local_path),
+            extra={
+                "executed_at": result.get("executed_at"),
+                "source_path": result.get("source_path"),
+                "parameters": result.get("parameters"),
+            },
+        )
+        item, created = self._favorite_manager.add_or_update_item(
+            folder_id=folder_id,
+            title=Path(local_path).name,
+            source=favorite_source,
+            local_path=str(local_path),
+            extra=dict(favorite_source.extra or {}),
+            description="",
+            tags=None,
+        )
+        self._favorite_manager.update_localization(
+            item.id,
+            status="completed",
+            local_path=str(local_path),
+            folder_path=None,
+            message=None,
+        )
+        if created:
+            self._show_snackbar("已添加到收藏。")
+        else:
+            self._show_snackbar("已更新收藏记录。")
+        self._refresh_favorite_tabs()
+        self._emit_im_source_event(
+            "resource.im_source.action",
+            {
+                "action": "favorite",
+                "success": True,
+                "result": result,
+            },
+        )
+
+    # 不再提供“打开所在文件夹”的行为
+
+    def _emit_im_source_event(self, event_name: str, payload: Dict[str, Any]) -> None:
+        try:
+            self._emit_resource_event(event_name, payload)
+        except Exception as exc:  # pragma: no cover - event bus errors
+            logger.error(f"分发事件 {event_name} 失败：{exc}")
+
+    def _refresh_im_ui(self) -> None:
+        if self._im_loading_indicator:
+            self._im_loading_indicator.visible = self._im_loading
+        if self._im_refresh_button:
+            self._im_refresh_button.disabled = self._im_loading
+
+        if self._im_status_text:
+            if self._im_error:
+                self._im_status_text.value = f"加载失败：{self._im_error}"
+                self._im_status_text.color = ft.Colors.ERROR
+            elif self._im_loading and not self._im_sources_by_category:
+                self._im_status_text.value = "正在加载 IntelliMarkets 图片源…"
+                self._im_status_text.color = ft.Colors.GREY
+            elif self._im_sources_by_category:
+                category_count = len(self._im_sources_by_category)
+                summary = (
+                    f"共 {category_count} 个分类 / {self._im_total_sources} 个图片源"
+                )
+                if self._im_last_updated:
+                    formatted = time.strftime(
+                        "%Y-%m-%d %H:%M:%S", time.localtime(self._im_last_updated)
+                    )
+                    summary += f" · 更新于 {formatted}"
+                self._im_status_text.value = summary
+                self._im_status_text.color = ft.Colors.GREY
+            else:
+                self._im_status_text.value = "尚未加载图片源"
+                self._im_status_text.color = ft.Colors.GREY
+
+        if self._im_category_dropdown:
+            options = [
+                ft.dropdown.Option(name) for name in self._im_sources_by_category.keys()
+            ]
+            self._im_category_dropdown.options = options
+            if self._im_sources_by_category:
+                if (
+                    self._im_selected_category is None
+                    or self._im_selected_category not in self._im_sources_by_category
+                ):
+                    self._im_selected_category = next(
+                        iter(self._im_sources_by_category)
+                    )
+                self._im_category_dropdown.value = self._im_selected_category
+                self._im_category_dropdown.disabled = False
+            else:
+                self._im_category_dropdown.value = None
+                self._im_category_dropdown.disabled = True
+
+        if self._im_sources_list:
+            if self._im_loading and not self._im_sources_by_category:
+                self._im_sources_list.controls = [
+                    ft.Container(
+                        ft.Column(
+                            [
+                                ft.ProgressRing(width=32, height=32),
+                                ft.Text("正在拉取图片源列表…"),
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        padding=20,
+                    )
+                ]
+            elif self._im_error and not self._im_sources_by_category:
+                self._im_sources_list.controls = [
+                    ft.Container(
+                        ft.Text(self._im_error, color=ft.Colors.ERROR),
+                        padding=20,
+                    )
+                ]
+            else:
+                current_sources = self._im_sources_by_category.get(
+                    self._im_selected_category or "",
+                    [],
+                )
+                if current_sources:
+                    self._im_sources_list.controls = [
+                        self._build_im_source_card(item) for item in current_sources
+                    ]
+                else:
+                    self._im_sources_list.controls = [
+                        ft.Container(
+                            ft.Text("该分类暂无图片源"),
+                            padding=20,
+                        )
+                    ]
+
+        if self.page:
+            self.page.update()
+
+    async def _load_im_sources(self, force: bool = False) -> None:
+        if self._im_loading:
+            return
+        self._im_loading = True
+        self._im_error = None
+        self._refresh_im_ui()
+
+        # 构建 tarball 候选列表（官方与镜像）
+        tarball_candidates = self._im_tarball_candidates()
+
+        timeout = aiohttp.ClientTimeout(total=60)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                tarball_bytes = await self._fetch_bytes_with_mirrors(
+                    session,
+                    tarball_candidates[0],
+                    binary=True,
+                    timeout=timeout.total,
+                    candidates=tarball_candidates,
+                )
+
+            categories: dict[str, list[dict[str, Any]]] = {}
+            total_sources = 0
+            tar_stream = io.BytesIO(tarball_bytes)
+            with tarfile.open(fileobj=tar_stream, mode="r:gz") as tar:
+                for member in tar.getmembers():
+                    if not member.isfile():
+                        continue
+                    if not member.name.lower().endswith(".json"):
+                        continue
+                    parts = member.name.split("/", 1)
+                    if len(parts) < 2:
+                        continue
+                    relative_path = parts[1]
+                    if not relative_path:
+                        continue
+                    relative_segments = relative_path.split("/")
+                    if not relative_segments:
+                        continue
+
+                    if len(relative_segments) == 1:
+                        category_name = "未分类"
+                        file_name = relative_segments[0]
+                    else:
+                        category_name = relative_segments[0]
+                        file_name = relative_segments[-1]
+
+                    if not file_name.lower().endswith(".json"):
+                        continue
+
+                    extracted = tar.extractfile(member)
+                    if extracted is None:
+                        continue
+                    raw_bytes = extracted.read()
+                    text = raw_bytes.decode("utf-8-sig", errors="ignore")
+                    try:
+                        config_payload = json.loads(text)
+                    except json.JSONDecodeError as exc:
+                        logger.error(
+                            "解析 IntelliMarkets 图片源失败: {path} -> {error}",
+                            path=relative_path,
+                            error=str(exc),
+                        )
+                        continue
+
+                    raw_url = self._build_github_raw_url(relative_path)
+                    html_url = self._build_github_html_url(relative_path)
+                    # 专用于程序内部的 raw 镜像候选（不展示给用户）
+                    raw_mirror_candidates = self._im_raw_mirrors(relative_path)
+
+                    source_info: Dict[str, Any] = {
+                        "category": category_name,
+                        "path": relative_path,
+                        "file_name": file_name,
+                        "friendly_name": config_payload.get("friendly_name")
+                        or file_name,
+                        "intro": config_payload.get("intro") or "",
+                        "icon": config_payload.get("icon"),
+                        "link": config_payload.get("link"),
+                        "func": config_payload.get("func") or "GET",
+                        "apicore_version": config_payload.get("APICORE_version"),
+                        "parameters": config_payload.get("parameters"),
+                        "response": config_payload.get("response"),
+                        "raw_url": raw_url,
+                        "html_url": html_url,
+                        "raw_mirror_candidates": raw_mirror_candidates,
+                        "size": member.size,
+                        "content": config_payload,
+                    }
+
+                    categories.setdefault(category_name, []).append(source_info)
+                    total_sources += 1
+
+            for items in categories.values():
+                items.sort(
+                    key=lambda item: (
+                        item.get("friendly_name") or item.get("file_name") or ""
+                    ).lower()
+                )
+
+            self._im_sources_by_category = categories
+            self._im_total_sources = total_sources
+            if (
+                self._im_selected_category is None
+                or self._im_selected_category not in categories
+            ):
+                self._im_selected_category = next(iter(categories), None)
+            self._im_last_updated = time.time()
+        except Exception as exc:  # pragma: no cover - network variability
+            logger.error(f"加载 IntelliMarkets 图片源失败: {exc}")
+            self._im_error = str(exc)
+            self._im_sources_by_category = {}
+            self._im_total_sources = 0
+        finally:
+            self._im_loading = False
+            self._refresh_im_ui()
 
     # ------------------------------------------------------------------
     # favorite helpers
@@ -2654,19 +4530,7 @@ class Pages:
                 )
             )
 
-        if item.local_path:
-            try:
-                local_uri = Path(item.local_path).resolve().as_uri()
-            except Exception:
-                local_uri = None
-            if local_uri:
-                action_buttons.append(
-                    ft.IconButton(
-                        icon=ft.Icons.FOLDER_OPEN,
-                        tooltip="打开本地文件",
-                        on_click=lambda _, uri=local_uri: self.page.launch_url(uri),
-                    )
-                )
+        # 移除“打开本地文件/所在位置”的入口，避免直接跳转到文件夹
 
         body_row = ft.Row(
             [preview_control, info_column],
@@ -4335,6 +6199,13 @@ class Pages:
             on_click=lambda _: self._open_import_dialog(),
         )
 
+        # 添加“本地图片到收藏”入口
+        add_local_fav_button = ft.FilledTonalButton(
+            "添加本地图片",
+            icon=ft.Icons.ADD_PHOTO_ALTERNATE,
+            on_click=lambda _: self._open_add_local_favorite_picker(),
+        )
+
         navigation_row = ft.Row(
             [
                 ft.TextButton(
@@ -4364,6 +6235,7 @@ class Pages:
 
         data_actions = ft.Row(
             controls=[
+                add_local_fav_button,
                 self._favorite_localize_button,
                 self._favorite_export_button,
                 self._favorite_import_button,
@@ -4768,11 +6640,43 @@ class Pages:
                 expand=True,
             )
 
+        third_party_sheet = ft.BottomSheet(
+            ft.Container(
+                ft.Column(
+                    [
+                        ft.Text("第三方用户协议(部分)", weight=ft.FontWeight.BOLD),
+                        ft.Row(
+                            [
+                                ft.Button(
+                                    "IntelliMarkets用户协议",
+                                    icon=ft.Icons.OPEN_IN_NEW,
+                                    on_click=lambda _: self.page.launch_url(
+                                        "https://github.com/SRInternet-Studio/Wallpaper-generator/blob/NEXT-PREVIEW/DISCLAIMER.md"
+                                    ),
+                                ),
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                        ),
+                        ft.TextButton(
+                            "关闭",
+                            icon=ft.Icons.CLOSE,
+                            on_click=lambda _: setattr(third_party_sheet, "open", False)
+                            or self.page.update(),
+                        ),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    tight=True,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+                padding=50,
+            ),
+            open=False,
+        )
         license_sheet = ft.BottomSheet(
             ft.Container(
                 ft.Column(
                     [
-                        ft.Text("版权信息", weight=ft.FontWeight.BOLD),
+                        ft.Text("依赖版权信息", weight=ft.FontWeight.BOLD),
                         ft.Markdown(
                             self._get_license_text(),
                             selectable=True,
@@ -4959,9 +6863,29 @@ class Pages:
                         ),
                     ),
                     ft.TextButton(
-                        "查看版权信息",
+                        "查看依赖版权信息",
                         icon=ft.Icons.OPEN_IN_NEW,
                         on_click=lambda _: setattr(license_sheet, "open", True)
+                        or self.page.update(),
+                    ),
+                    ft.TextButton(
+                        "查看用户协议",
+                        icon=ft.Icons.OPEN_IN_NEW,
+                        on_click=lambda _: self.page.launch_url(
+                            "https://docs.zsxiaoshu.cn/terms/wallpaper/user_agreement/"
+                        ),
+                    ),
+                    ft.TextButton(
+                        "查看二次开发协议",
+                        icon=ft.Icons.OPEN_IN_NEW,
+                        on_click=lambda _: self.page.launch_url(
+                            "https://docs.zsxiaoshu.cn/terms/wallpaper/secondary_development_agreement/"
+                        ),
+                    ),
+                    ft.TextButton(
+                        "查看数据提供方用户协议",
+                        icon=ft.Icons.OPEN_IN_NEW,
+                        on_click=lambda _: setattr(third_party_sheet, "open", True)
                         or self.page.update(),
                     ),
                 ]
@@ -4990,7 +6914,7 @@ class Pages:
         self._settings_tab_indices = {
             "general": 0,
             "download": 1,
-            "ui": 3,  # “界面”与“主题”已合并为“外观”
+            "ui": 3,
             "about": 4,
             "plugins": 5,
             "plugin": 5,
@@ -5030,6 +6954,7 @@ class Pages:
                 license_sheet,
                 thank_sheet,
                 spoon_sheet,
+                third_party_sheet,
             ],
         )
 

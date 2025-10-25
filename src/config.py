@@ -55,6 +55,10 @@ DEFAULT_CONFIG = {
             "type": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "k", "l"],
         },
     },
+    "im": {
+        # IntelliMarkets 图片源镜像优先级："default_first" | "mirror_first"
+        "mirror_preference": "mirror_first",
+    },
 }
 
 

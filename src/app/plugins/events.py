@@ -210,4 +210,14 @@ CORE_EVENT_DEFINITIONS: List[EventDefinition] = [
         description="当内置壁纸下载完成时触发，提供下载来源与文件路径。",
         permission="resource_data",
     ),
+    EventDefinition(
+        event_type="resource.im_source.executed",
+        description="当用户调用 IntelliMarkets 图片源并完成请求时触发。",
+        permission="resource_data",
+    ),
+    EventDefinition(
+        event_type="resource.im_source.action",
+        description="当用户对 IntelliMarkets 下载结果执行内置操作（设为壁纸、复制、收藏等）时触发。",
+        permission="resource_data",
+    ),
 ]

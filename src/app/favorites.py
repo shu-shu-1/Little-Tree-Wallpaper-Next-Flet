@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import re
@@ -880,6 +881,56 @@ class FavoriteManager:
             self._collection.items[item_id] = item
             self.save()
             return FavoriteItem.from_dict(item.to_dict()), True
+
+    def add_local_item(
+        self,
+        *,
+        path: str,
+        folder_id: str | None = None,
+        title: str | None = None,
+        description: str = "",
+        tags: Sequence[str] | None = None,
+        source_title: str | None = None,
+        extra: Dict[str, Any] | None = None,
+        merge_tags: bool = True,
+    ) -> tuple[FavoriteItem, bool]:
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.exists():
+            raise FileNotFoundError(str(resolved))
+
+        identifier = "local::" + hashlib.sha1(str(resolved).encode("utf-8")).hexdigest()
+        source = FavoriteSource(
+            type="local",
+            identifier=identifier,
+            title=source_title or resolved.stem,
+            url=None,
+            preview_url=None,
+            local_path=str(resolved),
+            extra=dict(extra or {}),
+        )
+
+        item, created = self.add_or_update_item(
+            folder_id=folder_id,
+            title=title or resolved.stem,
+            description=description,
+            tags=tags,
+            source=source,
+            preview_url=None,
+            local_path=str(resolved),
+            extra=extra,
+            merge_tags=merge_tags,
+        )
+
+        self.update_localization(
+            item.id,
+            status="completed",
+            local_path=str(resolved),
+            folder_path=None,
+            message=None,
+        )
+
+        refreshed = self.get_item(item.id) or item
+        return refreshed, created
 
     def update_item(
         self,
