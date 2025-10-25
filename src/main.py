@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import flet as ft
+import traceback
 from tkinter import messagebox
 
 from app import Application
@@ -28,4 +29,14 @@ if __name__ == "__main__":
     try:
         ft.app(target=main)
     except Exception as e:
-        messagebox.showerror("Error", f"Error occurred: {str(e.with_traceback())}")
+        # 获取完整的异常信息包括堆栈跟踪
+        error_message = f"发生错误: {str(e)}\n\n详细信息:\n{traceback.format_exc()}"
+        try:
+            with open("crush.log", "a", encoding="utf-8") as f:
+                f.write(error_message + "\n")
+        except Exception:
+            pass
+        
+        # 显示简化版错误信息给用户
+        simple_error = f"发生错误: {str(e)}"
+        messagebox.showerror("错误", simple_error)
