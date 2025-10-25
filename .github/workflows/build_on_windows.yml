@@ -10,7 +10,7 @@ env:
   FLET_CLI_NO_RICH_OUTPUT: "1"
 
 jobs:
-  build-extension-sample:
+  build-windows:
     runs-on: windows-2022
 
     steps:
@@ -43,18 +43,15 @@ jobs:
       - name: Verify Flet version
         run: |
           uv run flet --version
-      - name: Create Flet extension project
+      - name: Build Flet application (Windows)
         run: |
-          uv run flet create --template extension --project-name flet-spinkit
-          Get-ChildItem -Path . -Force
-      - name: Build extension
-        run: |
-          Set-Location examples/flet_spinkit_example
+          # Ensure we're at the repository root (where pyproject.toml / main.py live)
+          Set-Location $env:GITHUB_WORKSPACE
           uv run flet build windows -v
       - name: Upload build/windows as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flet-spinkit-example-windows-${{ github.run_number }}
-          path: examples/flet_spinkit_example/build/windows/**
+          name: flet-application-windows-${{ github.run_number }}
+          path: build/windows/**
           if-no-files-found: error
           compression-level: 6
