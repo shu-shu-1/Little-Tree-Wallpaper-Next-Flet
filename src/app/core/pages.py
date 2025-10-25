@@ -4870,7 +4870,7 @@ class Pages:
             label="界面主题",
             value=app_config.get("ui.theme", "auto"),
             options=[
-                ft.DropdownOption(key="auto", text="跟随系统"),
+                ft.DropdownOption(key="auto", text="跟随系统/主题"),
                 ft.DropdownOption(key="light", text="浅色"),
                 ft.DropdownOption(key="dark", text="深色"),
             ],
@@ -4878,18 +4878,53 @@ class Pages:
             width=220,
         )
 
-        ui = tab_content(
-            "界面",
+        # 提示：当使用非默认主题配置时，建议将界面主题设为“跟随系统/主题”
+        current_theme_profile = (
+            str(app_config.get("ui.theme_profile", "default")).strip().lower()
+        )
+        use_custom_theme_profile = current_theme_profile != "default"
+
+        reminder_text = (
             ft.Row(
                 [
-                    theme_dropdown,
+                    ft.Icon(ft.Icons.INFO, size=15),
+                    ft.Text(
+                        "已启用主题配置，建议将“界面主题”设置为“跟随系统/主题”，否则可能与主题配色冲突。",
+                        size=12,
+                    ),
+                ]
+            )
+            if use_custom_theme_profile
+            else None
+        )
+
+        # 外观：合并“界面”与“主题”设置
+        theme_controls = self._build_theme_settings_controls()
+        appearance = tab_content(
+            "外观",
+            # 界面主题
+            ft.Column(
+                [
+                    ft.Text("界面", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Row(
+                        [theme_dropdown],
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    *([reminder_text] if reminder_text else []),
                 ],
-                spacing=12,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=8,
+            ),
+            # 主题配置
+            ft.Container(height=8),
+            ft.Column(
+                [
+                    ft.Text("主题", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Column(list(theme_controls), spacing=12),
+                ],
+                spacing=8,
             ),
         )
-        theme_controls = self._build_theme_settings_controls()
-        theme = tab_content("主题", *theme_controls)
         about = tab_content(
             "关于",
             ft.Text(f"小树壁纸 Next v{VER}", size=16),
@@ -4941,8 +4976,7 @@ class Pages:
                 ft.Tab(text="通用", icon=ft.Icons.SETTINGS, content=general),
                 ft.Tab(text="资源", icon=ft.Icons.WALLPAPER, content=resource),
                 ft.Tab(text="下载", icon=ft.Icons.DOWNLOAD, content=download),
-                ft.Tab(text="界面", icon=ft.Icons.PALETTE, content=ui),
-                ft.Tab(text="主题", icon=ft.Icons.BRUSH, content=theme),
+                ft.Tab(text="外观", icon=ft.Icons.PALETTE, content=appearance),
                 ft.Tab(text="关于", icon=ft.Icons.INFO, content=about),
                 ft.Tab(
                     text="插件",
@@ -4956,10 +4990,10 @@ class Pages:
         self._settings_tab_indices = {
             "general": 0,
             "download": 1,
-            "ui": 2,
-            "about": 3,
-            "plugins": 4,
-            "plugin": 4,
+            "ui": 3,  # “界面”与“主题”已合并为“外观”
+            "about": 4,
+            "plugins": 5,
+            "plugin": 5,
         }
         if self._pending_settings_tab:
             pending = None

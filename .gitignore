@@ -1,6 +1,7 @@
 # Test files
 .vscode
 run.bat
+build_nuitka.ps1
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -165,3 +166,4 @@ cython_debug/
 
 # Flet
 storage/
+docs/build_nuitka.md

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import flet as ft
+from tkinter import messagebox
 
 from app import Application
 
@@ -24,4 +25,7 @@ def main(page: ft.Page) -> None:
 
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    try:
+        ft.app(target=main)
+    except Exception as e:
+        messagebox.showerror("Error", f"Error occurred: {str(e.with_traceback())}")
