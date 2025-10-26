@@ -1,0 +1,64 @@
+name: Build with uv sync and package
+
+on:
+    push:
+        branches: [ main ]
+    workflow_dispatch:
+
+jobs:
+    build:
+        runs-on: windows-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup Python 3.13
+              uses: actions/setup-python@v4
+              with:
+                python-version: '3.13'
+
+            - name: Upgrade pip and install uv
+              shell: pwsh
+              run: |
+                python -m pip install --upgrade pip
+                pip install uv
+
+            - name: uv sync environment
+              shell: pwsh
+              run: |
+                # run uv sync as requested
+                uv sync
+
+            - name: Run build script
+              shell: pwsh
+              run: |
+                python tools\build.py
+
+            - name: Package build outputs
+              shell: pwsh
+              run: |
+                $candidates = @('dist','build','output','release')
+                $found = @()
+                foreach ($d in $candidates) {
+                    if (Test-Path $d) { $found += (Get-Item $d).FullName }
+                }
+                if ($found.Count -eq 0) {
+                    Write-Host "No common output directories found. Including all non-hidden files at repo root."
+                    # Exclude .git by selecting items
+                    $items = Get-ChildItem -Force | Where-Object { $_.Name -ne '.git' -and $_.Name -ne '.github' }
+                    if ($items.Count -eq 0) {
+                        Write-Host "Nothing to package -> creating empty artifact"
+                        New-Item -Path artifact.zip -ItemType File -Force | Out-Null
+                    } else {
+                        Compress-Archive -Path $items -DestinationPath artifact.zip -Force
+                    }
+                } else {
+                    Write-Host "Packaging: $found"
+                    Compress-Archive -Path $found -DestinationPath artifact.zip -Force
+                }
+
+            - name: Upload build artifact
+              uses: actions/upload-artifact@v4
+              with:
+                name: build-artifact
+                path: artifact.zip

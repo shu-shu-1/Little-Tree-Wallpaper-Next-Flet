@@ -5,29 +5,34 @@ description = ""
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    { name = "Little Tree Studio", email = "zsxiaoshu@outlook.com" }
+    { name = "Little Tree Studio", email = "studio@zsxiaoshu.com" }
 ]
 dependencies = [
   "aiohttp>=3.12.14",
-  "requests>=2.32.3",
+  "requests>=2.32.5",
   "filetype>=1.2.0",
   "flet==0.28.3",
   "magic-python>=0.4.0",
   "python-magic>=0.4.27; platform_system != 'Windows'",
   "python-magic-bin>=0.4.14; platform_system == 'Windows'",
   "loguru>=0.7.3",
-  "platformdirs>=4.3.8",
-  "pyperclip>=1.9.0",
+  "platformdirs>=4.5.0",
+  "pyperclip>=1.11.0",
   "orjson>=3.11.3",
+  "rtoml>=0.13.0",
 ]
 
 [dependency-groups]
-dev = ["flet[all]==0.28.3"]
+dev = [
+    "colorama>=0.4.6",
+    "flet[all]==0.28.3",
+    "pyinstaller>=6.16.0",
+]
 
 [tool.flet]
 # org name in reverse domain name notation, e.g. "com.mycompany".
 # Combined with project.name to build bundle ID for iOS and Android apps
-org = "com.littletreestudiowallpaper"
+org = "com.littletreestudio"
 
 # project display name that is used as an app title on Android and iOS home screens,
 # shown in window titles and about app dialogs on desktop.

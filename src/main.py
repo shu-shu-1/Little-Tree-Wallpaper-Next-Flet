@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import flet as ft
 import traceback
-from tkinter import messagebox
-
 from app import Application
 
 
@@ -37,6 +35,4 @@ if __name__ == "__main__":
         except Exception:
             pass
         
-        # 显示简化版错误信息给用户
-        simple_error = f"发生错误: {str(e)}"
-        messagebox.showerror("错误", simple_error)
+
