@@ -32,7 +32,7 @@ jobs:
             - name: Run build script
               shell: pwsh
               run: |
-                python tools\build.py
+                uv run tools\build.py
 
             - name: Package build outputs
               shell: pwsh
