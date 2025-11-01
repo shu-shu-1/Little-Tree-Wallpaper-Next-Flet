@@ -243,6 +243,7 @@ def main(argv: list[str]) -> int:
     _copy_tree(SRC_DIR / "plugins", out_dir / "_internal" / "plugins")
     _copy_tree(SRC_DIR / "assets", out_dir / "_internal" / "assets")
     _copy_tree(SRC_DIR / "licenses", out_dir / "_internal" / "licenses")
+    _copy_tree(SRC_DIR / "wallpaper_sources", out_dir / "_internal" / "wallpaper_sources")
 
     # 4) 重命名输出目录为期望格式
     final_out = DIST_DIR / final_dir_name
