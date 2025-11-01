@@ -137,6 +137,15 @@ class CorePlugin(Plugin):
         context.add_route_view(
             AppRouteView(route="/test-warning", builder=pages.build_test_warning_page)
         )
+        context.add_route_view(
+            AppRouteView(
+                route="/resource/wallpaper-preview",
+                builder=pages.build_wallpaper_preview_view,
+            )
+        )
+        context.add_route_view(
+            AppRouteView(route="/first-run", builder=pages.build_first_run_page)
+        )
 
         if MODE == "TEST":
             context.set_initial_route("/test-warning")

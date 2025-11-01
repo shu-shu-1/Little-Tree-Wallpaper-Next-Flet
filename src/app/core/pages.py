@@ -40,6 +40,15 @@ from app.ui_utils import (
     copy_files_to_clipboard,
     copy_image_to_clipboard,
 )
+from app.wallpaper_sources import (
+    WallpaperCategoryRef,
+    WallpaperItem,
+    WallpaperSourceError,
+    WallpaperSourceFetchError,
+    WallpaperSourceImportError,
+    WallpaperSourceManager,
+    WallpaperSourceRecord,
+)
 from app.plugins import (
     AppRouteView,
     PluginPermission,
@@ -60,6 +69,8 @@ from app.settings import SettingsStore
 
 app_config = SettingsStore()
 
+_WS_DEFAULT_KEY = "__default__"
+
 
 @dataclass(slots=True)
 class _IMParameterControl:
@@ -69,6 +80,15 @@ class _IMParameterControl:
     getter: Callable[[], Any]
     setter: Callable[[Any], None]
     key: str
+
+
+@dataclass(slots=True)
+class _WSParameterControl:
+    option: Any
+    control: ft.Control
+    display: ft.Control
+    getter: Callable[[], Any]
+    setter: Callable[[Any], None]
 
 
 if TYPE_CHECKING:
@@ -111,6 +131,7 @@ class Pages:
         self._plugin_list_column: Optional[ft.Column] = None
         self._plugin_file_picker: Optional[ft.FilePicker] = None
         self._favorite_file_picker: Optional[ft.FilePicker] = None
+        self._theme_file_picker: Optional[ft.FilePicker] = None
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
         self.bing_wallpaper = None
         self.bing_wallpaper_url = None
@@ -169,9 +190,8 @@ class Pages:
         self._theme_list_handler = theme_list_handler
         self._theme_apply_handler = theme_apply_handler
         self._theme_profiles: list[Dict[str, Any]] = list(theme_profiles or [])
-        self._theme_dropdown: ft.Dropdown | None = None
-        self._theme_summary_text: ft.Text | None = None
-        self._theme_apply_button: ft.Control | None = None
+        self._theme_cards_wrap: ft.Wrap | None = None
+        self._theme_detail_dialog: ft.AlertDialog | None = None
 
         self._generate_provider_dropdown: ft.Dropdown | None = None
         self._generate_seed_field: ft.TextField | None = None
@@ -186,6 +206,8 @@ class Pages:
 
         # IntelliMarkets source marketplace state
         self._im_sources_by_category: dict[str, list[dict[str, Any]]] = {}
+        self._im_all_category_key: str = "__all__"
+        self._im_all_category_label: str = "全部"
         self._im_total_sources: int = 0
         self._im_loading: bool = False
         self._im_error: str | None = None
@@ -195,6 +217,8 @@ class Pages:
         self._im_loading_indicator: ft.ProgressRing | None = None
         self._im_category_dropdown: ft.Dropdown | None = None
         self._im_sources_list: ft.ListView | None = None
+        self._im_search_field: ft.TextField | None = None
+        self._im_search_text: str = ""
         self._im_refresh_button: ft.TextButton | None = None
         self._im_repo_owner = "IntelliMarkets"
         self._im_repo_name = "Wallpaper_API_Index"
@@ -210,6 +234,48 @@ class Pages:
         self._im_result_spinner: ft.ProgressRing | None = None
         self._im_running: bool = False
         self._im_last_results: list[dict[str, Any]] = []
+
+        self._wallpaper_source_manager = WallpaperSourceManager()
+        self._ws_fetch_button: ft.FilledButton | None = None
+        self._ws_reload_button: ft.OutlinedButton | None = None
+        self._ws_search_field: ft.TextField | None = None
+        self._ws_source_tabs: ft.Tabs | None = None
+        self._ws_primary_tabs: ft.Tabs | None = None
+        self._ws_secondary_tabs: ft.Tabs | None = None
+        self._ws_tertiary_tabs: ft.Tabs | None = None
+        self._ws_leaf_tabs: ft.Tabs | None = None
+        self._ws_source_tabs_container: ft.Container | None = None
+        self._ws_primary_container: ft.Container | None = None
+        self._ws_secondary_container: ft.Container | None = None
+        self._ws_tertiary_container: ft.Container | None = None
+        self._ws_leaf_container: ft.Container | None = None
+        self._ws_source_info_container: ft.Container | None = None
+        self._ws_param_container: ft.Container | None = None
+        self._ws_status_text: ft.Text | None = None
+        self._ws_loading_indicator: ft.ProgressRing | None = None
+        self._ws_result_list: ft.ListView | None = None
+        self._ws_file_picker: ft.FilePicker | None = None
+        self._ws_settings_list: ft.Column | None = None
+        self._ws_settings_summary_text: ft.Text | None = None
+        self._ws_active_source_id: str | None = (
+            self._wallpaper_source_manager.active_source_identifier()
+        )
+        self._ws_active_primary_key: str | None = None
+        self._ws_active_secondary_key: str | None = None
+        self._ws_active_tertiary_key: str | None = None
+        self._ws_active_leaf_index: int = 0
+        self._ws_active_category_id: str | None = None
+        self._ws_cached_results: dict[str, list[WallpaperItem]] = {}
+        self._ws_item_index: dict[str, WallpaperItem] = {}
+        self._ws_search_text: str = ""
+        self._ws_hierarchy: dict[str, Any] = {}
+        self._ws_logo_cache: dict[str, tuple[str, bool]] = {}
+        self._ws_updating_ui: bool = False
+        self._ws_param_controls: list[_WSParameterControl] = []
+        self._ws_param_cache: dict[str, dict[str, Any]] = {}
+        self._ws_fetch_in_progress: bool = False
+        self._ws_preview_item: WallpaperItem | None = None
+        self._ws_preview_item_id: str | None = None
 
         self.home = self._build_home()
         self.resource = self._build_resource()
@@ -341,8 +407,9 @@ class Pages:
             logger.info(f"延迟切换设置页面标签到 {normalized}")
             self._pending_settings_tab = normalized
             return True
-        logger.info(f"切换设置页面标签到 {normalized}")
+        
         self._settings_tabs.selected_index = self._settings_tab_indices[normalized]
+        logger.info(f"切换设置页面标签到 {normalized}({self._settings_tabs.selected_index})")
         self.page.update()
         return True
 
@@ -1860,7 +1927,11 @@ class Pages:
                     icon=ft.Icons.SUBJECT,
                     content=self._build_im_page(),
                 ),
-                ft.Tab(text="其他", icon=ft.Icons.SUBJECT),
+                ft.Tab(
+                    text="其他",
+                    icon=ft.Icons.SUBJECT,
+                    content=self._build_wallpaper_source_tab(),
+                ),
             ],
             animation_duration=300,
         )
@@ -2273,6 +2344,1996 @@ class Pages:
             padding=32,
         )
 
+    def _build_wallpaper_source_tab(self):
+        self._ws_fetch_button = ft.FilledButton(
+            "获取壁纸",
+            icon=ft.Icons.DOWNLOAD,
+            on_click=lambda _: self._ws_fetch_active_category(force=True),
+        )
+        self._ws_reload_button = ft.OutlinedButton(
+            "刷新源列表",
+            icon=ft.Icons.SYNC,
+            on_click=lambda _: self._ws_reload_sources(),
+        )
+        manage_button = ft.TextButton(
+            "在设置中管理",
+            icon=ft.Icons.SETTINGS,
+            on_click=lambda _: self._ws_open_wallpaper_source_settings(),
+        )
+
+        header_actions = ft.Row(
+            controls=[
+                self._ws_fetch_button,
+                self._ws_reload_button,
+                manage_button,
+            ],
+            spacing=8,
+            run_spacing=8,
+            wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        self._ws_source_info_container = ft.Container(visible=False)
+        self._ws_source_tabs = ft.Tabs(
+            tabs=[],
+            scrollable=True,
+            animation_duration=150,
+            on_change=self._ws_on_source_tab_change,
+        )
+        self._ws_source_tabs_container = ft.Container(content=self._ws_source_tabs)
+
+        self._ws_primary_container = ft.Container(visible=False)
+        self._ws_secondary_container = ft.Container(visible=False)
+        self._ws_tertiary_container = ft.Container(visible=False)
+        self._ws_leaf_container = ft.Container(visible=False)
+        self._ws_param_container = ft.Container(visible=False)
+
+        self._ws_search_field = ft.TextField(
+            label="搜索分类或壁纸",
+            hint_text="输入关键字以筛选分类或壁纸",
+            prefix_icon=ft.Icons.SEARCH,
+            dense=True,
+            expand=True,
+            on_change=self._ws_on_search_change,
+        )
+
+        self._ws_loading_indicator = ft.ProgressRing(
+            width=18,
+            height=18,
+            stroke_width=2,
+            visible=False,
+        )
+        self._ws_status_text = ft.Text("请选择分类", size=12, color=ft.Colors.GREY)
+
+        status_row = ft.Row(
+            [
+                ft.Row(
+                    [self._ws_loading_indicator, self._ws_status_text],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                )
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        )
+
+        self._ws_result_list = ft.ListView(
+            expand=True,
+            spacing=12,
+            auto_scroll=False,
+        )
+
+        content_column = ft.Column(
+            controls=[
+                header_actions,
+                self._ws_search_field,
+                self._ws_source_tabs_container,
+                self._ws_primary_container,
+                self._ws_secondary_container,
+                self._ws_tertiary_container,
+                self._ws_leaf_container,
+                self._ws_param_container,
+                status_row,
+                ft.Container(content=self._ws_result_list, expand=True),
+            ],
+            spacing=12,
+            expand=True,
+            scroll=ft.ScrollMode.AUTO
+        )
+
+        container = ft.Container(
+            content=content_column,
+            padding=12,
+            expand=True,
+        )
+
+        self._ws_recompute_ui(preserve_selection=True)
+        self._ws_update_fetch_button_state()
+        return container
+
+    def _ws_reload_sources(self) -> None:
+        self._wallpaper_source_manager.reload()
+        self._ws_cached_results.clear()
+        self._ws_item_index.clear()
+        self._ws_recompute_ui(preserve_selection=False)
+
+    def _ws_recompute_ui(self, preserve_selection: bool = True) -> None:
+        if self._ws_source_tabs is None or self._ws_source_tabs_container is None:
+            return
+
+        records = self._wallpaper_source_manager.enabled_records()
+
+        if self._ws_search_field is not None:
+            self._ws_search_field.disabled = not bool(records)
+            if self._ws_search_field.page is not None:
+                self._ws_search_field.update()
+
+        self._ws_hierarchy = self._ws_build_hierarchy(records)
+        available_ids = [
+            record.identifier for record in records if record.identifier in self._ws_hierarchy
+        ]
+
+        has_records = bool(records)
+        if not available_ids:
+            self._ws_active_source_id = None
+            self._ws_active_primary_key = None
+            self._ws_active_secondary_key = None
+            self._ws_active_tertiary_key = None
+            self._ws_active_leaf_index = 0
+            self._ws_active_category_id = None
+            if self._ws_source_info_container is not None:
+                self._ws_source_info_container.content = ft.Container()
+                self._ws_source_info_container.visible = False
+                if self._ws_source_info_container.page is not None:
+                    self._ws_source_info_container.update()
+            self._ws_param_controls = []
+            if self._ws_param_container is not None:
+                self._ws_param_container.content = ft.Container()
+                if self._ws_param_container.page is not None:
+                    self._ws_param_container.update()
+            empty_title = (
+                "未找到匹配的壁纸源或分类"
+                if has_records
+                else "尚未启用壁纸源"
+            )
+            empty_hint = (
+                "请尝试调整搜索条件或启用更多分类。"
+                if has_records
+                else "请刷新或前往设置 → 内容 导入/启用壁纸源。"
+            )
+            actions = [
+                ft.TextButton(
+                    "在设置中管理" if has_records else "前往设置管理壁纸源",
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    on_click=lambda _: self._ws_open_wallpaper_source_settings(),
+                )
+            ]
+            placeholder = ft.Column(
+                [
+                    ft.Icon(
+                        ft.Icons.FILTER_ALT_OFF if has_records else ft.Icons.LIBRARY_ADD,
+                        size=48,
+                        color=ft.Colors.OUTLINE,
+                    ),
+                    ft.Text(empty_title, size=15, weight=ft.FontWeight.BOLD),
+                    ft.Text(
+                        empty_hint,
+                        size=12,
+                        color=ft.Colors.GREY,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                    *actions,
+                ],
+                spacing=8,
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                tight=True,
+            )
+            self._ws_source_tabs.tabs = []
+            self._ws_source_tabs.selected_index = 0
+            self._ws_source_tabs_container.content = ft.Container(
+                content=placeholder,
+                alignment=ft.alignment.center,
+                padding=16,
+                bgcolor=self._bgcolor_surface_low,
+                border_radius=8,
+            )
+            self._ws_source_tabs_container.visible = True
+            if self._ws_source_tabs.page is not None:
+                self._ws_source_tabs.update()
+            if self._ws_source_tabs_container.page is not None:
+                self._ws_source_tabs_container.update()
+            for container in (
+                self._ws_primary_container,
+                self._ws_secondary_container,
+                self._ws_tertiary_container,
+                self._ws_leaf_container,
+            ):
+                container.content = None
+                container.visible = False
+                if container.page is not None:
+                    container.update()
+            status_message = (
+                "未找到匹配的分类，请调整筛选条件。"
+                if has_records
+                else "尚未启用壁纸源，请先导入。"
+            )
+            self._ws_clear_results(status_message)
+            self._ws_param_container.content = None
+            self._ws_param_container.visible = False
+            if self._ws_param_container.page is not None:
+                self._ws_param_container.update()
+            self._ws_update_fetch_button_state()
+            return
+
+        if not preserve_selection or self._ws_active_source_id not in available_ids:
+            self._ws_active_source_id = available_ids[0]
+
+        self._ws_update_source_tabs(records, preserve_selection=preserve_selection)
+        active_record = self._ws_hierarchy.get(self._ws_active_source_id, {}).get("record")
+        self._ws_update_source_info(active_record)
+        self._ws_update_primary_tabs(
+            self._ws_active_source_id,
+            preserve_selection=preserve_selection,
+        )
+        self._ws_update_fetch_button_state()
+
+    def _ws_build_hierarchy(
+        self, records: list[WallpaperSourceRecord]
+    ) -> dict[str, Any]:
+        hierarchy: dict[str, Any] = {}
+        term = (self._ws_search_text or "").strip().lower()
+        for record in records:
+            refs = self._wallpaper_source_manager.category_refs(record.identifier)
+            primary_map: dict[str, dict[str, Any]] = {}
+            primary_list: list[dict[str, Any]] = []
+            for ref in refs:
+                if term and not any(term in token for token in ref.search_tokens):
+                    continue
+                category = ref.category
+                primary_label = category.category or ref.source_name or ref.label
+                if not primary_label:
+                    primary_label = record.spec.name
+                primary_key = f"{record.identifier}:{primary_label}"
+                primary_entry = primary_map.get(primary_key)
+                if primary_entry is None:
+                    primary_entry = {
+                        "key": primary_key,
+                        "label": primary_label,
+                        "secondary_list": [],
+                        "secondary_map": {},
+                    }
+                    primary_map[primary_key] = primary_entry
+                    primary_list.append(primary_entry)
+
+                secondary_key = category.subcategory or _WS_DEFAULT_KEY
+                secondary_label = category.subcategory or "全部"
+                secondary_map = primary_entry["secondary_map"]
+                secondary_entry = secondary_map.get(secondary_key)
+                if secondary_entry is None:
+                    secondary_entry = {
+                        "key": secondary_key,
+                        "label": secondary_label if secondary_key != _WS_DEFAULT_KEY else "全部",
+                        "tertiary_list": [],
+                        "tertiary_map": {},
+                    }
+                    secondary_map[secondary_key] = secondary_entry
+                    primary_entry["secondary_list"].append(secondary_entry)
+
+                tertiary_key = category.subsubcategory or _WS_DEFAULT_KEY
+                tertiary_label = category.subsubcategory or (
+                    category.subcategory or ref.label
+                )
+                tertiary_map = secondary_entry["tertiary_map"]
+                tertiary_entry = tertiary_map.get(tertiary_key)
+                if tertiary_entry is None:
+                    label = tertiary_label if tertiary_key != _WS_DEFAULT_KEY else (
+                        category.subcategory or ref.label
+                    )
+                    tertiary_entry = {
+                        "key": tertiary_key,
+                        "label": label,
+                        "refs": [],
+                    }
+                    tertiary_map[tertiary_key] = tertiary_entry
+                    secondary_entry["tertiary_list"].append(tertiary_entry)
+                tertiary_entry["refs"].append(ref)
+
+            if primary_list:
+                for entry in primary_list:
+                    entry.pop("secondary_map", None)
+                    for secondary_entry in entry["secondary_list"]:
+                        secondary_entry.pop("tertiary_map", None)
+                hierarchy[record.identifier] = {
+                    "record": record,
+                    "primary_list": primary_list,
+                }
+        return hierarchy
+
+    def _ws_update_source_tabs(
+        self,
+        records: list[WallpaperSourceRecord],
+        *,
+        preserve_selection: bool,
+    ) -> None:
+        if self._ws_source_tabs is None or self._ws_source_tabs_container is None:
+            return
+        available_records = [
+            record for record in records if record.identifier in self._ws_hierarchy
+        ]
+        keys = [record.identifier for record in available_records]
+        if not available_records:
+            return
+        self._ws_updating_ui = True
+        self._ws_source_tabs.tabs = [
+            ft.Tab(
+                text=f"{record.spec.name} ({len(record.spec.categories)})"
+            )
+            for record in available_records
+        ]
+        if not preserve_selection or self._ws_active_source_id not in keys:
+            self._ws_active_source_id = keys[0]
+        selected_index = keys.index(self._ws_active_source_id)
+        self._ws_source_tabs.selected_index = selected_index
+        self._ws_source_tabs.data = {"keys": keys}
+        self._ws_source_tabs_container.content = self._ws_source_tabs
+        self._ws_source_tabs_container.visible = True
+        self._ws_updating_ui = False
+        if self._ws_source_tabs.page is not None:
+            self._ws_source_tabs.update()
+        if self._ws_source_tabs_container.page is not None:
+            self._ws_source_tabs_container.update()
+
+    def _ws_update_source_info(self, record: WallpaperSourceRecord | None) -> None:
+        if self._ws_source_info_container is None:
+            return
+        if record is None:
+            self._ws_source_info_container.content = ft.Container()
+            self._ws_source_info_container.visible = False
+            if self._ws_source_info_container.page is not None:
+                self._ws_source_info_container.update()
+            return
+        spec = record.spec
+        origin_label = "内置" if record.origin == "builtin" else "用户导入"
+        detail_preview = spec.details or spec.description or spec.name
+        summary = ft.Text(
+            f"{origin_label} · 版本 {spec.version} · {len(spec.apis)} 个接口 · {len(spec.categories)} 个分类",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+        info_column = ft.Column(
+            [
+                ft.Text(spec.name, size=18, weight=ft.FontWeight.BOLD),
+                summary,
+                ft.Text(
+                    detail_preview,
+                    size=12,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                    selectable=True,
+                    max_lines=2,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                ),
+                ft.TextButton(
+                    "显示详情",
+                    icon=ft.Icons.INFO,
+                    on_click=lambda _: self._ws_open_source_details(record),
+                ),
+            ],
+            spacing=4,
+        )
+        self._ws_source_info_container.content = ft.Row(
+            [
+                ft.Container(
+                    content=self._ws_build_logo_control(record, size=56),
+                    width=64,
+                    height=64,
+                    alignment=ft.alignment.center,
+                ),
+                info_column,
+            ],
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        self._ws_source_info_container.visible = True
+        if self._ws_source_info_container.page is not None:
+            self._ws_source_info_container.update()
+
+    def _ws_update_primary_tabs(self, source_id: str | None, *, preserve_selection: bool) -> None:
+        if not source_id or source_id not in self._ws_hierarchy:
+            for container in (
+                self._ws_primary_container,
+                self._ws_secondary_container,
+                self._ws_tertiary_container,
+                self._ws_leaf_container,
+            ):
+                container.content = None
+                container.visible = False
+                if container.page is not None:
+                    container.update()
+            self._ws_active_primary_key = None
+            self._ws_active_secondary_key = None
+            self._ws_active_tertiary_key = None
+            self._ws_active_leaf_index = 0
+            self._ws_active_category_id = None
+            self._ws_clear_results("该壁纸源没有可用的分类。")
+            return
+        primary_list = self._ws_hierarchy[source_id].get("primary_list", [])
+        if not primary_list:
+            for container in (
+                self._ws_primary_container,
+                self._ws_secondary_container,
+                self._ws_tertiary_container,
+                self._ws_leaf_container,
+            ):
+                container.content = None
+                container.visible = False
+                if container.page is not None:
+                    container.update()
+            self._ws_active_primary_key = None
+            self._ws_active_secondary_key = None
+            self._ws_active_tertiary_key = None
+            self._ws_active_leaf_index = 0
+            self._ws_active_category_id = None
+            self._ws_clear_results("该壁纸源没有可用的分类。")
+            return
+        show_tabs = len(primary_list) > 1
+        if show_tabs:
+            if self._ws_primary_tabs is None:
+                self._ws_primary_tabs = ft.Tabs(
+                    tabs=[],
+                    scrollable=True,
+                    animation_duration=150,
+                    on_change=self._ws_on_primary_tab_change,
+                )
+            keys = [entry["key"] for entry in primary_list]
+            self._ws_updating_ui = True
+            self._ws_primary_tabs.tabs = [
+                ft.Tab(text=entry["label"]) for entry in primary_list
+            ]
+            if not preserve_selection or self._ws_active_primary_key not in keys:
+                self._ws_active_primary_key = keys[0]
+            self._ws_primary_tabs.selected_index = keys.index(self._ws_active_primary_key)
+            self._ws_primary_tabs.data = {
+                "source_id": source_id,
+                "keys": keys,
+            }
+            self._ws_primary_container.content = self._ws_primary_tabs
+            self._ws_primary_container.visible = True
+            self._ws_updating_ui = False
+            if self._ws_primary_tabs.page is not None:
+                self._ws_primary_tabs.update()
+            if self._ws_primary_container.page is not None:
+                self._ws_primary_container.update()
+        else:
+            self._ws_primary_container.content = None
+            self._ws_primary_container.visible = False
+            if self._ws_primary_container.page is not None:
+                self._ws_primary_container.update()
+            self._ws_active_primary_key = primary_list[0]["key"]
+
+        current_primary = next(
+            (entry for entry in primary_list if entry["key"] == self._ws_active_primary_key),
+            primary_list[0],
+        )
+        self._ws_update_secondary_tabs(
+            source_id,
+            current_primary,
+            preserve_selection=preserve_selection,
+        )
+
+    def _ws_update_secondary_tabs(
+        self,
+        source_id: str | None,
+        primary_entry: dict[str, Any] | None,
+        *,
+        preserve_selection: bool,
+    ) -> None:
+        if primary_entry is None:
+            self._ws_secondary_container.content = None
+            self._ws_secondary_container.visible = False
+            if self._ws_secondary_container.page is not None:
+                self._ws_secondary_container.update()
+            self._ws_active_secondary_key = None
+            self._ws_update_tertiary_tabs(None, preserve_selection=preserve_selection)
+            return
+        secondary_list = [
+            entry
+            for entry in primary_entry.get("secondary_list", [])
+            if any(t["refs"] for t in entry.get("tertiary_list", []))
+        ]
+        if not secondary_list:
+            self._ws_secondary_container.content = None
+            self._ws_secondary_container.visible = False
+            if self._ws_secondary_container.page is not None:
+                self._ws_secondary_container.update()
+            self._ws_active_secondary_key = None
+            self._ws_update_tertiary_tabs(None, preserve_selection=preserve_selection)
+            return
+        show_tabs = len(secondary_list) > 1 or secondary_list[0]["key"] != _WS_DEFAULT_KEY
+        if show_tabs:
+            if self._ws_secondary_tabs is None:
+                self._ws_secondary_tabs = ft.Tabs(
+                    tabs=[],
+                    scrollable=True,
+                    animation_duration=150,
+                    on_change=self._ws_on_secondary_tab_change,
+                )
+            keys = [entry["key"] for entry in secondary_list]
+            self._ws_updating_ui = True
+            self._ws_secondary_tabs.tabs = [
+                ft.Tab(text=entry["label"]) for entry in secondary_list
+            ]
+            if not preserve_selection or self._ws_active_secondary_key not in keys:
+                self._ws_active_secondary_key = keys[0]
+            self._ws_secondary_tabs.selected_index = keys.index(self._ws_active_secondary_key)
+            self._ws_secondary_tabs.data = {
+                "source_id": source_id,
+                "primary_key": primary_entry["key"],
+                "keys": keys,
+            }
+            self._ws_secondary_container.content = self._ws_secondary_tabs
+            self._ws_secondary_container.visible = True
+            self._ws_updating_ui = False
+            if self._ws_secondary_tabs.page is not None:
+                self._ws_secondary_tabs.update()
+            if self._ws_secondary_container.page is not None:
+                self._ws_secondary_container.update()
+        else:
+            self._ws_secondary_container.content = None
+            self._ws_secondary_container.visible = False
+            if self._ws_secondary_container.page is not None:
+                self._ws_secondary_container.update()
+            self._ws_active_secondary_key = secondary_list[0]["key"]
+
+        current_secondary = next(
+            (entry for entry in secondary_list if entry["key"] == self._ws_active_secondary_key),
+            secondary_list[0],
+        )
+        self._ws_update_tertiary_tabs(
+            current_secondary,
+            preserve_selection=preserve_selection,
+        )
+
+    def _ws_update_tertiary_tabs(
+        self,
+        secondary_entry: dict[str, Any] | None,
+        *,
+        preserve_selection: bool,
+    ) -> None:
+        if secondary_entry is None:
+            self._ws_tertiary_container.content = None
+            self._ws_tertiary_container.visible = False
+            if self._ws_tertiary_container.page is not None:
+                self._ws_tertiary_container.update()
+            self._ws_active_tertiary_key = None
+            self._ws_update_leaf_tabs([], preserve_selection=preserve_selection)
+            return
+        tertiary_list = [
+            entry for entry in secondary_entry.get("tertiary_list", []) if entry.get("refs")
+        ]
+        if not tertiary_list:
+            self._ws_tertiary_container.content = None
+            self._ws_tertiary_container.visible = False
+            if self._ws_tertiary_container.page is not None:
+                self._ws_tertiary_container.update()
+            self._ws_active_tertiary_key = None
+            self._ws_update_leaf_tabs([], preserve_selection=preserve_selection)
+            return
+        show_tabs = len(tertiary_list) > 1 or tertiary_list[0]["key"] != _WS_DEFAULT_KEY
+        if show_tabs:
+            if self._ws_tertiary_tabs is None:
+                self._ws_tertiary_tabs = ft.Tabs(
+                    tabs=[],
+                    scrollable=True,
+                    animation_duration=150,
+                    on_change=self._ws_on_tertiary_tab_change,
+                )
+            keys = [entry["key"] for entry in tertiary_list]
+            self._ws_updating_ui = True
+            self._ws_tertiary_tabs.tabs = [
+                ft.Tab(text=entry["label"]) for entry in tertiary_list
+            ]
+            if not preserve_selection or self._ws_active_tertiary_key not in keys:
+                self._ws_active_tertiary_key = keys[0]
+            self._ws_tertiary_tabs.selected_index = keys.index(self._ws_active_tertiary_key)
+            self._ws_tertiary_tabs.data = {
+                "source_id": self._ws_active_source_id,
+                "primary_key": self._ws_active_primary_key,
+                "secondary_key": secondary_entry["key"],
+                "keys": keys,
+            }
+            self._ws_tertiary_container.content = self._ws_tertiary_tabs
+            self._ws_tertiary_container.visible = True
+            self._ws_updating_ui = False
+            if self._ws_tertiary_tabs.page is not None:
+                self._ws_tertiary_tabs.update()
+            if self._ws_tertiary_container.page is not None:
+                self._ws_tertiary_container.update()
+        else:
+            self._ws_tertiary_container.content = None
+            self._ws_tertiary_container.visible = False
+            if self._ws_tertiary_container.page is not None:
+                self._ws_tertiary_container.update()
+            self._ws_active_tertiary_key = tertiary_list[0]["key"]
+
+        current_tertiary = next(
+            (entry for entry in tertiary_list if entry["key"] == self._ws_active_tertiary_key),
+            tertiary_list[0],
+        )
+        self._ws_update_leaf_tabs(
+            current_tertiary["refs"],
+            preserve_selection=preserve_selection,
+        )
+
+    def _ws_update_leaf_tabs(
+        self,
+        refs: list[WallpaperCategoryRef],
+        *,
+        preserve_selection: bool,
+    ) -> None:
+        if not refs:
+            self._ws_leaf_container.content = None
+            self._ws_leaf_container.visible = False
+            if self._ws_leaf_container.page is not None:
+                self._ws_leaf_container.update()
+            self._ws_active_leaf_index = 0
+            self._ws_active_category_id = None
+            self._ws_clear_results("该分类暂无可用壁纸。")
+            self._ws_update_param_controls(None)
+            self._ws_update_fetch_button_state()
+            return
+        if self._ws_leaf_tabs is None:
+            self._ws_leaf_tabs = ft.Tabs(
+                tabs=[],
+                scrollable=True,
+                animation_duration=150,
+                on_change=self._ws_on_leaf_tab_change,
+            )
+        self._ws_updating_ui = True
+        self._ws_leaf_tabs.tabs = [ft.Tab(text=ref.label) for ref in refs]
+        max_index = len(refs) - 1
+        if not preserve_selection or self._ws_active_leaf_index > max_index:
+            self._ws_active_leaf_index = 0
+        self._ws_leaf_tabs.selected_index = self._ws_active_leaf_index
+        self._ws_leaf_tabs.data = {"refs": refs}
+        self._ws_leaf_container.content = self._ws_leaf_tabs
+        self._ws_leaf_container.visible = True
+        self._ws_updating_ui = False
+        if self._ws_leaf_tabs.page is not None:
+            self._ws_leaf_tabs.update()
+        if self._ws_leaf_container.page is not None:
+            self._ws_leaf_container.update()
+        self._ws_select_leaf(refs[self._ws_active_leaf_index], force_refresh=False)
+        self._ws_update_fetch_button_state()
+
+    def _ws_update_fetch_button_state(self) -> None:
+        has_category = bool(self._ws_active_category_id)
+        disabled = not has_category or self._ws_fetch_in_progress
+        if self._ws_fetch_button is not None:
+            self._ws_fetch_button.disabled = disabled
+            if self._ws_fetch_button.page is not None:
+                self._ws_fetch_button.update()
+        if self._ws_reload_button is not None:
+            self._ws_reload_button.disabled = self._ws_fetch_in_progress
+            if self._ws_reload_button.page is not None:
+                self._ws_reload_button.update()
+
+    def _ws_clear_results(self, message: str, *, error: bool = False) -> None:
+        self._ws_item_index.clear()
+        if self._ws_result_list is not None:
+            self._ws_result_list.controls.clear()
+            if self._ws_result_list.page is not None:
+                self._ws_result_list.update()
+        self._ws_set_status(message, error=error)
+
+    def _ws_select_leaf(self, ref: WallpaperCategoryRef, *, force_refresh: bool) -> None:
+        self._ws_active_category_id = ref.category_id
+        self._ws_active_source_id = ref.source_id
+        self._ws_active_leaf_index = (
+            getattr(self._ws_leaf_tabs, "selected_index", 0)
+            if self._ws_leaf_tabs is not None
+            else 0
+        )
+        try:
+            self._wallpaper_source_manager.set_active_source(ref.source_id)
+        except WallpaperSourceError:
+            pass
+        if force_refresh:
+            self._ws_cached_results.pop(ref.category_id, None)
+
+        self._ws_update_param_controls(ref)
+
+        cached = None if force_refresh else self._ws_cached_results.get(ref.category_id)
+        if cached:
+            self._ws_display_results(
+                ref.category_id,
+                cached,
+                status_override=f"共 {len(cached)} 项（来自上次获取）。",
+            )
+        else:
+            self._ws_item_index.clear()
+            self._ws_set_status("参数已就绪，点击“获取壁纸”开始下载。", error=False)
+            if self._ws_result_list is not None:
+                self._ws_result_list.controls.clear()
+                if self._ws_result_list.page is not None:
+                    self._ws_result_list.update()
+
+        self._ws_update_fetch_button_state()
+
+    def _ws_get_active_category_ref(self) -> WallpaperCategoryRef | None:
+        category_id = self._ws_active_category_id
+        if not category_id:
+            return None
+        return self._wallpaper_source_manager.find_category(category_id)
+
+    def _ws_update_param_controls(self, ref: WallpaperCategoryRef | None) -> None:
+        self._ws_param_controls = []
+        if self._ws_param_container is None:
+            return
+        if ref is None:
+            self._ws_param_container.content = None
+            self._ws_param_container.visible = False
+            if self._ws_param_container.page is not None:
+                self._ws_param_container.update()
+            return
+
+        record = self._wallpaper_source_manager.get_record(ref.source_id)
+        if record is None:
+            self._ws_param_container.content = None
+            self._ws_param_container.visible = False
+            if self._ws_param_container.page is not None:
+                self._ws_param_container.update()
+            return
+
+        preset_id = ref.category.param_preset_id
+        preset = record.spec.parameters.get(preset_id) if preset_id else None
+        cached_values = self._ws_param_cache.get(ref.category_id, {})
+        controls: list[_WSParameterControl] = []
+        if preset is not None:
+            for option in preset.options:
+                if getattr(option, "hidden", False):
+                    continue
+                try:
+                    control = self._ws_make_parameter_control(
+                        option,
+                        cached_values.get(option.key),
+                    )
+                except Exception as exc:
+                    logger.error("构建参数控件失败: {error}", error=str(exc))
+                    continue
+                controls.append(control)
+
+        self._ws_param_controls = controls
+
+        message = (
+            "根据需要调整参数，然后点击“获取壁纸”。"
+            if controls
+            else "此分类无需额外参数，可直接点击“获取壁纸”。"
+        )
+
+        body_controls: list[ft.Control] = [
+            ft.Text(message, size=12, color=ft.Colors.GREY),
+        ]
+        if controls:
+            body_controls.append(
+                ft.Column(
+                    [control.display for control in controls],
+                    spacing=12,
+                    tight=True,
+                )
+            )
+
+        self._ws_param_container.content = ft.Container(
+            content=ft.Column(body_controls, spacing=12, tight=True),
+            bgcolor=self._bgcolor_surface_low,
+            padding=12,
+            border_radius=8,
+        )
+        self._ws_param_container.visible = True
+        if self._ws_param_container.page is not None:
+            self._ws_param_container.update()
+
+    def _ws_make_parameter_control(
+        self,
+        option: Any,
+        cached_value: Any,
+    ) -> _WSParameterControl:
+        label = getattr(option, "label", None) or getattr(option, "key", "参数")
+        description = getattr(option, "description", None) or ""
+        param_type = str(getattr(option, "type", "text") or "text").lower()
+        default_value = cached_value
+        if default_value is None:
+            default_value = getattr(option, "default", None)
+
+        def _wrap_display(control: ft.Control) -> ft.Control:
+            if description:
+                return ft.Column(
+                    [control, ft.Text(description, size=11, color=ft.Colors.GREY)],
+                    spacing=4,
+                    tight=True,
+                )
+            return control
+
+        if param_type == "choice":
+            choices = list(getattr(option, "choices", []) or [])
+            dropdown_options = [
+                ft.DropdownOption(key=str(choice), text=str(choice)) for choice in choices
+            ]
+            dropdown = ft.Dropdown(
+                label=label,
+                options=dropdown_options,
+                value=None,
+                dense=True,
+            )
+
+            def setter(value: Any) -> None:
+                if value is None and choices:
+                    dropdown.value = str(choices[0])
+                elif value is None:
+                    dropdown.value = None
+                else:
+                    dropdown.value = str(value)
+                if dropdown.page is not None:
+                    dropdown.update()
+
+            def getter() -> Any:
+                raw = dropdown.value
+                return None if raw in (None, "") else raw
+
+            setter(default_value)
+            display = _wrap_display(dropdown)
+            return _WSParameterControl(option, dropdown, display, getter, setter)
+
+        if param_type == "boolean":
+            switch = ft.Switch(label=label, value=bool(default_value))
+
+            def setter(value: Any) -> None:
+                switch.value = bool(value)
+                if switch.page is not None:
+                    switch.update()
+
+            def getter() -> bool:
+                return bool(switch.value)
+
+            setter(default_value)
+            display = _wrap_display(switch)
+            return _WSParameterControl(option, switch, display, getter, setter)
+
+        text_field = ft.TextField(
+            label=label,
+            value="",
+            dense=True,
+            hint_text=getattr(option, "placeholder", None) or None,
+        )
+
+        def setter(value: Any) -> None:
+            if value in (None, ""):
+                text_field.value = ""
+            else:
+                text_field.value = str(value)
+            if text_field.page is not None:
+                text_field.update()
+
+        def getter() -> Any:
+            raw = text_field.value or ""
+            return raw.strip()
+
+        setter(default_value)
+        display = _wrap_display(text_field)
+        return _WSParameterControl(option, text_field, display, getter, setter)
+
+    def _ws_normalize_param_value(self, option: Any, value: Any) -> Any:
+        param_type = str(getattr(option, "type", "text") or "text").lower()
+        if param_type == "boolean":
+            return bool(value)
+        if param_type == "choice":
+            if value in (None, ""):
+                return None
+            return str(value)
+        text = "" if value is None else str(value)
+        text = text.strip()
+        return text or None
+
+    def _ws_collect_parameters(self, ref: WallpaperCategoryRef) -> dict[str, Any]:
+        record = self._wallpaper_source_manager.get_record(ref.source_id)
+        if record is None:
+            self._ws_param_cache.pop(ref.category_id, None)
+            return {}
+        preset_id = ref.category.param_preset_id
+        preset = record.spec.parameters.get(preset_id) if preset_id else None
+        if preset is None:
+            self._ws_param_cache.pop(ref.category_id, None)
+            return {}
+
+        option_map = {control.option.key: control for control in self._ws_param_controls}
+        values: dict[str, Any] = {}
+        cache_entry: dict[str, Any] = {}
+
+        for option in preset.options:
+            key = option.key
+            if getattr(option, "hidden", False):
+                normalized = self._ws_normalize_param_value(option, getattr(option, "default", None))
+                cache_entry[key] = normalized
+                if normalized is not None:
+                    values[key] = normalized
+                continue
+
+            control = option_map.get(key)
+            if control is not None:
+                raw_value = control.getter()
+            else:
+                raw_value = getattr(option, "default", None)
+
+            normalized = self._ws_normalize_param_value(option, raw_value)
+            cache_entry[key] = normalized
+            if normalized is not None:
+                values[key] = normalized
+            elif str(getattr(option, "type", "")).lower() == "boolean":
+                values[key] = False
+
+        self._ws_param_cache[ref.category_id] = cache_entry
+        return values
+
+    def _ws_on_source_tab_change(self, event: ft.ControlEvent) -> None:
+        if self._ws_fetch_in_progress:
+            return
+        if self._ws_updating_ui:
+            return
+        data = getattr(event.control, "data", {}) or {}
+        keys: list[str] = data.get("keys", [])
+        index = getattr(event.control, "selected_index", None)
+        if not isinstance(index, int) or index < 0 or index >= len(keys):
+            return
+        identifier = keys[index]
+        if identifier == self._ws_active_source_id:
+            return
+        self._ws_active_source_id = identifier
+        self._ws_active_primary_key = None
+        self._ws_active_secondary_key = None
+        self._ws_active_tertiary_key = None
+        self._ws_active_leaf_index = 0
+        self._ws_cached_results.clear()
+        self._ws_item_index.clear()
+        record = self._ws_hierarchy.get(identifier, {}).get("record")
+        self._ws_update_source_info(record)
+        self._ws_update_primary_tabs(identifier, preserve_selection=False)
+        self._ws_update_fetch_button_state()
+
+    def _ws_on_primary_tab_change(self, event: ft.ControlEvent) -> None:
+        if self._ws_fetch_in_progress:
+            return
+        if self._ws_updating_ui:
+            return
+        data = getattr(event.control, "data", {}) or {}
+        keys: list[str] = data.get("keys", [])
+        index = getattr(event.control, "selected_index", None)
+        if not isinstance(index, int) or index < 0 or index >= len(keys):
+            return
+        key = keys[index]
+        if key == self._ws_active_primary_key:
+            return
+        self._ws_active_primary_key = key
+        self._ws_active_secondary_key = None
+        self._ws_active_tertiary_key = None
+        self._ws_active_leaf_index = 0
+        self._ws_cached_results.clear()
+        self._ws_item_index.clear()
+        hierarchy_entry = self._ws_hierarchy.get(self._ws_active_source_id, {})
+        primary_entry = next(
+            (entry for entry in hierarchy_entry.get("primary_list", []) if entry["key"] == key),
+            None,
+        )
+        self._ws_update_secondary_tabs(
+            self._ws_active_source_id,
+            primary_entry,
+            preserve_selection=False,
+        )
+        self._ws_update_fetch_button_state()
+
+    def _ws_on_secondary_tab_change(self, event: ft.ControlEvent) -> None:
+        if self._ws_fetch_in_progress:
+            return
+        if self._ws_updating_ui:
+            return
+        data = getattr(event.control, "data", {}) or {}
+        keys: list[str] = data.get("keys", [])
+        index = getattr(event.control, "selected_index", None)
+        if not isinstance(index, int) or index < 0 or index >= len(keys):
+            return
+        key = keys[index]
+        if key == self._ws_active_secondary_key:
+            return
+        self._ws_active_secondary_key = key
+        self._ws_active_tertiary_key = None
+        self._ws_active_leaf_index = 0
+        self._ws_cached_results.clear()
+        self._ws_item_index.clear()
+        source_id = data.get("source_id")
+        primary_key = data.get("primary_key")
+        primary_entry = None
+        if source_id and primary_key:
+            primary_entry = next(
+                (
+                    entry
+                    for entry in self._ws_hierarchy.get(source_id, {}).get("primary_list", [])
+                    if entry["key"] == primary_key
+                ),
+                None,
+            )
+        secondary_entry = None
+        if primary_entry is not None:
+            secondary_entry = next(
+                (entry for entry in primary_entry.get("secondary_list", []) if entry["key"] == key),
+                None,
+            )
+        self._ws_update_tertiary_tabs(secondary_entry, preserve_selection=False)
+        self._ws_update_fetch_button_state()
+
+    def _ws_on_tertiary_tab_change(self, event: ft.ControlEvent) -> None:
+        if self._ws_fetch_in_progress:
+            return
+        if self._ws_updating_ui:
+            return
+        data = getattr(event.control, "data", {}) or {}
+        keys: list[str] = data.get("keys", [])
+        index = getattr(event.control, "selected_index", None)
+        if not isinstance(index, int) or index < 0 or index >= len(keys):
+            return
+        key = keys[index]
+        if key == self._ws_active_tertiary_key:
+            return
+        self._ws_active_tertiary_key = key
+        self._ws_active_leaf_index = 0
+        self._ws_cached_results.clear()
+        self._ws_item_index.clear()
+        source_id = data.get("source_id")
+        primary_key = data.get("primary_key")
+        secondary_key = data.get("secondary_key")
+        tertiary_entry = None
+        if source_id and primary_key and secondary_key:
+            primary_entry = next(
+                (
+                    entry
+                    for entry in self._ws_hierarchy.get(source_id, {}).get("primary_list", [])
+                    if entry["key"] == primary_key
+                ),
+                None,
+            )
+            if primary_entry is not None:
+                secondary_entry = next(
+                    (
+                        entry
+                        for entry in primary_entry.get("secondary_list", [])
+                        if entry["key"] == secondary_key
+                    ),
+                    None,
+                )
+                if secondary_entry is not None:
+                    tertiary_entry = next(
+                        (
+                            entry
+                            for entry in secondary_entry.get("tertiary_list", [])
+                            if entry["key"] == key
+                        ),
+                        None,
+                    )
+        refs = tertiary_entry.get("refs", []) if tertiary_entry else []
+        self._ws_update_leaf_tabs(refs, preserve_selection=False)
+        self._ws_update_fetch_button_state()
+
+    def _ws_on_leaf_tab_change(self, event: ft.ControlEvent) -> None:
+        if self._ws_fetch_in_progress:
+            return
+        if self._ws_updating_ui:
+            return
+        data = getattr(event.control, "data", {}) or {}
+        refs: list[WallpaperCategoryRef] = data.get("refs", [])
+        index = getattr(event.control, "selected_index", None)
+        if not isinstance(index, int) or index < 0 or index >= len(refs):
+            return
+        self._ws_active_leaf_index = index
+        self._ws_select_leaf(refs[index], force_refresh=False)
+        self._ws_update_fetch_button_state()
+
+    def _ws_on_search_change(self, event: ft.ControlEvent) -> None:
+        if self._ws_fetch_in_progress:
+            return
+        raw = getattr(event.control, "value", "") or ""
+        self._ws_search_text = raw.strip().lower()
+        self._ws_recompute_ui(preserve_selection=False)
+
+    def _ws_fetch_active_category(self, force: bool = False) -> None:
+        if self._ws_fetch_in_progress:
+            return
+        ref = self._ws_get_active_category_ref()
+        if ref is None:
+            self._ws_set_status("请选择分类", error=False)
+            return
+        if force:
+            self._ws_cached_results.pop(ref.category_id, None)
+        try:
+            params = self._ws_collect_parameters(ref)
+        except ValueError as exc:
+            self._ws_set_status(str(exc), error=True)
+            return
+        self._ws_fetch_in_progress = True
+        self._ws_update_fetch_button_state()
+        self._ws_start_loading("正在下载壁纸…")
+        self.page.run_task(
+            self._ws_fetch_category_items,
+            ref.category_id,
+            params or None,
+        )
+
+    def _ws_start_loading(self, message: str) -> None:
+        if self._ws_loading_indicator is not None:
+            self._ws_loading_indicator.visible = True
+            if self._ws_loading_indicator.page is not None:
+                self._ws_loading_indicator.update()
+        self._ws_set_status(message, error=False)
+
+    def _ws_stop_loading(self) -> None:
+        if self._ws_loading_indicator is None:
+            return
+        self._ws_loading_indicator.visible = False
+        if self._ws_loading_indicator.page is not None:
+            self._ws_loading_indicator.update()
+
+    def _ws_set_status(self, message: str, *, error: bool = False) -> None:
+        if self._ws_status_text is None:
+            return
+        self._ws_status_text.value = message
+        self._ws_status_text.color = ft.Colors.ERROR if error else ft.Colors.GREY
+        if self._ws_status_text.page is not None:
+            self._ws_status_text.update()
+
+    async def _ws_fetch_category_items(
+        self,
+        category_id: str,
+        params: dict[str, Any] | None,
+    ) -> None:
+        try:
+            items = await self._wallpaper_source_manager.fetch_category_items(
+                category_id,
+                params=params,
+            )
+        except WallpaperSourceFetchError as exc:
+            logger.error("加载壁纸源失败: {error}", error=str(exc))
+            self._ws_stop_loading()
+            self._ws_set_status(f"加载失败：{exc}", error=True)
+            return
+        else:
+            self._ws_cached_results[category_id] = items
+            if self._ws_active_category_id == category_id:
+                self._ws_display_results(category_id, items)
+            else:
+                self._ws_stop_loading()
+        finally:
+            self._ws_fetch_in_progress = False
+            self._ws_update_fetch_button_state()
+
+    def _ws_display_results(
+        self,
+        category_id: str,
+        items: list[WallpaperItem],
+        *,
+        status_override: str | None = None,
+    ) -> None:
+        if self._ws_result_list is None:
+            return
+        self._ws_stop_loading()
+        if self._ws_active_category_id != category_id:
+            return
+        self._ws_result_list.controls.clear()
+        filtered = self._ws_filtered_items(items)
+        if not filtered:
+            self._ws_item_index = {}
+            self._ws_set_status("未找到符合条件的壁纸。", error=False)
+        else:
+            self._ws_item_index = {item.id: item for item in filtered}
+            status_message = status_override or f"共 {len(filtered)} 项壁纸。"
+            self._ws_set_status(status_message, error=False)
+            for item in filtered:
+                self._ws_result_list.controls.append(self._ws_build_result_card(item))
+        if self._ws_result_list.page is not None:
+            self._ws_result_list.update()
+
+    def _ws_filtered_items(self, items: list[WallpaperItem]) -> list[WallpaperItem]:
+        if not self._ws_search_text:
+            return items
+        term = self._ws_search_text.lower()
+        return [item for item in items if self._ws_item_matches(item, term)]
+
+    def _ws_item_matches(self, item: WallpaperItem, term: str) -> bool:
+        fields = [
+            item.title or "",
+            item.description or "",
+            item.category_label or "",
+            item.api_name or "",
+            item.original_url or "",
+            item.footer_text or "",
+        ]
+        return any(term in field.lower() for field in fields if field)
+
+    def _ws_build_result_card(self, item: WallpaperItem) -> ft.Control:
+        record = self._wallpaper_source_manager.get_record(item.source_id)
+        header = ft.Row(
+            [
+                ft.Container(
+                    content=self._ws_build_logo_control(record, size=36),
+                    width=40,
+                    height=40,
+                    alignment=ft.alignment.center,
+                ),
+                ft.Column(
+                    [
+                        ft.Text(
+                            record.spec.name if record else item.source_id,
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            selectable=False,
+                        ),
+                        ft.Text(
+                            f"{item.category_label} · {item.api_name}",
+                            size=11,
+                            color=ft.Colors.PRIMARY,
+                            selectable=False,
+                        ),
+                    ],
+                    spacing=2,
+                ),
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        if item.preview_base64:
+            preview: ft.Control = ft.Image(
+                src_base64=item.preview_base64,
+                width=220,
+                height=124,
+                fit=ft.ImageFit.COVER,
+            )
+        elif item.local_path and item.local_path.exists():
+            preview = ft.Image(
+                src=str(item.local_path),
+                width=220,
+                height=124,
+                fit=ft.ImageFit.COVER,
+            )
+        else:
+            preview = ft.Container(
+                width=220,
+                height=124,
+                bgcolor=self._bgcolor_surface_low,
+                alignment=ft.alignment.center,
+                content=ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, color=ft.Colors.GREY),
+            )
+
+        info_blocks: list[ft.Control] = [header]
+        if item.title:
+            info_blocks.append(
+                ft.Text(
+                    item.title,
+                    size=14,
+                    weight=ft.FontWeight.BOLD,
+                    selectable=True,
+                )
+            )
+        if item.description:
+            info_blocks.append(
+                ft.Text(
+                    item.description,
+                    size=12,
+                    selectable=True,
+                )
+            )
+        if item.copyright:
+            info_blocks.append(
+                ft.Text(
+                    item.copyright,
+                    size=11,
+                    color=ft.Colors.GREY,
+                    selectable=True,
+                )
+            )
+        if item.footer_text:
+            info_blocks.append(
+                ft.Text(
+                    item.footer_text,
+                    size=11,
+                    color=ft.Colors.GREY,
+                    selectable=False,
+                )
+            )
+
+        actions: list[ft.Control] = [
+            ft.FilledTonalButton(
+                "预览",
+                icon=ft.Icons.VISIBILITY,
+                on_click=lambda _, wid=item.id: self._ws_open_preview(wid),
+            )
+        ]
+        if item.original_url:
+            actions.append(
+                ft.TextButton(
+                    "打开原始链接",
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    on_click=lambda _, url=item.original_url: self.page.launch_url(url),
+                )
+            )
+
+        card_body = ft.Column(
+            [
+                preview,
+                ft.Column(info_blocks, spacing=4),
+                ft.Row(actions, spacing=8, wrap=True),
+            ],
+            spacing=12,
+            tight=True,
+        )
+        return ft.Card(content=ft.Container(card_body, padding=12))
+
+    def _ws_open_preview(self, item_id: str) -> None:
+        item = self._ws_find_item(item_id)
+        if item is None:
+            self._show_snackbar("未找到该壁纸。", error=True)
+            return
+        self._ws_preview_item = item
+        self._ws_preview_item_id = item_id
+        self.page.go("/resource/wallpaper-preview")
+
+    def _ws_build_preview_image(self, item: WallpaperItem) -> ft.Control:
+        if item.local_path and item.local_path.exists():
+            return ft.Image(
+                src=str(item.local_path),
+                fit=ft.ImageFit.CONTAIN,
+                expand=True,
+            )
+        if item.preview_base64:
+            return ft.Image(
+                src_base64=item.preview_base64,
+                fit=ft.ImageFit.CONTAIN,
+                expand=True,
+            )
+        return ft.Container(
+            alignment=ft.alignment.center,
+            bgcolor=self._bgcolor_surface_low,
+            border_radius=8,
+            padding=24,
+            content=ft.Column(
+                [
+                    ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, size=48, color=ft.Colors.GREY),
+                    ft.Text("预览不可用", size=12, color=ft.Colors.GREY),
+                ],
+                spacing=12,
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            expand=True,
+        )
+
+    def build_wallpaper_preview_view(self) -> ft.View:
+        item = self._ws_preview_item
+
+        if item is None:
+            placeholder = ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Icon(ft.Icons.IMAGE_SEARCH, size=72, color=ft.Colors.OUTLINE),
+                        ft.Text("未找到预览内容，请返回资源页面重新选择。", size=14),
+                        ft.FilledButton(
+                            "返回资源页面",
+                            icon=ft.Icons.ARROW_BACK,
+                            on_click=lambda _: self.page.go("/"),
+                        ),
+                    ],
+                    spacing=16,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                expand=True,
+            )
+
+            body_controls = [placeholder]
+            if SHOW_WATERMARK:
+                body_controls = [ft.Stack([placeholder, build_watermark()], expand=True)]
+
+            return ft.View(
+                "/resource/wallpaper-preview",
+                [
+                    ft.AppBar(
+                        title=ft.Text("壁纸预览"),
+                        leading=ft.IconButton(
+                            ft.Icons.ARROW_BACK,
+                            tooltip="返回",
+                            on_click=lambda _: self.page.go("/"),
+                        ),
+                        bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                    ),
+                    *body_controls,
+                ],
+            )
+
+        record = self._wallpaper_source_manager.get_record(item.source_id)
+        source_name = record.spec.name if record else item.source_id
+
+        preview_container = ft.Container(
+            content=self._ws_build_preview_image(item),
+            bgcolor=ft.Colors.SURFACE,
+            border_radius=12,
+            padding=16,
+            expand=True,
+            height=420,
+        )
+
+        description_blocks: list[ft.Control] = []
+        if item.title:
+            description_blocks.append(
+                ft.Text(item.title, size=20, weight=ft.FontWeight.BOLD)
+            )
+        description_blocks.append(
+            ft.Text(
+                f"来源：{source_name} · 分类：{item.category_label} · 接口：{item.api_name}",
+                size=12,
+                color=ft.Colors.GREY,
+                selectable=True,
+            )
+        )
+        if item.description:
+            description_blocks.append(
+                ft.Text(item.description, size=13, selectable=True)
+            )
+        if item.copyright:
+            description_blocks.append(
+                ft.Text(item.copyright, size=12, color=ft.Colors.GREY, selectable=True)
+            )
+        if item.local_path:
+            description_blocks.append(
+                ft.Text(
+                    f"文件：{item.local_path}",
+                    size=12,
+                    color=ft.Colors.GREY,
+                    selectable=True,
+                )
+            )
+
+        actions: list[ft.Control] = [
+            ft.FilledButton(
+                "设为壁纸",
+                icon=ft.Icons.WALLPAPER,
+                on_click=lambda _: self.page.run_task(self._ws_set_wallpaper, item.id),
+            ),
+            ft.FilledTonalButton(
+                "复制图片",
+                icon=ft.Icons.CONTENT_COPY,
+                on_click=lambda _: self.page.run_task(self._ws_copy_image, item.id),
+            ),
+            ft.FilledTonalButton(
+                "加入收藏",
+                icon=ft.Icons.BOOKMARK_ADD,
+                on_click=lambda _: self._ws_open_favorite_dialog(item.id),
+            ),
+        ]
+        if item.local_path:
+            actions.append(
+                ft.TextButton(
+                    "复制图片文件",
+                    icon=ft.Icons.COPY_ALL,
+                    on_click=lambda _: self.page.run_task(self._ws_copy_file, item.id),
+                )
+            )
+        if item.original_url:
+            actions.append(
+                ft.TextButton(
+                    "打开原始链接",
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    on_click=lambda _: self.page.launch_url(item.original_url),
+                )
+            )
+
+        footer_controls: list[ft.Control] = []
+        if item.footer_text:
+            footer_controls.append(
+                ft.Container(
+                    bgcolor=self._bgcolor_surface_low,
+                    border_radius=8,
+                    padding=12,
+                    content=ft.Text(item.footer_text, size=12, selectable=True),
+                )
+            )
+
+        content_column = ft.Column(
+            [
+                preview_container,
+                ft.Row(actions, spacing=12, wrap=True),
+                ft.Column(description_blocks, spacing=8, tight=True),
+                *footer_controls,
+            ],
+            spacing=16,
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+        )
+
+        preview_body = ft.Container(content_column, expand=True, padding=16)
+
+        if SHOW_WATERMARK:
+            body = ft.Stack([preview_body, build_watermark()], expand=True)
+        else:
+            body = preview_body
+
+        return ft.View(
+            "/resource/wallpaper-preview",
+            [
+                ft.AppBar(
+                    title=ft.Text(item.title or "壁纸预览"),
+                    leading=ft.IconButton(
+                        ft.Icons.ARROW_BACK,
+                        tooltip="返回",
+                        on_click=lambda _: self.page.go("/"),
+                    ),
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                ),
+                body,
+            ],
+        )
+
+    def _ws_build_logo_control(
+        self,
+        record: WallpaperSourceRecord | None,
+        *,
+        size: int = 44,
+    ) -> ft.Control:
+        if record is None:
+            return ft.Icon(ft.Icons.COLOR_LENS, size=size * 0.75, color=ft.Colors.PRIMARY)
+        logo = (record.spec.logo or "").strip()
+        if not logo:
+            return ft.Icon(ft.Icons.COLOR_LENS, size=size * 0.75, color=ft.Colors.PRIMARY)
+        cached = self._ws_logo_cache.get(record.identifier)
+        if cached is None:
+            lower = logo.lower()
+            if lower.startswith("data:") or lower.startswith("image;base64"):
+                _, _, payload = logo.partition(",")
+                self._ws_logo_cache[record.identifier] = (payload.strip(), True)
+            else:
+                self._ws_logo_cache[record.identifier] = (logo, False)
+            cached = self._ws_logo_cache[record.identifier]
+        payload, is_base64 = cached
+        if is_base64 and payload:
+            return ft.Image(
+                src_base64=payload,
+                width=size,
+                height=size,
+                fit=ft.ImageFit.CONTAIN,
+            )
+        if payload:
+            return ft.Image(
+                src=payload,
+                width=size,
+                height=size,
+                fit=ft.ImageFit.CONTAIN,
+            )
+        return ft.Icon(ft.Icons.COLOR_LENS, size=size * 0.75, color=ft.Colors.PRIMARY)
+
+    def _ws_find_item(self, item_id: str) -> WallpaperItem | None:
+        return self._ws_item_index.get(item_id)
+
+    async def _ws_set_wallpaper(self, item_id: str) -> None:
+        item = self._ws_find_item(item_id)
+        if not item or not item.local_path:
+            self._show_snackbar("图片文件不存在。", error=True)
+            return
+        try:
+            await asyncio.to_thread(ltwapi.set_wallpaper, str(item.local_path))
+        except Exception as exc:
+            logger.error("设置壁纸失败: {error}", error=str(exc))
+            self._show_snackbar("设置壁纸失败，请查看日志。", error=True)
+            return
+        self._show_snackbar("已设置为壁纸。")
+
+    async def _ws_copy_image(self, item_id: str) -> None:
+        item = self._ws_find_item(item_id)
+        if not item or not item.local_path:
+            self._show_snackbar("图片文件不存在。", error=True)
+            return
+        success = await asyncio.to_thread(copy_image_to_clipboard, item.local_path)
+        if success:
+            self._show_snackbar("已复制图片到剪贴板。")
+        else:
+            self._show_snackbar("复制图片失败。", error=True)
+
+    async def _ws_copy_file(self, item_id: str) -> None:
+        item = self._ws_find_item(item_id)
+        if not item or not item.local_path:
+            self._show_snackbar("图片文件不存在。", error=True)
+            return
+        success = await asyncio.to_thread(
+            copy_files_to_clipboard, [str(item.local_path)]
+        )
+        if success:
+            self._show_snackbar("已复制图片文件到剪贴板。")
+        else:
+            self._show_snackbar("复制文件失败。", error=True)
+
+    def _ws_open_favorite_dialog(self, item_id: str) -> None:
+        item = self._ws_find_item(item_id)
+        if item is None:
+            self._show_snackbar("未找到该壁纸。", error=True)
+            return
+        payload = self._ws_make_favorite_payload(item)
+        if not payload:
+            self._show_snackbar("该壁纸暂无可收藏的内容。", error=True)
+            return
+        self._open_favorite_editor(payload)
+
+    def _ws_make_favorite_payload(self, item: WallpaperItem) -> Dict[str, Any]:
+        tags: list[str] = []
+        if item.category_label:
+            tags.append(item.category_label)
+        tags = [tag for tag in dict.fromkeys(tag.strip() for tag in tags if tag)]
+
+        preview_data: str | None = None
+        if item.preview_base64:
+            mime = item.mime_type or "image/jpeg"
+            preview_data = f"data:{mime};base64,{item.preview_base64}"
+        elif item.local_path:
+            preview_data = str(item.local_path)
+        elif item.original_url:
+            preview_data = item.original_url
+
+        source_preview = item.original_url or preview_data
+        record = self._wallpaper_source_manager.get_record(item.source_id)
+        source_title = record.spec.name if record else (item.title or item.source_id)
+        source_identifier = f"{item.source_id}:{item.id}"
+
+        favorite_source = FavoriteSource(
+            type="wallpaper_source",
+            identifier=source_identifier,
+            title=source_title,
+            url=item.original_url,
+            preview_url=source_preview,
+            local_path=str(item.local_path) if item.local_path else None,
+            extra={
+                "api_name": item.api_name,
+                "category_label": item.category_label,
+                "source_id": item.source_id,
+            },
+        )
+
+        default_folder = (
+            self._favorite_selected_folder
+            if self._favorite_selected_folder not in {"__all__", "__default__"}
+            else "default"
+        )
+
+        title = item.title or (item.category_label or source_title)
+
+        payload: Dict[str, Any] = {
+            "folder_id": default_folder,
+            "title": title,
+            "description": item.description or "",
+            "tags": tags,
+            "source": favorite_source,
+            "preview_url": preview_data,
+            "local_path": str(item.local_path) if item.local_path else None,
+            "extra": {
+                "api_name": item.api_name,
+                "category_label": item.category_label,
+                "source_id": item.source_id,
+                "original_url": item.original_url,
+            },
+        }
+        return payload
+
+    def _ws_open_source_details(self, record: WallpaperSourceRecord) -> None:
+        spec = record.spec
+        detail_text = spec.details or spec.description or spec.name
+        info_rows: list[ft.Control] = [
+            ft.Text(f"标识符：{spec.identifier}", size=12),
+            ft.Text(
+                f"来源：{'内置' if record.origin == 'builtin' else '用户导入'}",
+                size=12,
+            ),
+            ft.Text(f"版本：{spec.version}", size=12),
+            ft.Text(f"分类数量：{len(spec.categories)}", size=12),
+            ft.Text(f"接口数量：{len(spec.apis)}", size=12),
+            ft.Text(
+                f"刷新间隔：{spec.refresh_interval_seconds} 秒",
+                size=12,
+            ),
+        ]
+
+        content_column = ft.Column(
+            controls=[
+                ft.Row(
+                    [
+                        ft.Container(
+                            content=self._ws_build_logo_control(record, size=64),
+                            width=72,
+                            height=72,
+                            alignment=ft.alignment.center,
+                        ),
+                        ft.Column(
+                            [
+                                ft.Text(spec.name, size=20, weight=ft.FontWeight.BOLD),
+                                ft.Text(
+                                    f"版本 {spec.version} · {len(spec.categories)} 个分类 · {len(spec.apis)} 个接口",
+                                    size=12,
+                                    color=ft.Colors.GREY,
+                                ),
+                            ],
+                            spacing=4,
+                        ),
+                    ],
+                    spacing=16,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Divider(),
+                *info_rows,
+                ft.Divider(),
+                ft.Text(detail_text, size=13, selectable=True),
+            ],
+            spacing=8,
+            scroll=ft.ScrollMode.AUTO,
+            expand=False,
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("壁纸源详情"),
+            content=content_column,
+            actions=[
+                ft.TextButton("关闭", on_click=lambda _: self._close_dialog()),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._open_dialog(dialog)
+
+    def _ws_open_wallpaper_source_settings(self) -> None:
+        self.page.go("/settings")
+        self.select_settings_tab("content")
+
+    def _ws_refresh_settings_list(self) -> None:
+        if self._ws_settings_list is None:
+            return
+        records = self._wallpaper_source_manager.list_records()
+        self._ws_settings_list.controls.clear()
+        if not records:
+            self._ws_settings_list.controls.append(
+                ft.Text("尚未导入任何壁纸源。", size=12, color=ft.Colors.GREY)
+            )
+        else:
+            for record in records:
+                self._ws_settings_list.controls.append(
+                    self._build_ws_settings_card(record)
+                )
+        if self._ws_settings_summary_text is not None:
+            enabled_count = sum(1 for record in records if record.enabled)
+            self._ws_settings_summary_text.value = (
+                f"当前共导入 {len(records)} 个源，已启用 {enabled_count} 个。"
+            )
+            if self._ws_settings_summary_text.page is not None:
+                self._ws_settings_summary_text.update()
+        if self._ws_settings_list.page is not None:
+            self._ws_settings_list.update()
+
+    def _build_wallpaper_source_settings_section(self) -> ft.Control:
+        self._ensure_ws_file_picker()
+        self._ws_settings_list = ft.Column(spacing=12, expand=True)
+        self._ws_refresh_settings_list()
+        records = self._wallpaper_source_manager.list_records()
+        enabled_count = sum(1 for record in records if record.enabled)
+        header = ft.Row(
+            [
+                ft.Text("壁纸源", size=18, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    [
+                        ft.FilledButton(
+                            "导入 TOML",
+                            icon=ft.Icons.UPLOAD_FILE,
+                            on_click=lambda _: self._open_ws_import_picker(),
+                        ),
+                        ft.TextButton(
+                            "刷新",
+                            icon=ft.Icons.REFRESH,
+                            on_click=lambda _: self._ws_refresh_settings_list(),
+                        ),
+                    ],
+                    spacing=8,
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        self._ws_settings_summary_text = ft.Text(
+            f"当前共导入 {len(records)} 个源，已启用 {enabled_count} 个。",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+        description_text = ft.Text(
+            "支持 Little Tree Wallpaper Source Protocol v2.0",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+
+        return ft.Column(
+            [
+                header,
+                description_text,
+                self._ws_settings_summary_text,
+                ft.Container(
+                    content=self._ws_settings_list,
+                    bgcolor=self._bgcolor_surface_low,
+                    border_radius=8,
+                    padding=12,
+                    expand=True,
+                ),
+            ],
+            spacing=12,
+        )
+
+    def _build_ws_settings_card(self, record: WallpaperSourceRecord) -> ft.Control:
+        spec = record.spec
+        subtitle_parts = [
+            f"ID: {spec.identifier}",
+            f"版本: {spec.version}",
+            f"来源: {'内置' if record.origin == 'builtin' else '用户'}",
+        ]
+        try:
+            subtitle_parts.append(f"文件: {record.path}")
+        except Exception:
+            pass
+        subtitle_text = " · ".join(subtitle_parts)
+        description = spec.description or "未提供描述。"
+
+        enabled_switch = ft.Switch(
+            label="启用",
+            value=record.enabled,
+            on_change=lambda e, rid=record.identifier: self._ws_toggle_source(
+                rid, bool(getattr(e.control, "value", False))
+            ),
+        )
+
+        remove_button: ft.Control | None = None
+        if record.origin == "user":
+            remove_button = ft.TextButton(
+                "移除",
+                icon=ft.Icons.DELETE_OUTLINE,
+                on_click=lambda _: self._ws_confirm_remove(record),
+            )
+
+        logo = self._ws_build_logo_control(record, size=40)
+        info_column = ft.Column(
+            [
+                ft.Text(spec.name, size=16, weight=ft.FontWeight.BOLD),
+                ft.Text(subtitle_text, size=12, color=ft.Colors.GREY, selectable=True),
+                ft.Text(description, size=12, selectable=True),
+            ],
+            spacing=4,
+        )
+
+        header_row = ft.Row(
+            [
+                ft.Container(
+                    content=logo,
+                    width=44,
+                    height=44,
+                    alignment=ft.alignment.center,
+                ),
+                info_column,
+            ],
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        details_button = ft.TextButton(
+            "显示详情",
+            icon=ft.Icons.INFO,
+            on_click=lambda _: self._ws_open_source_details(record),
+        )
+
+        action_row_controls: list[ft.Control] = [details_button, enabled_switch]
+        if remove_button is not None:
+            action_row_controls.append(remove_button)
+
+        card_content = ft.Column(
+            [
+                header_row,
+                ft.Row(action_row_controls, spacing=12, wrap=True),
+            ],
+            spacing=12,
+        )
+
+        return ft.Card(content=ft.Container(card_content, padding=12))
+
+    def _ws_toggle_source(self, identifier: str, enabled: bool) -> None:
+        try:
+            self._wallpaper_source_manager.set_enabled(identifier, enabled)
+        except WallpaperSourceError as exc:
+            logger.error("更新壁纸源状态失败: {error}", error=str(exc))
+            self._show_snackbar(f"更新失败：{exc}", error=True)
+            self._ws_refresh_settings_list()
+            return
+        self._show_snackbar("已更新壁纸源状态。")
+        self._ws_cached_results.clear()
+        if not enabled and self._ws_active_source_id == identifier:
+            self._ws_active_category_id = None
+        self._ws_refresh_settings_list()
+        self._ws_recompute_ui(preserve_selection=False)
+
+    def _ws_confirm_remove(self, record: WallpaperSourceRecord) -> None:
+        def _confirm(_: ft.ControlEvent | None = None) -> None:
+            self._close_dialog()
+            self._ws_remove_source(record.identifier)
+
+        def _cancel(_: ft.ControlEvent | None = None) -> None:
+            self._close_dialog()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("移除壁纸源"),
+            content=ft.Text(f"确定要移除 {record.spec.name} 吗？该操作不可撤销。"),
+            actions=[
+                ft.TextButton("取消", on_click=_cancel),
+                ft.FilledButton("移除", icon=ft.Icons.DELETE, on_click=_confirm),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._open_dialog(dialog)
+
+    def _ws_remove_source(self, identifier: str) -> None:
+        try:
+            self._wallpaper_source_manager.remove_source(identifier)
+        except WallpaperSourceError as exc:
+            logger.error("移除壁纸源失败: {error}", error=str(exc))
+            self._show_snackbar(f"移除失败：{exc}", error=True)
+            return
+        self._show_snackbar("已移除壁纸源。")
+        if self._ws_active_source_id == identifier:
+            self._ws_active_source_id = (
+                self._wallpaper_source_manager.active_source_identifier()
+            )
+            self._ws_active_category_id = None
+        self._ws_cached_results.clear()
+        self._ws_refresh_settings_list()
+        self._ws_recompute_ui(preserve_selection=False)
+
+    def _ensure_ws_file_picker(self) -> None:
+        if self._ws_file_picker is None:
+            self._ws_file_picker = ft.FilePicker(
+                on_result=self._handle_ws_import_result
+            )
+        if self._ws_file_picker not in self.page.overlay:
+            self.page.overlay.append(self._ws_file_picker)
+            self.page.update()
+
+    def _open_ws_import_picker(self) -> None:
+        self._ensure_ws_file_picker()
+        if self._ws_file_picker:
+            self._ws_file_picker.pick_files(
+                allow_multiple=False,
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["toml"],
+            )
+
+    def _handle_ws_import_result(self, event: ft.FilePickerResultEvent) -> None:
+        if not event.files:
+            return
+        file = event.files[0]
+        if not file.path:
+            self._show_snackbar("未选择有效的文件。", error=True)
+            return
+        try:
+            record = self._wallpaper_source_manager.import_source(Path(file.path))
+        except WallpaperSourceImportError as exc:
+            logger.error("导入壁纸源失败: {error}", error=str(exc))
+            self._show_snackbar(f"导入失败：{exc}", error=True)
+            return
+        self._show_snackbar(f"已导入壁纸源 {record.spec.name}。")
+        self._ws_active_source_id = record.identifier
+        self._ws_cached_results.clear()
+        self._ws_refresh_settings_list()
+        self._ws_recompute_ui(preserve_selection=False)
+
     def _build_im_page(self):
         info_card = ft.Card(
             content=ft.Container(
@@ -2289,9 +4350,16 @@ class Pages:
                                         ),
                                         ft.Text(
                                             spans=[
+                                                ft.TextSpan("图片源的搜集和配置文件由"),
                                                 ft.TextSpan(
-                                                    "图片源的搜集和配置文件由 SR 思锐团队提供 ©，图片内容责任由接口方承担",
-                                                    url="https://github.com/IntelliMarkets/Wallpaper_API_Index",
+                                                    "SR 思锐团队",
+                                                    url="https://github.com/SRInternet-Studio/",
+                                                    style=ft.TextStyle(
+                                                        decoration=ft.TextDecoration.UNDERLINE,
+                                                    ),
+                                                ),
+                                                ft.TextSpan(
+                                                    "提供 ，图片内容责任由接口方承担"
                                                 ),
                                             ],
                                         ),
@@ -2330,6 +4398,16 @@ class Pages:
             spacing=12,
             auto_scroll=False,
             controls=[],
+        )
+
+        self._im_search_field = ft.TextField(
+            label="搜索",
+            hint_text="按名称、简介或路径搜索",
+            value=self._im_search_text,
+            dense=True,
+            prefix_icon=ft.Icons.SEARCH,
+            on_change=self._on_im_search_change,
+            expand=False,
         )
 
         refresh_button = ft.TextButton(
@@ -2375,13 +4453,18 @@ class Pages:
                 self._im_mirror_pref_dropdown,
             ],
             alignment=ft.MainAxisAlignment.START,
+            spacing=12,
+        )
+
+        filter_section = ft.Column(
+            [filter_row, self._im_search_field], spacing=6, expand=False
         )
 
         content_column = ft.Column(
             controls=[
                 info_card,
                 status_row,
-                filter_row,
+                filter_section,
                 ft.Container(
                     content=self._im_sources_list,
                     expand=True,
@@ -2423,6 +4506,82 @@ class Pages:
         # trigger reloading sources to apply new order
         if self.page:
             self.page.run_task(self._load_im_sources, True)
+
+    def _on_im_search_change(self, event: ft.ControlEvent) -> None:
+        raw_value = ""
+        if event and getattr(event, "control", None):
+            raw_value = str(getattr(event.control, "value", "") or "")
+        normalized = raw_value.strip()
+        if normalized == self._im_search_text:
+            return
+        self._im_search_text = normalized
+        self._refresh_im_ui()
+
+    def _im_filtered_sources(
+        self, search_term: str
+    ) -> tuple[list[dict[str, Any]], str | None, int]:
+        if not self._im_sources_by_category:
+            return [], None, 0
+
+        category = self._im_selected_category
+        if category is None:
+            category = self._im_all_category_key
+            self._im_selected_category = category
+
+        if category == self._im_all_category_key:
+            aggregated: list[dict[str, Any]] = []
+            for items in self._im_sources_by_category.values():
+                aggregated.extend(items)
+            base_sources = sorted(
+                aggregated,
+                key=lambda item: (
+                    item.get("friendly_name") or item.get("file_name") or ""
+                ).lower(),
+            )
+            resolved_category = self._im_all_category_key
+        else:
+            if category not in self._im_sources_by_category:
+                category = next(iter(self._im_sources_by_category), None)
+                if category is None:
+                    return [], None, 0
+                self._im_selected_category = category
+            base_sources = list(self._im_sources_by_category.get(category, []))
+            resolved_category = category
+
+        if not search_term:
+            return base_sources, resolved_category, len(base_sources)
+
+        filtered = [
+            item for item in base_sources if self._im_source_matches(item, search_term)
+        ]
+        return filtered, resolved_category, len(base_sources)
+
+    def _im_source_matches(self, source: Dict[str, Any], term: str) -> bool:
+        term_lower = term.strip().lower()
+        if not term_lower:
+            return True
+
+        candidates: list[str] = []
+        for key in ("friendly_name", "intro", "file_name", "path", "link", "category"):
+            value = source.get(key)
+            if isinstance(value, str) and value:
+                candidates.append(value)
+
+        parameters = source.get("parameters") or []
+        if isinstance(parameters, Sequence):
+            for param in parameters:
+                if not isinstance(param, dict):
+                    continue
+                for param_key in ("friendly_name", "name"):
+                    value = param.get(param_key)
+                    if isinstance(value, str) and value:
+                        candidates.append(value)
+
+        for candidate in candidates:
+            if term_lower in candidate.lower():
+                return True
+
+        return False
 
     # -----------------------------
     # IntelliMarkets 专用镜像策略
@@ -2565,9 +4724,36 @@ class Pages:
             spacing=12,
         )
 
+        # 尝试展示来源 logo（来自 source['icon']，通常为链接），若不存在则显示占位图标
+        logo_src = source.get("icon")
+        if isinstance(logo_src, str) and logo_src.strip():
+            # 直接使用远程/本地链接，Flet 会在运行时加载
+            logo_control: ft.Control = ft.Container(
+                ft.Image(
+                    src=logo_src,
+                    width=48,
+                    height=48,
+                    fit=ft.ImageFit.COVER,
+                ),
+                width=56,
+                height=56,
+                padding=ft.padding.all(4),
+                border_radius=6,
+            )
+        else:
+            logo_control = ft.Container(
+                ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, size=28, color=ft.Colors.GREY),
+                width=56,
+                height=56,
+                alignment=ft.alignment.center,
+                bgcolor=self._bgcolor_surface_low,
+                border_radius=6,
+            )
+
         body_controls: list[ft.Control] = [
             ft.Row(
                 [
+                    logo_control,
                     ft.Column(
                         [
                             ft.Text(friendly_name, size=16, weight=ft.FontWeight.BOLD),
@@ -2581,7 +4767,7 @@ class Pages:
                     ),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                vertical_alignment=ft.CrossAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             meta_row,
         ]
@@ -3883,6 +6069,25 @@ class Pages:
             logger.error(f"分发事件 {event_name} 失败：{exc}")
 
     def _refresh_im_ui(self) -> None:
+        search_term = (self._im_search_text or "").strip()
+        filtered_sources, resolved_category, base_count = self._im_filtered_sources(
+            search_term
+        )
+        match_count = len(filtered_sources)
+        search_active = bool(search_term)
+        display_term = (
+            search_term.replace("\r", " ").replace("\n", " ")
+            if search_active
+            else ""
+        )
+        if search_active and len(display_term) > 24:
+            display_term = f"{display_term[:21]}..."
+
+        if self._im_search_field:
+            self._im_search_field.value = self._im_search_text
+            if self._im_search_field.page is not None:
+                self._im_search_field.update()
+
         if self._im_loading_indicator:
             self._im_loading_indicator.visible = self._im_loading
         if self._im_refresh_button:
@@ -3905,6 +6110,8 @@ class Pages:
                         "%Y-%m-%d %H:%M:%S", time.localtime(self._im_last_updated)
                     )
                     summary += f" · 更新于 {formatted}"
+                if search_active:
+                    summary += f" · 搜索 \"{display_term}\" 匹配 {match_count} 项"
                 self._im_status_text.value = summary
                 self._im_status_text.color = ft.Colors.GREY
             else:
@@ -3912,22 +6119,23 @@ class Pages:
                 self._im_status_text.color = ft.Colors.GREY
 
         if self._im_category_dropdown:
-            options = [
-                ft.dropdown.Option(name) for name in self._im_sources_by_category.keys()
+            options: list[ft.dropdown.Option] = [
+                ft.dropdown.Option(
+                    key=self._im_all_category_key, text=self._im_all_category_label
+                )
             ]
+            options.extend(
+                ft.dropdown.Option(key=name, text=name)
+                for name in self._im_sources_by_category.keys()
+            )
             self._im_category_dropdown.options = options
             if self._im_sources_by_category:
-                if (
-                    self._im_selected_category is None
-                    or self._im_selected_category not in self._im_sources_by_category
-                ):
-                    self._im_selected_category = next(
-                        iter(self._im_sources_by_category)
-                    )
-                self._im_category_dropdown.value = self._im_selected_category
+                if resolved_category is None:
+                    resolved_category = self._im_all_category_key
+                self._im_category_dropdown.value = resolved_category
                 self._im_category_dropdown.disabled = False
             else:
-                self._im_category_dropdown.value = None
+                self._im_category_dropdown.value = self._im_all_category_key
                 self._im_category_dropdown.disabled = True
 
         if self._im_sources_list:
@@ -3953,20 +6161,20 @@ class Pages:
                     )
                 ]
             else:
-                current_sources = self._im_sources_by_category.get(
-                    self._im_selected_category or "",
-                    [],
-                )
-                if current_sources:
+                if filtered_sources:
                     self._im_sources_list.controls = [
-                        self._build_im_source_card(item) for item in current_sources
+                        self._build_im_source_card(item) for item in filtered_sources
                     ]
                 else:
+                    if self._im_sources_by_category:
+                        if search_active and base_count > 0:
+                            message = f"未找到与 \"{display_term}\" 匹配的图片源"
+                        else:
+                            message = "该分类暂无图片源"
+                    else:
+                        message = "尚未加载图片源"
                     self._im_sources_list.controls = [
-                        ft.Container(
-                            ft.Text("该分类暂无图片源"),
-                            padding=20,
-                        )
+                        ft.Container(ft.Text(message), padding=20)
                     ]
 
         if self.page:
@@ -4076,9 +6284,14 @@ class Pages:
             self._im_total_sources = total_sources
             if (
                 self._im_selected_category is None
-                or self._im_selected_category not in categories
+                or (
+                    self._im_selected_category != self._im_all_category_key
+                    and self._im_selected_category not in categories
+                )
             ):
-                self._im_selected_category = next(iter(categories), None)
+                self._im_selected_category = (
+                    self._im_all_category_key if categories else None
+                )
             self._im_last_updated = time.time()
         except Exception as exc:  # pragma: no cover - network variability
             logger.error(f"加载 IntelliMarkets 图片源失败: {exc}")
@@ -4361,7 +6574,6 @@ class Pages:
             preview_control = ft.Container(
                 width=160,
                 height=90,
-                bgcolor=ft.Colors.SURFACE_VARIANT,
                 border_radius=8,
                 alignment=ft.alignment.center,
                 content=ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, color=ft.Colors.OUTLINE),
@@ -5296,7 +7508,6 @@ class Pages:
             preview_control = ft.Container(
                 width=200,
                 height=110,
-                bgcolor=ft.Colors.SURFACE_VARIANT,
                 border_radius=8,
                 alignment=ft.alignment.center,
                 content=ft.Icon(ft.Icons.IMAGE_OUTLINED, color=ft.Colors.OUTLINE),
@@ -6316,6 +8527,7 @@ class Pages:
             [
                 ft.Text("测试和调试", size=30),
                 ft.Text("这里是测试和调试专用区域"),
+                ft.Button("打开初次运行向导", on_click=lambda _: self.page.go("/first-run")),
             ],
             expand=True,
         )
@@ -6368,8 +8580,9 @@ class Pages:
             if not initial and show_feedback:
                 self._show_snackbar("主题接口不可用。", error=True)
             self._theme_profiles = []
-            self._populate_theme_dropdown()
+            self._render_theme_cards()
             return
+
         try:
             result = self._theme_list_handler()
         except Exception as exc:  # pragma: no cover - defensive logging
@@ -6389,56 +8602,15 @@ class Pages:
 
         if profiles is not None:
             self._theme_profiles = list(profiles)
-            self._populate_theme_dropdown()
+            self._render_theme_cards()
             if show_feedback:
                 note = message or "主题列表已更新。"
                 self._show_snackbar(note)
         else:
             if show_feedback or not initial:
                 self._show_snackbar(message or "无法获取主题列表。", error=True)
-
-    def _populate_theme_dropdown(self) -> None:
-        dropdown = self._theme_dropdown
-        if dropdown is None:
-            return
-
-        options: list[ft.DropdownOption] = []
-        current = self._get_active_theme_id()
-        for profile in self._theme_profiles:
-            identifier = str(profile.get("id", "")).strip()
-            if not identifier:
-                continue
-            name = str(profile.get("name") or identifier)
-            source = str(profile.get("source") or "")
-            suffix = ""
-            if source == "builtin":
-                suffix = "（内置）"
-            elif source == "file":
-                suffix = "（文件）"
-            elif source == "custom":
-                suffix = "（自定义）"
-            label = name if not suffix else f"{name} {suffix}"
-            options.append(ft.DropdownOption(key=identifier, text=label))
-        dropdown.options = options
-
-        if not options:
-            dropdown.value = None
-        else:
-            if current and any(opt.key == current for opt in options):
-                dropdown.value = current
-            else:
-                dropdown.value = options[0].key
-        should_refresh = dropdown.page is not None
-        self._update_theme_summary()
-        if should_refresh and self.page is not None:
-            self.page.update()
-
-    def _get_active_theme_id(self) -> str | None:
-        for profile in self._theme_profiles:
-            identifier = profile.get("id")
-            if profile.get("is_active") and isinstance(identifier, str):
-                return identifier
-        return None
+            self._theme_profiles = []
+            self._render_theme_cards()
 
     def _find_theme_profile(self, identifier: str | None) -> Dict[str, Any] | None:
         if not identifier:
@@ -6448,45 +8620,225 @@ class Pages:
                 return profile
         return None
 
-    def _update_theme_summary(self) -> None:
-        if self._theme_summary_text is None or self._theme_dropdown is None:
+    @staticmethod
+    def _theme_preview_text(
+        text: Optional[str], limit: int = 80
+    ) -> tuple[str, Optional[str]]:
+        if not isinstance(text, str) or not text.strip():
+            return "暂无简介", None
+        clean = text.strip()
+        if len(clean) <= limit:
+            return clean, clean
+        head = clean[: max(0, limit - 1)]
+        return head + "…", clean
+
+    def _render_theme_cards(self) -> None:
+        wrap = self._theme_cards_wrap
+        if wrap is None:
             return
-        profile = self._find_theme_profile(self._theme_dropdown.value)
-        if not profile:
-            self._theme_summary_text.value = ""
-        else:
-            lines: list[str] = []
-            source = profile.get("source")
-            if source == "builtin":
-                lines.append("来源：内置主题")
-            elif source == "file":
-                lines.append("来源：主题目录")
-            elif source == "custom":
-                lines.append("来源：自定义路径")
-            path = profile.get("path")
-            if isinstance(path, str) and path:
-                lines.append(f"文件：{path}")
-            summary = profile.get("summary")
-            if isinstance(summary, str) and summary:
-                lines.append(f"说明：{summary}")
-            self._theme_summary_text.value = "\n".join(lines)
-        attached = self._theme_summary_text.page is not None
-        if attached and self.page is not None:
+
+        cards: list[ft.Control] = []
+        for profile in self._theme_profiles:
+            card = self._build_theme_card(profile)
+            if card is not None:
+                cards.append(card)
+
+        if not cards:
+            placeholder = ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text("暂无可用主题。", size=12),
+                        ft.Text(
+                            "导入主题文件或检查主题目录。",
+                            size=11,
+                            color=ft.Colors.GREY,
+                        ),
+                    ],
+                    spacing=4,
+                    tight=True,
+                ),
+                bgcolor=self._bgcolor_surface_low,
+                width=260,
+                height=220,
+                padding=ft.padding.all(20),
+                border_radius=ft.border_radius.all(12),
+            )
+            cards.append(placeholder)
+
+        wrap.controls = cards
+        if wrap.page is not None and self.page is not None:
             self.page.update()
 
-    def _handle_theme_selection_change(self, _: ft.ControlEvent) -> None:
-        self._update_theme_summary()
+    def _build_theme_card(self, profile: Dict[str, Any]) -> ft.Control | None:
+        identifier = str(profile.get("id") or "").strip()
+        if not identifier:
+            return None
 
-    def _handle_apply_theme(self, _: ft.ControlEvent | None = None) -> None:
+        name = str(profile.get("name") or identifier)
+        is_active = bool(profile.get("is_active"))
+        author = profile.get("author")
+        description = profile.get("summary") or profile.get("description")
+        details = (
+            profile.get("details") if isinstance(profile.get("details"), str) else None
+        )
+        preview_text, tooltip_text = self._theme_preview_text(description)
+        if tooltip_text is None and details:
+            tooltip_text = details.strip()
+
+        logo_src = profile.get("logo")
+        if isinstance(logo_src, str) and logo_src.strip():
+            logo_control: ft.Control = ft.Container(
+                content=ft.Image(
+                    src=logo_src.strip(),
+                    width=42,
+                    height=42,
+                    fit=ft.ImageFit.COVER,
+                ),
+                width=42,
+                height=42,
+                border_radius=ft.border_radius.all(8),
+            )
+        else:
+            logo_control = ft.Container(
+                content=ft.Icon(ft.Icons.PALETTE),
+                width=42,
+                height=42,
+                border_radius=ft.border_radius.all(8),
+                alignment=ft.alignment.center,
+            )
+
+        name_column_controls: list[ft.Control] = [
+            ft.Text(name, weight=ft.FontWeight.BOLD, size=15),
+        ]
+        if isinstance(author, str) and author.strip():
+            name_column_controls.append(
+                ft.Text(f"作者：{author.strip()}", size=12, color=ft.Colors.GREY)
+            )
+
+        name_column = ft.Column(
+            controls=name_column_controls,
+            spacing=2,
+            expand=True,
+            tight=True,
+        )
+
+        status_badge: ft.Control | None = None
+        if is_active:
+            status_badge = ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Icon(
+                            ft.Icons.CHECK_CIRCLE,
+                            size=16,
+                            color=ft.Colors.ON_PRIMARY_CONTAINER,
+                        ),
+                        ft.Text("当前", size=12, color=ft.Colors.ON_PRIMARY_CONTAINER),
+                    ],
+                    spacing=4,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                border_radius=ft.border_radius.all(12),
+                bgcolor=ft.Colors.PRIMARY_CONTAINER,
+            )
+
+        title_row_children: list[ft.Control] = [logo_control, name_column]
+        if status_badge is not None:
+            title_row_children.append(status_badge)
+
+        source = str(profile.get("source") or "").strip()
+        source_label = ""
+        if source == "builtin":
+            source_label = "来源：内置主题"
+        elif source == "file":
+            source_label = "来源：主题目录"
+        elif source == "custom":
+            source_label = "来源：自定义路径"
+
+        description_text = ft.Text(
+            preview_text,
+            size=12,
+            color=ft.Colors.GREY,
+            tooltip=tooltip_text,
+            max_lines=2,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        )
+
+        body_controls: list[ft.Control] = [
+            ft.Row(
+                title_row_children,
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.START,
+            ),
+            description_text,
+        ]
+
+        if source_label:
+            body_controls.append(ft.Text(source_label, size=11, color=ft.Colors.GREY))
+
+        website = (
+            profile.get("website") if isinstance(profile.get("website"), str) else None
+        )
+
+        actions: list[ft.Control] = [
+            ft.FilledButton(
+                "应用",
+                icon=ft.Icons.CHECK_CIRCLE,
+                disabled=is_active,
+                on_click=lambda _=None, pid=identifier: self._apply_theme_profile(pid),
+            ),
+            ft.OutlinedButton(
+                "详情",
+                icon=ft.Icons.INFO_OUTLINE,
+                on_click=lambda _=None, pid=identifier: self._open_theme_detail_dialog(
+                    pid
+                ),
+            ),
+        ]
+
+        if website and website.strip():
+            actions.append(
+                ft.TextButton(
+                    "访问主页",
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    on_click=lambda _=None, url=website.strip(): self.page.launch_url(
+                        url
+                    ),
+                )
+            )
+
+        body_controls.append(ft.Container(expand=True))
+        body_controls.append(
+            ft.Row(
+                spacing=8,
+                run_spacing=8,
+                controls=actions,
+            )
+        )
+
+        bgcolor = (
+            ft.Colors.SECONDARY_CONTAINER if is_active else self._bgcolor_surface_low
+        )
+        border_color = ft.Colors.PRIMARY if is_active else ft.Colors.OUTLINE_VARIANT
+        border_width = 2 if is_active else 1
+
+        return ft.Container(
+            content=ft.Column(body_controls, spacing=10),
+            width=260,
+            height=220,
+            padding=ft.padding.all(12),
+            border=ft.border.all(border_width, border_color),
+            border_radius=ft.border_radius.all(12),
+            bgcolor=bgcolor,
+        )
+
+    def _apply_theme_profile(self, identifier: str) -> None:
         if self._theme_apply_handler is None:
             self._show_snackbar("主题应用接口不可用。", error=True)
             return
-        if self._theme_dropdown is None or not self._theme_dropdown.value:
-            self._show_snackbar("请先选择一个主题。", error=True)
-            return
-        selection = str(self._theme_dropdown.value)
         try:
-            result = self._theme_apply_handler(selection)
+            result = self._theme_apply_handler(identifier)
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"应用主题失败: {exc}")
             self._show_snackbar("应用主题失败。", error=True)
@@ -6497,16 +8849,151 @@ class Pages:
                 self._show_snackbar(result.message or "主题已应用。")
             elif result.error == "permission_pending":
                 self._show_snackbar(result.message or "等待用户授权。")
+                return
             else:
                 self._show_snackbar(result.message or "主题应用失败。", error=True)
+                return
         else:
             self._show_snackbar("主题已应用。")
 
-        # 应用主题后刷新列表以同步新的激活状态。
         self._refresh_theme_profiles(initial=True)
+
+    def _open_theme_detail_dialog(self, identifier: str) -> None:
+        profile = self._find_theme_profile(identifier)
+        if not profile:
+            self._show_snackbar("未找到主题详情。", error=True)
+            return
+
+        name = str(profile.get("name") or identifier)
+        author = profile.get("author")
+        website = (
+            profile.get("website") if isinstance(profile.get("website"), str) else None
+        )
+        description = profile.get("description")
+        details = profile.get("details")
+        path = profile.get("path")
+        source = profile.get("source")
+        is_active = bool(profile.get("is_active"))
+
+        info_lines: list[str] = []
+        if isinstance(author, str) and author.strip():
+            info_lines.append(f"作者：{author.strip()}")
+        if source == "builtin":
+            info_lines.append("来源：内置主题")
+        elif source == "file":
+            info_lines.append("来源：主题目录")
+        elif source == "custom":
+            info_lines.append("来源：自定义路径")
+        if isinstance(path, str) and path:
+            info_lines.append(f"文件：{path}")
+
+        summary_text = description or "暂无简介"
+
+        content_controls: list[ft.Control] = [
+            ft.Text(summary_text, size=13),
+        ]
+        if details and isinstance(details, str) and details.strip():
+            content_controls.append(
+                ft.Markdown(
+                    details.strip(),
+                    selectable=True,
+                    auto_follow_links=True,
+                )
+            )
+
+        if info_lines:
+            content_controls.append(
+                ft.Column(
+                    [
+                        ft.Text(line, size=12, color=ft.Colors.GREY)
+                        for line in info_lines
+                    ],
+                    spacing=4,
+                    tight=True,
+                )
+            )
+
+        actions: list[ft.Control] = [
+            ft.TextButton("关闭", on_click=lambda _: self._close_dialog()),
+        ]
+
+        if website and website.strip():
+            actions.insert(
+                0,
+                ft.TextButton(
+                    "打开网站",
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    on_click=lambda _=None, url=website.strip(): self.page.launch_url(
+                        url
+                    ),
+                ),
+            )
+
+        if not is_active:
+
+            def _apply_and_close(_: ft.ControlEvent | None = None) -> None:
+                self._close_dialog()
+                self._apply_theme_profile(identifier)
+
+            actions.append(
+                ft.FilledButton(
+                    "应用此主题",
+                    icon=ft.Icons.CHECK_CIRCLE,
+                    on_click=_apply_and_close,
+                )
+            )
+
+        dialog = ft.AlertDialog(
+            title=ft.Text(name, weight=ft.FontWeight.BOLD),
+            content=ft.Column(content_controls, spacing=12, tight=True, width=420),
+            actions=actions,
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._theme_detail_dialog = dialog
+        self._open_dialog(dialog)
 
     def _handle_refresh_theme_list(self, _: ft.ControlEvent | None = None) -> None:
         self._refresh_theme_profiles(show_feedback=True)
+
+    def _ensure_theme_file_picker(self) -> None:
+        if self._theme_file_picker is None:
+            self._theme_file_picker = ft.FilePicker(
+                on_result=self._handle_theme_import_result
+            )
+        if self._theme_file_picker not in self.page.overlay:
+            self.page.overlay.append(self._theme_file_picker)
+            self.page.update()
+
+    def _open_theme_import_picker(self, _: ft.ControlEvent | None = None) -> None:
+        if self._theme_manager is None:
+            self._show_snackbar("主题目录不可用。", error=True)
+            return
+        self._ensure_theme_file_picker()
+        if self._theme_file_picker:
+            self._theme_file_picker.pick_files(
+                allow_multiple=False,
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["json"],
+            )
+
+    def _handle_theme_import_result(self, event: ft.FilePickerResultEvent) -> None:
+        if self._theme_manager is None or not event.files:
+            return
+        file = event.files[0]
+        if not file.path:
+            self._show_snackbar("未选择有效的主题文件。", error=True)
+            return
+        try:
+            result = self._theme_manager.import_theme(Path(file.path))
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error(f"导入主题失败: {exc}")
+            self._show_snackbar(f"导入主题失败：{exc}", error=True)
+            return
+
+        metadata = result.get("metadata", {}) if isinstance(result, dict) else {}
+        name = metadata.get("name") or Path(file.path).stem
+        self._show_snackbar(f"已导入主题：{name}")
+        self._refresh_theme_profiles(initial=True)
 
     def _open_theme_directory(self, _: ft.ControlEvent | None = None) -> None:
         if self._theme_manager is None:
@@ -6520,60 +9007,53 @@ class Pages:
             self._show_snackbar("无法打开主题目录。", error=True)
 
     def _build_theme_settings_controls(self) -> list[ft.Control]:
-        dropdown = ft.Dropdown(
-            label="主题配置",
-            options=[],
-            value=None,
-            width=260,
-            on_change=self._handle_theme_selection_change,
-        )
-        self._theme_dropdown = dropdown
-
         refresh_button = ft.IconButton(
             icon=ft.Icons.REFRESH,
             tooltip="刷新",
             on_click=self._handle_refresh_theme_list,
         )
 
-        apply_button = ft.FilledButton(
-            text="应用主题",
-            icon=ft.Icons.CHECK_CIRCLE,
-            on_click=self._handle_apply_theme,
-        )
-        self._theme_apply_button = apply_button
+        controls_row: list[ft.Control] = [refresh_button]
 
-        open_dir_button: ft.Control | None = None
         if self._theme_manager is not None:
-            open_dir_button = ft.TextButton(
-                "打开主题目录",
-                icon=ft.Icons.FOLDER_OPEN,
-                on_click=self._open_theme_directory,
+            controls_row.append(
+                ft.FilledButton(
+                    "导入主题 (.json)",
+                    icon=ft.Icons.UPLOAD_FILE,
+                    on_click=self._open_theme_import_picker,
+                )
+            )
+            controls_row.append(
+                ft.TextButton(
+                    "打开主题目录",
+                    icon=ft.Icons.FOLDER_OPEN,
+                    on_click=self._open_theme_directory,
+                )
             )
 
-        self._theme_summary_text = ft.Text(size=12, color=ft.Colors.GREY)
-        self._populate_theme_dropdown()
+        actions_wrap = ft.Row(
+            spacing=8, run_spacing=8, controls=controls_row, wrap=True
+        )
 
-        instructions = ft.Text(
-            "将符合格式的 JSON 主题文件放入主题目录即可在此选择。",
+        helper_text = ft.Text(
+            "选择下方卡片可查看主题详情，点击“应用”即可生效。",
             size=12,
             color=ft.Colors.GREY,
         )
 
-        controls: list[ft.Control] = [
-            ft.Row(
-                [dropdown, refresh_button],
+        cards_wrap = ft.Row(
+            spacing=12, run_spacing=12, wrap=True, scroll=ft.ScrollMode.AUTO
+        )
+        self._theme_cards_wrap = cards_wrap
+        self._render_theme_cards()
+
+        return [
+            ft.Column(
+                controls=[actions_wrap, helper_text, cards_wrap],
                 spacing=12,
-                vertical_alignment=ft.CrossAxisAlignment.END,
-            ),
-            ft.Row(
-                [control for control in (apply_button, open_dir_button) if control],
-                spacing=12,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-            self._theme_summary_text,
-            instructions,
+                tight=True,
+            )
         ]
-        return controls
 
     def build_settings_view(self):
         def _change_nsfw(e: ft.ControlEvent):
@@ -6635,6 +9115,7 @@ class Pages:
                     ],
                     spacing=16,
                     expand=True,
+                    scroll=ft.ScrollMode.AUTO,
                 ),
                 padding=20,
                 expand=True,
@@ -6652,6 +9133,13 @@ class Pages:
                                     icon=ft.Icons.OPEN_IN_NEW,
                                     on_click=lambda _: self.page.launch_url(
                                         "https://github.com/SRInternet-Studio/Wallpaper-generator/blob/NEXT-PREVIEW/DISCLAIMER.md"
+                                    ),
+                                ),
+                                ft.Button(
+                                    "pollinations.ai 用户协议",
+                                    icon=ft.Icons.OPEN_IN_NEW,
+                                    on_click=lambda _: self.page.launch_url(
+                                        "https://enter.pollinations.ai/terms"
                                     ),
                                 ),
                             ],
@@ -6768,6 +9256,8 @@ class Pages:
                 value=app_config.get("wallpaper.allow_nsfw", False),
                 on_change=_change_nsfw,
             ),
+            ft.Divider(),
+            self._build_wallpaper_source_settings_section(),
         )
 
         theme_dropdown = ft.Dropdown(
@@ -6802,8 +9292,12 @@ class Pages:
             else None
         )
 
-        # 外观：合并“界面”与“主题”设置
         theme_controls = self._build_theme_settings_controls()
+        theme_section = ft.Column(
+            controls=[ft.Text("主题", size=18, weight=ft.FontWeight.BOLD)]
+            + theme_controls,
+            spacing=8,
+        )
         appearance = tab_content(
             "外观",
             # 界面主题
@@ -6821,19 +9315,18 @@ class Pages:
             ),
             # 主题配置
             ft.Container(height=8),
-            ft.Column(
-                [
-                    ft.Text("主题", size=18, weight=ft.FontWeight.BOLD),
-                    ft.Column(list(theme_controls), spacing=12),
-                ],
-                spacing=8,
-            ),
+            theme_section,
         )
         about = tab_content(
             "关于",
             ft.Text(f"小树壁纸 Next v{VER}", size=16),
             ft.Text(
                 f"{BUILD_VERSION}\nCopyright © 2023-2025 Little Tree Studio",
+                size=12,
+                color=ft.Colors.GREY,
+            ),
+            ft.Text(
+                "部分壁纸源由 小树壁纸资源中心 和 IntelliMarkets-壁纸源市场 提供\nAI 生成由 pollinations.ai 提供\n\n当您使用本软件时，即表示您接受小树工作室用户协议及第三方数据提供方条款。",
                 size=12,
                 color=ft.Colors.GREY,
             ),
@@ -6883,7 +9376,7 @@ class Pages:
                         ),
                     ),
                     ft.TextButton(
-                        "查看数据提供方用户协议",
+                        "查看数据提供方条款",
                         icon=ft.Icons.OPEN_IN_NEW,
                         on_click=lambda _: setattr(third_party_sheet, "open", True)
                         or self.page.update(),
@@ -6913,8 +9406,11 @@ class Pages:
         self._settings_tabs = settings_tabs
         self._settings_tab_indices = {
             "general": 0,
-            "download": 1,
+            "resource": 1,
+            "content": 1,
+            "download": 2,
             "ui": 3,
+            "appearance": 3,
             "about": 4,
             "plugins": 5,
             "plugin": 5,
@@ -7009,6 +9505,35 @@ class Pages:
                         alignment=ft.MainAxisAlignment.CENTER,
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         tight=True,
+                    ),
+                    alignment=ft.alignment.center,
+                    padding=50,
+                    expand=True,
+                ),
+            ],
+        )
+    def build_first_run_page(self):
+
+        return ft.View(
+            "/first-run",
+            [
+                ft.AppBar(
+                    title=ft.Text("首次运行"),
+                    leading=ft.Icon(ft.Icons.WARNING),
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                ),
+                ft.Container(
+                    ft.Column(
+                        [
+                            ft.Column([]),
+                            ft.Row(
+                                [
+                                    ft.Text("欢迎使用小树壁纸 Next！"),
+                                    ft.TextButton("跳过引导",on_click=lambda _:self.page.go("/"))
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
                     alignment=ft.alignment.center,
                     padding=50,

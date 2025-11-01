@@ -48,6 +48,7 @@ from .ipc import IPCService
 from .ui_utils import build_watermark
 from .settings import SettingsStore
 from .theme import ThemeManager
+from .tray import TrayIcon
 
 app_config = SettingsStore()
 
@@ -150,6 +151,17 @@ class Application:
         self._page = page
         self._build_app(page)
         self._sync_theme(page)
+        # Initialize system tray (optional)
+        try:
+            enable_tray = bool(app_config.get("ui.enable_tray", True))
+        except Exception:
+            enable_tray = True
+        if enable_tray:
+            try:
+                self._tray = TrayIcon(self, icon_path=str(ICO_PATH) if ICO_PATH else None)
+                self._tray.start()
+            except Exception:
+                logger.debug("系统托盘初始化失败或被禁用")
 
     # ------------------------------------------------------------------
     # lifecycle helpers

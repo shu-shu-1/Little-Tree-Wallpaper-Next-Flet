@@ -17,6 +17,11 @@ from .settings import SettingsStore
 DEFAULT_THEME_DATA: Dict[str, Any] = {
     "schema_version": 1,
     "name": "Default",
+    "description": "Little Tree Wallpaper Next 的默认配色方案，自动适配浅色和深色模式。",
+    "details": "默认主题提供 Material 3 风格的基础配色与布局，适配系统外观并作为其他主题的参考实现。",
+    "author": "Little Tree Studio",
+    "website": "",
+    "logo": "",
     "palette": {
         "mode": "seed",
         "seed_color": "#4f46e5",
@@ -135,6 +140,11 @@ class ThemeProfileInfo:
     builtin: bool
     source: str
     summary: Optional[str] = None
+    description: Optional[str] = None
+    author: Optional[str] = None
+    logo: Optional[str] = None
+    details: Optional[str] = None
+    website: Optional[str] = None
     is_active: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
@@ -145,6 +155,11 @@ class ThemeProfileInfo:
             "builtin": self.builtin,
             "source": self.source,
             "summary": self.summary,
+            "description": self.description,
+            "author": self.author,
+            "logo": self.logo,
+            "details": self.details,
+            "website": self.website,
             "is_active": self.is_active,
         }
 
@@ -188,6 +203,49 @@ class ThemeManager:
         if token.lower() == "system":
             return "default"
         return token
+
+    @staticmethod
+    def _sanitize_metadata_text(value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        return text or None
+
+    def _extract_profile_metadata(
+        self, payload: Dict[str, Any], source_path: Optional[Path]
+    ) -> Dict[str, Optional[str]]:
+        name = self._sanitize_metadata_text(payload.get("name"))
+        description = self._sanitize_metadata_text(
+            payload.get("description") or payload.get("summary")
+        )
+        if not description:
+            description = self._sanitize_metadata_text(payload.get("details"))
+        details = self._sanitize_metadata_text(payload.get("details"))
+        author = self._sanitize_metadata_text(payload.get("author"))
+        website = self._sanitize_metadata_text(payload.get("website"))
+
+        summary = description
+        if summary and len(summary) > 120:
+            summary = summary[:119] + "…"
+
+        logo: Optional[str] = None
+        raw_logo = payload.get("logo")
+        if isinstance(raw_logo, str) and raw_logo.strip():
+            token = raw_logo.strip()
+            try:
+                logo = self._resolve_asset_path(token, source_path)
+            except Exception:  # pragma: no cover - resolution fallback
+                logo = token
+
+        return {
+            "name": name,
+            "description": description,
+            "summary": summary,
+            "details": details,
+            "author": author,
+            "website": website,
+            "logo": logo,
+        }
 
     def reload(self) -> None:
         self._active = self._load_theme()
@@ -252,7 +310,12 @@ class ThemeManager:
         current = self.current_profile()
         profiles: list[ThemeProfileInfo] = []
 
-        default_name = DEFAULT_THEME_DATA.get("name") or "Default"
+        default_meta = self._extract_profile_metadata(DEFAULT_THEME_DATA, None)
+        default_name = (
+            default_meta.get("name")
+            or DEFAULT_THEME_DATA.get("name")
+            or "Default"
+        )
         profiles.append(
             ThemeProfileInfo(
                 identifier="default",
@@ -260,7 +323,12 @@ class ThemeManager:
                 path=None,
                 builtin=True,
                 source="builtin",
-                summary=None,
+                summary=default_meta.get("summary"),
+                description=default_meta.get("description"),
+                author=default_meta.get("author"),
+                logo=default_meta.get("logo"),
+                details=default_meta.get("details"),
+                website=default_meta.get("website"),
                 is_active=current.lower() in {"default"},
             )
         )
@@ -278,30 +346,35 @@ class ThemeManager:
                 identifier = relative.as_posix()
             except Exception:
                 identifier = file_path.name
-            name = file_path.stem
-            summary: Optional[str] = None
+
+            metadata: Dict[str, Optional[str]] = {}
             try:
                 with file_path.open("r", encoding="utf-8") as fp:
                     payload = json.load(fp)
                 if isinstance(payload, dict):
-                    raw_name = payload.get("name")
-                    if isinstance(raw_name, str) and raw_name.strip():
-                        name = raw_name.strip()
-                    raw_summary = payload.get("description") or payload.get("summary")
-                    if isinstance(raw_summary, str) and raw_summary.strip():
-                        summary = raw_summary.strip()
+                    metadata = self._extract_profile_metadata(payload, file_path)
+                else:
+                    metadata = {}
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.debug(
                     "读取主题文件元数据失败: {error}",
                     error=str(exc),
                 )
+                metadata = {}
+
+            name = metadata.get("name") or file_path.stem
             info = ThemeProfileInfo(
                 identifier=identifier,
                 name=name,
                 path=str(file_path),
                 builtin=False,
                 source="file",
-                summary=summary,
+                summary=metadata.get("summary"),
+                description=metadata.get("description"),
+                author=metadata.get("author"),
+                logo=metadata.get("logo"),
+                details=metadata.get("details"),
+                website=metadata.get("website"),
                 is_active=identifier == current,
             )
             profiles.append(info)
@@ -309,30 +382,77 @@ class ThemeManager:
 
         if current not in seen and current not in {"default"}:
             resolved = self._resolve_profile_path(current)
-            summary = None
+            metadata: Dict[str, Optional[str]] = {}
             if resolved and resolved.exists():
                 try:
                     with resolved.open("r", encoding="utf-8") as fp:
                         payload = json.load(fp)
                     if isinstance(payload, dict):
-                        raw_summary = payload.get("description") or payload.get("summary")
-                        if isinstance(raw_summary, str) and raw_summary.strip():
-                            summary = raw_summary.strip()
-                except Exception:
-                    summary = None
+                        metadata = self._extract_profile_metadata(payload, resolved)
+                except Exception:  # pragma: no cover - defensive logging
+                    metadata = {}
+            name = metadata.get("name") or Path(current).stem or current
             profiles.append(
                 ThemeProfileInfo(
                     identifier=current,
-                    name=Path(current).stem or current,
+                    name=name,
                     path=str(resolved) if resolved else None,
                     builtin=False,
                     source="custom",
-                    summary=summary,
+                    summary=metadata.get("summary"),
+                    description=metadata.get("description"),
+                    author=metadata.get("author"),
+                    logo=metadata.get("logo"),
+                    details=metadata.get("details"),
+                    website=metadata.get("website"),
                     is_active=True,
                 )
             )
 
         return [profile.to_dict() for profile in profiles]
+
+    def import_theme(self, source: Path) -> Dict[str, Any]:
+        if not source.exists():
+            raise FileNotFoundError(f"未找到主题文件: {source}")
+        if not source.is_file():
+            raise ValueError("主题导入仅支持 JSON 文件。")
+        if source.suffix.lower() != ".json":
+            raise ValueError("请选择以 .json 结尾的主题文件。")
+
+        try:
+            data_bytes = source.read_bytes()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            raise ValueError(f"读取主题文件失败: {exc}") from exc
+
+        try:
+            text = data_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("主题文件必须使用 UTF-8 编码。") from exc
+
+        try:
+            payload = json.loads(text)
+        except Exception as exc:
+            raise ValueError("主题文件不是有效的 JSON。") from exc
+
+        if not isinstance(payload, dict):
+            raise ValueError("主题文件必须是 JSON 对象。")
+
+        target = self._themes_dir / source.name
+        counter = 1
+        while target.exists():
+            target = self._themes_dir / f"{source.stem}-{counter}{source.suffix}"
+            counter += 1
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+
+        metadata = self._extract_profile_metadata(payload, target)
+        identifier = target.relative_to(self._themes_dir).as_posix()
+        return {
+            "id": identifier,
+            "path": str(target),
+            "metadata": metadata,
+        }
 
     def set_profile(self, profile: str) -> Dict[str, Any]:
         if self._settings is None:

@@ -20,6 +20,7 @@ dependencies = [
   "pyperclip>=1.11.0",
   "orjson>=3.11.3",
   "rtoml>=0.13.0",
+  "pystray>=0.19.5",
 ]
 
 [dependency-groups]

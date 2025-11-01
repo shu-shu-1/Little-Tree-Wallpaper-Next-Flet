@@ -1,0 +1,263 @@
+scheme = "littletree_wallpaper_source_v2"
+identifier = "builtin_cn_sources"
+name = "小树壁纸官方源"
+version = "1.0.0"
+# ≤100 字符
+description = "从6.0移植"
+skip_ssl_verify = false
+refresh_interval_seconds = 0
+
+# ============================================================================
+# 分类定义 [[categories]]
+# 注：客户端按 (category, subcategory, subsubcategory) 聚合
+# ============================================================================
+
+[[categories]]
+id = "bing_daily"
+name = "必应历史"
+category = "官方"
+subcategory = "Bing"
+
+[[categories]]
+id = "wallhaven_random"
+name = "Wallhaven 随机"
+category = "综合"
+subcategory = "Wallhaven"
+
+[[categories]]
+id = "wallhaven_today"
+name = "Wallhaven 今日"
+category = "综合"
+subcategory = "Wallhaven"
+
+[[categories]]
+id = "scenery_dujin"
+name = "风景-缙哥哥接口"
+category = "自然"
+subcategory = "风景"
+
+[[categories]]
+id = "scenery_yuanfang"
+name = "风景-远方接口"
+category = "自然"
+subcategory = "风景"
+
+# 二次元 - 保罗源
+[[categories]]
+id = "acg_paugram_sm"
+name = "白底动漫-sm.ms"
+category = "二次元"
+subcategory = "保罗源"
+
+[[categories]]
+id = "acg_paugram_github"
+name = "白底动漫-github.io"
+category = "二次元"
+subcategory = "保罗源"
+
+# 二次元 - 次元源
+[[categories]]
+id = "acg_mwm_genshin"
+name = "原神"
+category = "二次元"
+subcategory = "次元源"
+
+[[categories]]
+id = "acg_mwm_random"
+name = "随机"
+category = "二次元"
+subcategory = "次元源"
+
+[[categories]]
+id = "acg_mwm_ai"
+name = "AI生成"
+category = "二次元"
+subcategory = "次元源"
+
+[[categories]]
+id = "acg_mwm_scenery"
+name = "风景"
+category = "二次元"
+subcategory = "次元源"
+
+[[categories]]
+id = "acg_mwm_fox"
+name = "小狐狸"
+category = "二次元"
+subcategory = "次元源"
+
+[[categories]]
+id = "acg_mwm_moe"
+name = "萌图"
+category = "二次元"
+subcategory = "次元源"
+
+# 二次元 - 其他源
+[[categories]]
+id = "acg_yiyun_random"
+name = "[忆云]随机"
+category = "二次元"
+subcategory = "其他源"
+
+[[categories]]
+id = "acg_paulzzh_touhou"
+name = "[PAULZZH]东方"
+category = "二次元"
+subcategory = "其他源"
+
+[[categories]]
+id = "acg_dmoe_random"
+name = "[樱花]随机"
+category = "二次元"
+subcategory = "其他源"
+
+[[categories]]
+id = "acg_anosu_pixiv"
+name = "[Anosu]Pixiv精选"
+category = "二次元"
+subcategory = "其他源"
+
+# 收藏 - 个人收集
+[[categories]]
+id = "collection_epiao"
+name = "饿殍：明末千里行"
+category = "收藏"
+subcategory = "游戏"
+
+# ============================================================================
+# API 定义 [[apis]]
+# - Bing 使用 JSON + multi
+# - 绝大多数第三方随机图接口返回图片二进制或重定向到图片，使用 image_raw 更稳妥
+# - 个人收藏使用 static_list
+# ============================================================================
+
+
+
+# Wallhaven 随机
+[[apis]]
+name = "Wallhaven 随机"
+url = "https://api.nguaduot.cn/wallhaven/random"
+format = "image_raw"
+category_ids = ["wallhaven_random"]
+
+# Wallhaven 今日
+[[apis]]
+name = "Wallhaven 今日"
+url = "https://api.nguaduot.cn/wallhaven/today"
+format = "image_raw"
+category_ids = ["wallhaven_today"]
+
+# 风景 - 缙哥哥接口
+[[apis]]
+name = "风景-缙哥哥接口"
+url = "https://api.dujin.org/pic/fengjing"
+format = "image_raw"
+category_ids = ["scenery_dujin"]
+
+# 风景 - 远方接口
+[[apis]]
+name = "风景-远方接口"
+url = "https://tu.ltyuanfang.cn/api/fengjing.php"
+format = "image_raw"
+category_ids = ["scenery_yuanfang"]
+
+# 二次元 - 保罗源（sm.ms）
+[[apis]]
+name = "白底动漫-sm.ms"
+url = "https://api.paugram.com/wallpaper/?source=sm"
+format = "image_raw"
+category_ids = ["acg_paugram_sm"]
+
+# 二次元 - 保罗源（github.io）
+[[apis]]
+name = "白底动漫-github.io"
+url = "https://api.paugram.com/wallpaper/?source=github"
+format = "image_raw"
+category_ids = ["acg_paugram_github"]
+
+# 二次元 - 次元源（原神）
+[[apis]]
+name = "次元源-原神"
+url = "https://t.mwm.moe/ysz"
+format = "image_raw"
+category_ids = ["acg_mwm_genshin"]
+
+# 二次元 - 次元源（随机）
+[[apis]]
+name = "次元源-随机"
+url = "https://t.mwm.moe/pc"
+format = "image_raw"
+category_ids = ["acg_mwm_random"]
+
+# 二次元 - 次元源（AI生成）
+[[apis]]
+name = "次元源-AI生成"
+url = "https://t.mwm.moe/ai"
+format = "image_raw"
+category_ids = ["acg_mwm_ai"]
+
+# 二次元 - 次元源（风景）
+[[apis]]
+name = "次元源-风景"
+url = "https://t.mwm.moe/fj"
+format = "image_raw"
+category_ids = ["acg_mwm_scenery"]
+
+# 二次元 - 次元源（小狐狸）
+[[apis]]
+name = "次元源-小狐狸"
+url = "https://t.mwm.moe/xhl"
+format = "image_raw"
+category_ids = ["acg_mwm_fox"]
+
+# 二次元 - 次元源（萌图）
+[[apis]]
+name = "次元源-萌图"
+url = "https://t.mwm.moe/moe"
+format = "image_raw"
+category_ids = ["acg_mwm_moe"]
+
+# 二次元 - 其他源（忆云 随机）
+[[apis]]
+name = "[忆云]随机"
+url = "https://api.imlcd.cn/bg/acg.php"
+format = "image_raw"
+category_ids = ["acg_yiyun_random"]
+
+# 二次元 - 其他源（PAULZZH 东方）
+[[apis]]
+name = "[PAULZZH]东方"
+url = "https://img.paulzzh.com/touhou/random"
+format = "image_raw"
+category_ids = ["acg_paulzzh_touhou"]
+
+# 二次元 - 其他源（樱花 随机）
+[[apis]]
+name = "[樱花]随机"
+url = "https://www.dmoe.cc/random.php"
+format = "image_raw"
+category_ids = ["acg_dmoe_random"]
+
+# 二次元 - 其他源（Anosu Pixiv 精选）
+[[apis]]
+name = "[Anosu]Pixiv精选"
+url = "https://image.anosu.top/pixiv/direct"
+format = "image_raw"
+category_ids = ["acg_anosu_pixiv"]
+
+# 收藏 - 个人收集（静态列表）
+[[apis]]
+name = "饿殍：明末千里行 精选"
+format = "static_list"
+category_ids = ["collection_epiao"]
+
+  [apis.static_list]
+  urls = [
+    "https://i.postimg.cc/zf2yRGXj/image.jpg",
+    "https://i.postimg.cc/ZRjVN3vQ/image.jpg",
+    "https://i.postimg.cc/FRVG56y8/4b290f6e-b886-effb-b9b1-4a97bbeea0fe.jpg",
+    "https://i.postimg.cc/3RZMSndJ/a3cde8b4-0197-1ad3-3760-9cb95dbc6517.jpg",
+    "https://i.postimg.cc/02RWMpQV/ea0ff1ca-0358-4fca-b2bb-5b3a51706bdc.jpg",
+    "https://i.postimg.cc/qRttT6HK/f5fd0dc2722faf65c455943574b087863546706878663505.jpg",
+    "https://i.postimg.cc/0NZ9J3vB/ss-f1ba762ccb2918909b05051891316f27ecbbb245-1920x1080.jpg",
+  ]

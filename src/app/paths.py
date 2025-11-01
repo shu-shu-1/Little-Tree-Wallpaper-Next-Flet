@@ -35,4 +35,7 @@ DATA_DIR = Path(
 
 PLUGINS_DIR = BASE_DIR / "plugins"
 
-logger.info(f"【启动】数据目录\n缓存目录: {CACHE_DIR}\n配置目录: {CONFIG_DIR}\n数据目录: {DATA_DIR}\n 插件目录: {PLUGINS_DIR}")
+WALLPAPER_SOURCES_BUILTIN_PATH = BASE_DIR / "wallpaper_sources"
+WALLPAPER_SOURCES_USER_PATH = DATA_DIR / "wallpaper_sources"
+
+logger.info(f"【启动】数据目录\n· 缓存目录: {CACHE_DIR}\n· 配置目录: {CONFIG_DIR}\n· 数据目录: {DATA_DIR}\n· 插件目录: {PLUGINS_DIR}\n· 壁纸源目录[内置]: {WALLPAPER_SOURCES_BUILTIN_PATH}\n· 壁纸源目录[用户]: {WALLPAPER_SOURCES_USER_PATH}")
