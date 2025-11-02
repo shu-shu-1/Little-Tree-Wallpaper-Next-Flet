@@ -4587,6 +4587,7 @@ class Pages:
     # IntelliMarkets 专用镜像策略
     # -----------------------------
     def _im_tarball_candidates(self) -> list[str]:
+        logger.info("构建 IntelliMarkets 仓库 tarball 镜像候选列表...")
         owner = self._im_repo_owner
         repo = self._im_repo_name
         branch = self._im_repo_branch
@@ -4603,10 +4604,10 @@ class Pages:
             # kkgithub HTML archive as a final fallback
             f"https://kkgithub.com/{owner}/{repo}/archive/refs/heads/{branch}.tar.gz",
         ]
-
         preference = str(
             app_config.get("im.mirror_preference", "default_first") or "default_first"
         )
+        logger.info(f"使用镜像优先级设置：{preference}")
         if preference == "mirror_first":
             return [*mirror, *official, *fallback]
         return [*official, *mirror, *fallback]
@@ -6189,6 +6190,7 @@ class Pages:
 
         # 构建 tarball 候选列表（官方与镜像）
         tarball_candidates = self._im_tarball_candidates()
+        logger.info(f"IntelliMarkets 图片源下载候选：{tarball_candidates}")
 
         timeout = aiohttp.ClientTimeout(total=60)
         try:
@@ -6200,6 +6202,7 @@ class Pages:
                     timeout=timeout.total,
                     candidates=tarball_candidates,
                 )
+            logger.info("成功获取 IntelliMarkets 图片源数据，开始解析内容…")
 
             categories: dict[str, list[dict[str, Any]]] = {}
             total_sources = 0
@@ -6272,7 +6275,7 @@ class Pages:
 
                     categories.setdefault(category_name, []).append(source_info)
                     total_sources += 1
-
+            logger.info("IntelliMarkets 图片源解析完成，共加载 {count} 个图片源。", count=total_sources)
             for items in categories.values():
                 items.sort(
                     key=lambda item: (
