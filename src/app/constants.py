@@ -8,8 +8,9 @@ values reflect the order of tabs in the main settings view (0-based).
 SETTINGS_TAB_PLUGINS = 5
 """Global constants for Little Tree Wallpaper Next."""
 
+APP_NAME = "小树壁纸 Next"
 VER = "0.1.0"
-BUILD = "2025.11.01-001"
+BUILD = "2025.11.07-002"
 MODE = "TEST"
 BUILD_VERSION = f"v{VER} ({BUILD})"
 

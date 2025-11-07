@@ -2,19 +2,15 @@ from __future__ import annotations
 
 import os
 import threading
+from loguru import logger
 from typing import Any, Callable, Optional
 
-try:
-    import pystray
-    from pystray import MenuItem as MenuItem
-except Exception:  # pragma: no cover - optional dependency
-    pystray = None  # type: ignore
-    MenuItem = None  # type: ignore
 
-try:
-    from PIL import Image
-except Exception:  # pragma: no cover - optional dependency
-    Image = None  # type: ignore
+import pystray
+from pystray import MenuItem, Menu
+
+
+from PIL import Image
 
 
 class TrayIcon:
@@ -71,17 +67,15 @@ class TrayIcon:
             if window is not None:
                 try:
                     window.visible = True
-                except Exception:
-                    pass
-                for action in ("restore", "show", "bring_to_front"):
-                    try:
-                        getattr(window, action)()
-                    except Exception:
-                        pass
+                    window.minimized = False
+                    window.to_front()
+                except Exception as e:
+                    logger.error(f"显示窗口遇到错误: {e}")
+
             try:
                 page.update()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"刷新页面遇到错误: {e}")
 
         self._with_page(_handler)
 
@@ -89,19 +83,14 @@ class TrayIcon:
         def _handler(page: Any) -> None:
             window = getattr(page, "window", None)
             if window is not None:
-                for action in ("minimize", "hide"):
-                    try:
-                        getattr(window, action)()
-                    except Exception:
-                        pass
                 try:
                     window.visible = False
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"隐藏窗口遇到错误: {e}")
             try:
                 page.update()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"刷新页面遇到错误: {e}")
 
         self._with_page(_handler)
 
@@ -110,26 +99,30 @@ class TrayIcon:
             window = getattr(page, "window", None)
             if window is not None:
                 try:
+                    logger.info("关闭程序")
                     window.close()
+                    window.close()
+                    window.close()
+                    window.destroy()
+                    window.destroy()
+                    window.destroy()
                     return
-                except Exception:
-                    pass
-            try:
-                page.window_close()
-            except Exception:
-                pass
+                except Exception as e:
+                    logger.error(f"注销窗口遇到错误: {e}")
+
 
         self._with_page(_handler)
 
-        if self._icon is not None:
-            try:
-                self._icon.stop()
-            except Exception:
-                pass
-        try:
-            os._exit(0)
-        except Exception:
-            pass
+        # if self._icon is not None:
+        #     try:
+        #         self._icon.stop()
+        #     except Exception:
+        #         pass
+        # try:
+        #     logger.info("退出程序")
+        #     os._exit(0)
+        # except Exception as e:
+        #     logger.error(f"退出程序遇到错误: {e}")
 
     # ------------------------------------------------------------------
     # public api
@@ -152,7 +145,8 @@ class TrayIcon:
                     (
                         MenuItem("显示", self._on_show),
                         MenuItem("隐藏", self._on_hide),
-                        # MenuItem("退出", self._on_quit),
+                        Menu.SEPARATOR,
+                        MenuItem("退出", self._on_quit),
                     ),
                 )
                 self._icon.run()

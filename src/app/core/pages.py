@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from dataclasses import dataclass
 import hashlib
 import io
 import json
@@ -15,14 +14,17 @@ import shutil
 import tarfile
 import time
 import uuid
+import aiohttp
+import pyperclip
+
+import flet as ft
+
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, TYPE_CHECKING
 
+from dataclasses import dataclass
 from urllib.parse import parse_qsl, quote, quote_plus, urlencode
 
-import aiohttp
-import flet as ft
-import pyperclip
 from loguru import logger
 
 import ltwapi
@@ -66,6 +68,8 @@ from app.plugins import (
 from app.plugins.events import EventDefinition, PluginEventBus
 
 from app.settings import SettingsStore
+
+from app.startup import StartupManager
 
 app_config = SettingsStore()
 
@@ -4591,7 +4595,7 @@ class Pages:
         owner = self._im_repo_owner
         repo = self._im_repo_name
         branch = self._im_repo_branch
-        # Build official and mirror lists separately for easy reordering
+        # 分别构建官方列表和镜像列表，以便于重新排序
         official = [
             f"https://api.github.com/repos/{owner}/{repo}/tarball/{branch}",
             f"https://codeload.github.com/{owner}/{repo}/tar.gz/{branch}",
@@ -4601,8 +4605,7 @@ class Pages:
             f"https://codeload.kkgithub.com/{owner}/{repo}/tar.gz/{branch}",
         ]
         fallback = [
-            # kkgithub HTML archive as a final fallback
-            f"https://kkgithub.com/{owner}/{repo}/archive/refs/heads/{branch}.tar.gz",
+            f"https://gh-proxy.com/https://api.github.com/repos/{owner}/{repo}/tarball/{branch}",
         ]
         preference = str(
             app_config.get("im.mirror_preference", "default_first") or "default_first"
@@ -8531,6 +8534,14 @@ class Pages:
                 ft.Text("测试和调试", size=30),
                 ft.Text("这里是测试和调试专用区域"),
                 ft.Button("打开初次运行向导", on_click=lambda _: self.page.go("/first-run")),
+                ft.Button("添加启动项", on_click=lambda _: StartupManager().enable_startup()),
+                ft.Button("移除启动项", on_click=lambda _: StartupManager().disable_startup()),
+                ft.Button(
+                    "显示启动项状态",
+                    on_click=lambda _: self._show_snackbar(
+                        f"启动项状态: {'已启用' if StartupManager().is_startup_enabled() else '未启用'}"
+                    ),
+                ),
             ],
             expand=True,
         )

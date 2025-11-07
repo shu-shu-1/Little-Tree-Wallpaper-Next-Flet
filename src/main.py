@@ -12,15 +12,21 @@
 
 from __future__ import annotations
 
-import flet as ft
+import sys
 import traceback
+
+import flet as ft
+
 from app import Application
+
+
+_START_HIDDEN = any(arg.lower() in {"/hide", "--hide"} for arg in sys.argv[1:])
 
 
 def main(page: ft.Page) -> None:
     """Delegate to the modular :class:`Application`."""
 
-    Application()(page)
+    Application(start_hidden=_START_HIDDEN)(page)
 
 
 if __name__ == "__main__":

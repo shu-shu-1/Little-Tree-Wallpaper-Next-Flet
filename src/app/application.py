@@ -118,7 +118,7 @@ class _PermissionPromptRequest:
 class Application:
     """Main entry point used by flet.app to bootstrap the UI."""
 
-    def __init__(self) -> None:
+    def __init__(self, start_hidden: bool = False) -> None:
         self._plugin_config = PluginConfigStore(CONFIG_DIR / "plugins.json")
         # application-level persistent settings
         self._settings_store = SettingsStore(CONFIG_DIR / "config.json")
@@ -146,11 +146,14 @@ class Application:
         self._ipc_service = IPCService()
         self._ipc_plugin_subscriptions: Dict[str, Set[str]] = {}
         self._reload_required = False
+        self._start_hidden = start_hidden
 
     def __call__(self, page: ft.Page) -> None:
         self._page = page
         self._build_app(page)
         self._sync_theme(page)
+        if self._start_hidden:
+            self._apply_startup_window_visibility(page)
         # Initialize system tray (optional)
         try:
             enable_tray = bool(app_config.get("ui.enable_tray", True))
@@ -162,6 +165,24 @@ class Application:
                 self._tray.start()
             except Exception:
                 logger.debug("系统托盘初始化失败或被禁用")
+
+    def _apply_startup_window_visibility(self, page: ft.Page) -> None:
+        window = getattr(page, "window", None)
+        if window is None:
+            return
+        try:
+            window.visible = False
+        except Exception as err:
+            logger.error(f"初始隐藏窗口遇到错误: {err}")
+            self._start_hidden = False
+            return
+        try:
+            page.update()
+            logger.info("应用启动时已隐藏窗口")
+        except Exception as err:
+            logger.error(f"刷新页面遇到错误: {err}")
+        finally:
+            self._start_hidden = False
 
     # ------------------------------------------------------------------
     # lifecycle helpers
