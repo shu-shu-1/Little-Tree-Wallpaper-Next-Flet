@@ -19,9 +19,14 @@ from typing import Any, Awaitable, Dict, List, Protocol, Sequence, Tuple, Union,
 
 from loguru import logger
 
+from app.constants import BUILD_VERSION
 from app.paths import DATA_DIR
 
 ClassifierResult = Union["FavoriteAIResult", Awaitable["FavoriteAIResult | None"], None]
+
+
+EXPORT_PACKAGE_VERSION = 2
+EXPORT_DATA_FILENAME = "favorites.json"
 
 
 class FavoriteClassifier(Protocol):
@@ -110,6 +115,8 @@ class FavoriteLocalizationInfo:
     folder_path: str | None = None
     updated_at: float | None = None
     message: str | None = None
+    checksum: str | None = None
+    file_size: int | None = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -118,6 +125,8 @@ class FavoriteLocalizationInfo:
             "folder_path": self.folder_path,
             "updated_at": self.updated_at,
             "message": self.message,
+            "checksum": self.checksum,
+            "file_size": self.file_size,
         }
 
     @classmethod
@@ -130,6 +139,15 @@ class FavoriteLocalizationInfo:
         info.folder_path = data.get("folder_path")
         info.updated_at = data.get("updated_at")
         info.message = data.get("message")
+        info.checksum = data.get("checksum")
+        raw_size = data.get("file_size")
+        if raw_size is not None:
+            try:
+                info.file_size = int(raw_size)
+            except (TypeError, ValueError):
+                info.file_size = None
+        else:
+            info.file_size = None
         return info
 
 
@@ -448,6 +466,74 @@ class FavoriteManager:
     # ------------------------------------------------------------------
     # localization helpers
     # ------------------------------------------------------------------
+    def _compute_file_checksum(self, path: Path) -> str:
+        hasher = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                if not chunk:
+                    break
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    def _sanitize_import_item_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        sanitized: Dict[str, Any] = dict(payload or {})
+        sanitized["local_path"] = None
+
+        source_dict = dict(sanitized.get("source") or {})
+        source_dict["local_path"] = None
+        source_extra = dict(source_dict.get("extra") or {})
+        source_extra.pop("original_path", None)
+        source_extra.pop("imported_from", None)
+        source_dict["extra"] = source_extra
+        sanitized["source"] = source_dict
+
+        localization_dict = dict(sanitized.get("localization") or {})
+        folder_path = localization_dict.get("folder_path")
+        if isinstance(folder_path, str):
+            normalized_folder = folder_path.replace("\\", "/").strip("/")
+            folder_obj = Path(normalized_folder)
+            if folder_obj.is_absolute() or any(part == ".." for part in folder_obj.parts):
+                localization_dict["folder_path"] = None
+            else:
+                localization_dict["folder_path"] = folder_obj.as_posix() or None
+        else:
+            localization_dict["folder_path"] = None
+
+        rel_path = localization_dict.get("local_path")
+        if isinstance(rel_path, str):
+            normalized_rel = rel_path.replace("\\", "/").lstrip("/")
+            rel_obj = Path(normalized_rel)
+            if rel_obj.is_absolute() or any(part == ".." for part in rel_obj.parts):
+                localization_dict["local_path"] = None
+            else:
+                localization_dict["local_path"] = rel_obj.as_posix()
+        else:
+            localization_dict["local_path"] = None
+
+        checksum_value = localization_dict.get("checksum")
+        if checksum_value is not None:
+            checksum_str = str(checksum_value).strip()
+            localization_dict["checksum"] = checksum_str or None
+
+        file_size_value = localization_dict.get("file_size")
+        if file_size_value is not None:
+            try:
+                localization_dict["file_size"] = int(file_size_value)
+            except (TypeError, ValueError):
+                localization_dict.pop("file_size", None)
+
+        sanitized["localization"] = localization_dict
+
+        extra_dict = dict(sanitized.get("extra") or {})
+        extra_dict.pop("original_path", None)
+        extra_dict.pop("imported_from", None)
+        sanitized["extra"] = extra_dict
+
+        sanitized["folder_id"] = str(sanitized.get("folder_id", "default"))
+        sanitized["title"] = str(sanitized.get("title", "未命名收藏"))
+        sanitized["description"] = str(sanitized.get("description", ""))
+        return sanitized
+
     def localization_root(self) -> Path:
         root = (self._path.parent / "localized").resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -501,17 +587,29 @@ class FavoriteManager:
                 item_id,
                 status="failed",
                 local_path=None,
-                folder_path="/".join([folder_segment]),
+                folder_path=folder_segment,
                 message=str(exc),
             )
             return None
-        rel_path = str(Path(folder_segment) / filename)
+        rel_folder = Path(folder_segment)
+        checksum = None
+        size = None
+        try:
+            checksum = self._compute_file_checksum(destination)
+        except OSError:  # pragma: no cover - filesystem error
+            checksum = None
+        try:
+            size = destination.stat().st_size
+        except OSError:  # pragma: no cover - filesystem error
+            size = None
         self.update_localization(
             item_id,
             status="completed",
             local_path=str(destination),
-            folder_path=rel_path,
+            folder_path=rel_folder.as_posix(),
             message=None,
+            checksum=checksum,
+            file_size=size if isinstance(size, int) else None,
         )
         return destination
 
@@ -540,6 +638,7 @@ class FavoriteManager:
 
             item_payload: Dict[str, Dict[str, Any]] = {}
             asset_plan: list[tuple[Path, str]] = []
+            planned_assets: set[tuple[str, str]] = set()
             timestamp = time.time()
             for item_id, item in self._collection.items.items():
                 if item_ids_set is not None:
@@ -549,7 +648,36 @@ class FavoriteManager:
                     continue
                 data = item.to_dict()
                 folder_segment = self._localization_folder_segment(item.folder_id)
-                data.setdefault("localization", {})["folder_path"] = folder_segment
+                data["local_path"] = None
+                extra_payload = data.get("extra") or {}
+                if extra_payload:
+                    data["extra"] = {
+                        key: value
+                        for key, value in extra_payload.items()
+                        if key not in {"original_path", "imported_from"}
+                    }
+                else:
+                    data["extra"] = {}
+                source_dict = data.get("source") or {}
+                if source_dict:
+                    source_dict["local_path"] = None
+                    extra_dict = source_dict.get("extra") or {}
+                    if extra_dict:
+                        sanitized_extra = {
+                            key: value
+                            for key, value in extra_dict.items()
+                            if key not in {"original_path", "imported_from"}
+                        }
+                        source_dict["extra"] = sanitized_extra
+                    else:
+                        source_dict["extra"] = {}
+                data["source"] = source_dict
+                localization_payload = data.setdefault("localization", {})
+                localization_payload["folder_path"] = folder_segment
+                localization_payload.pop("message", None)
+                localization_payload["local_path"] = None
+                localization_payload.pop("checksum", None)
+                localization_payload.pop("file_size", None)
                 asset_source: Path | None = None
                 if include_assets:
                     for candidate in (item.localization.local_path, item.local_path):
@@ -558,9 +686,21 @@ class FavoriteManager:
                             break
                 if include_assets and asset_source:
                     filename = self._localization_filename(item, asset_source)
-                    rel_path = str(Path("assets") / folder_segment / filename)
-                    data.setdefault("localization", {})["local_path"] = rel_path
-                    asset_plan.append((asset_source, rel_path))
+                    rel_path = (Path("assets") / folder_segment / filename).as_posix()
+                    localization_payload["local_path"] = rel_path
+                    localization_payload["status"] = localization_payload.get("status") or "completed"
+                    try:
+                        localization_payload["checksum"] = self._compute_file_checksum(asset_source)
+                    except OSError:  # pragma: no cover - filesystem error
+                        localization_payload.pop("checksum", None)
+                    try:
+                        localization_payload["file_size"] = asset_source.stat().st_size
+                    except OSError:  # pragma: no cover - filesystem error
+                        localization_payload.pop("file_size", None)
+                    asset_key = (str(asset_source.resolve()), rel_path)
+                    if asset_key not in planned_assets:
+                        asset_plan.append((asset_source, rel_path))
+                        planned_assets.add(asset_key)
                 item_payload[item_id] = data
                 if item_ids_set is not None and item.folder_id not in selected_folder_ids_set:
                     selected_folder_ids_set.add(item.folder_id)
@@ -578,13 +718,21 @@ class FavoriteManager:
                 for fid in self._collection.folder_order
                 if fid in selected_folder_ids_set
             ]
-            export_data = {
-                "version": self._collection.version,
+            metadata_folders = sorted(selected_folder_ids_set)
+            export_data: Dict[str, Any] = {
+                "package_version": EXPORT_PACKAGE_VERSION,
+                "app_version": BUILD_VERSION,
                 "exported_at": timestamp,
+                "include_assets": include_assets,
+                "collection_version": self._collection.version,
                 "folders": folder_payload,
                 "items": item_payload,
                 "folder_order": order_payload,
             }
+            if metadata_folders:
+                export_data["selected_folders"] = metadata_folders
+            if item_ids_set is not None:
+                export_data["selected_items"] = sorted(item_ids_set)
         return export_data, asset_plan
 
     def _build_export_package(
@@ -610,7 +758,7 @@ class FavoriteManager:
                         "导出收藏时复制资源失败: {error}",
                         error=str(exc),
                     )
-            json_path = tmp_root / "favorites.json"
+            json_path = tmp_root / EXPORT_DATA_FILENAME
             with json_path.open("w", encoding="utf-8") as fp:
                 json.dump(export_data, fp, ensure_ascii=False, indent=2)
             package_path.parent.mkdir(parents=True, exist_ok=True)
@@ -653,6 +801,7 @@ class FavoriteManager:
         source_path = Path(source_path)
         if not source_path.exists():
             raise FileNotFoundError(str(source_path))
+        source_descriptor = str(source_path.resolve())
         tmp_dir = tempfile.TemporaryDirectory()
         tmp_root = Path(tmp_dir.name)
         try:
@@ -667,14 +816,29 @@ class FavoriteManager:
             else:
                 with ZipFile(source_path, "r") as zf:
                     zf.extractall(tmp_root)
-            json_path = tmp_root / "favorites.json"
+
+            json_path = tmp_root / EXPORT_DATA_FILENAME
+            if not json_path.exists():
+                fallback_path = tmp_root / "favorites.json"
+                json_path = fallback_path if fallback_path.exists() else json_path
             if not json_path.exists():
                 raise FileNotFoundError("导入包缺少 favorites.json")
+
             with json_path.open("r", encoding="utf-8") as fp:
                 payload = json.load(fp)
 
+            package_version = int(payload.get("package_version", 1))
+            exported_at = payload.get("exported_at")
+            include_assets_flag = bool(payload.get("include_assets", False))
             folders_data: Dict[str, Dict[str, Any]] = payload.get("folders", {}) or {}
-            items_data: Dict[str, Dict[str, Any]] = payload.get("items", {}) or {}
+            items_data_raw: Dict[str, Dict[str, Any]] = payload.get("items", {}) or {}
+            sanitized_items: Dict[str, Dict[str, Any]] = {}
+            for original_id, raw_item in items_data_raw.items():
+                if isinstance(raw_item, dict):
+                    sanitized_items[str(original_id)] = self._sanitize_import_item_payload(raw_item)
+
+            assets_root = (tmp_root / "assets").resolve()
+            include_assets_flag = include_assets_flag or assets_root.exists()
 
             created_folders = 0
             imported_items = 0
@@ -683,6 +847,9 @@ class FavoriteManager:
 
             with self._lock:
                 for original_id, folder_dict in folders_data.items():
+                    if not isinstance(folder_dict, dict):
+                        continue
+                    original_id_str = str(original_id)
                     target_id = None
                     for existing_id, existing in self._collection.folders.items():
                         if existing.name == folder_dict.get("name"):
@@ -700,10 +867,10 @@ class FavoriteManager:
                         self._collection.folders[target_id] = new_folder
                         self._collection.folder_order.append(target_id)
                         created_folders += 1
-                    folder_mapping[original_id] = target_id
+                    folder_mapping[original_id_str] = target_id
 
-                for original_id, item_dict in items_data.items():
-                    source_folder = item_dict.get("folder_id")
+                for original_id, item_dict in sanitized_items.items():
+                    source_folder = str(item_dict.get("folder_id", "default"))
                     target_folder = folder_mapping.get(source_folder, "default")
                     new_id = uuid.uuid4().hex
                     new_item = FavoriteItem.from_dict(item_dict)
@@ -713,22 +880,39 @@ class FavoriteManager:
                     new_item.created_at = now
                     new_item.updated_at = now
                     new_item.localization = FavoriteLocalizationInfo()
+                    new_item.local_path = None
+                    import_metadata = {
+                        "package_version": package_version,
+                        "source": source_descriptor,
+                        "include_assets": include_assets_flag,
+                        "exported_at": exported_at,
+                        "imported_at": time.time(),
+                    }
+                    new_item.extra["imported_from"] = import_metadata
                     self._collection.items[new_id] = new_item
-                    item_mapping[original_id] = new_id
+                    item_mapping[str(original_id)] = new_id
                     imported_items += 1
 
                 self._collection.ensure_default_folder()
                 self.save()
 
+            tmp_root_real = tmp_root.resolve()
             for original_id, new_id in item_mapping.items():
-                item_dict = items_data.get(original_id) or {}
+                item_dict = sanitized_items.get(original_id) or {}
                 localization_info = item_dict.get("localization") or {}
                 rel_path = localization_info.get("local_path")
                 if not rel_path:
                     continue
-                asset_source = (tmp_root / rel_path).resolve()
-                if asset_source.exists():
-                    self.localize_item_from_file(new_id, str(asset_source))
+                asset_candidate = (tmp_root / rel_path).resolve()
+                try:
+                    asset_candidate.relative_to(tmp_root_real)
+                except ValueError:
+                    logger.warning("导入收藏时检测到不安全的资源路径，已跳过: {path}", path=rel_path)
+                    continue
+                if asset_candidate.exists():
+                    self.localize_item_from_file(new_id, str(asset_candidate))
+                else:
+                    logger.warning("导入收藏缺少资源文件: {path}", path=rel_path)
 
             return created_folders, imported_items
         finally:
@@ -752,6 +936,8 @@ class FavoriteManager:
         local_path: str | None = None,
         folder_path: str | None = None,
         message: str | None = None,
+        checksum: str | None = None,
+        file_size: int | None = None,
     ) -> bool:
         with self._lock:
             item = self._collection.items.get(item_id)
@@ -762,6 +948,12 @@ class FavoriteManager:
             item.localization.folder_path = folder_path
             item.localization.updated_at = time.time()
             item.localization.message = message
+            item.localization.checksum = checksum
+            item.localization.file_size = file_size
+            if local_path:
+                item.local_path = local_path
+                if item.source.type == "local":
+                    item.source.local_path = local_path
             item.update_timestamp()
             self.save()
             return True
@@ -857,6 +1049,10 @@ class FavoriteManager:
                     item.preview_url = preview_url
                 if local_path:
                     item.local_path = local_path
+                if resolved_source:
+                    item.source.extra.update(resolved_source.extra)
+                    if resolved_source.local_path:
+                        item.source.local_path = resolved_source.local_path
                 if extra:
                     item.extra.update(extra)
                 item.update_timestamp()
@@ -899,15 +1095,23 @@ class FavoriteManager:
             raise FileNotFoundError(str(resolved))
 
         identifier = "local::" + hashlib.sha1(str(resolved).encode("utf-8")).hexdigest()
+        source_extra = {"original_path": str(resolved)}
+        if extra:
+            for key, value in extra.items():
+                if key not in {"original_path", "imported_from"}:
+                    source_extra.setdefault(key, value)
         source = FavoriteSource(
             type="local",
             identifier=identifier,
             title=source_title or resolved.stem,
             url=None,
             preview_url=None,
-            local_path=str(resolved),
-            extra=dict(extra or {}),
+            local_path=None,
+            extra=source_extra,
         )
+
+        item_extra = dict(extra or {})
+        item_extra.setdefault("original_path", str(resolved))
 
         item, created = self.add_or_update_item(
             folder_id=folder_id,
@@ -916,18 +1120,14 @@ class FavoriteManager:
             tags=tags,
             source=source,
             preview_url=None,
-            local_path=str(resolved),
-            extra=extra,
+            local_path=None,
+            extra=item_extra,
             merge_tags=merge_tags,
         )
 
-        self.update_localization(
-            item.id,
-            status="completed",
-            local_path=str(resolved),
-            folder_path=None,
-            message=None,
-        )
+        localized_path = self.localize_item_from_file(item.id, str(resolved))
+        if localized_path is None:
+            logger.warning("复制本地收藏文件失败，已保留原始路径: {path}", path=str(resolved))
 
         refreshed = self.get_item(item.id) or item
         return refreshed, created

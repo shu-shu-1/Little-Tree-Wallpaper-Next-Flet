@@ -21,6 +21,7 @@ dependencies = [
   "orjson>=3.11.3",
   "rtoml>=0.13.0",
   "pystray>=0.19.5",
+  "psutil>=7.1.3",
 ]
 
 [dependency-groups]
@@ -28,6 +29,7 @@ dev = [
     "colorama>=0.4.6",
     "flet[all]==0.28.3",
     "pyinstaller>=6.16.0",
+    "cx_Freeze>=7.2.7",
 ]
 
 [tool.flet]
@@ -47,9 +49,6 @@ copyright = "Copyright (C) 2025 by Little Tree Studio"
 
 [tool.flet.app]
 path = "src"
-
-
-
 
 [tool.poetry]
 package-mode = false

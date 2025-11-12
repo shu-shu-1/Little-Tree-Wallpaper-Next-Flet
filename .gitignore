@@ -166,4 +166,9 @@ cython_debug/
 
 # Flet
 storage/
+
+
+# other files
 docs/build_nuitka.md
+.VSCodeCounter/
+

@@ -1,5 +1,8 @@
+import copy
 import orjson
 import os
+import platform
+from pathlib import Path
 import toml
 
 DEFAULT_CONFIG = {
@@ -60,6 +63,56 @@ DEFAULT_CONFIG = {
         "mirror_preference": "mirror_first",
     },
 }
+
+
+def _resolve_default_download_directory() -> str:
+    """Return the per-platform default downloads folder as a string path."""
+    home = Path.home()
+    system = platform.system()
+
+    if system == "Windows":
+        profile = Path(os.environ.get("USERPROFILE", str(home)))
+        return str((profile / "Downloads").expanduser())
+
+    if system == "Darwin":
+        return str((home / "Downloads").expanduser())
+
+    xdg_dir = os.environ.get("XDG_DOWNLOAD_DIR")
+    if xdg_dir:
+        return str(Path(xdg_dir.replace("$HOME", str(home))).expanduser())
+
+    config_file = home / ".config" / "user-dirs.dirs"
+    if config_file.exists():
+        try:
+            for line in config_file.read_text(encoding="utf-8").splitlines():
+                if line.startswith("XDG_DOWNLOAD_DIR"):
+                    _, value = line.split("=", 1)
+                    value = value.strip().strip('"')
+                    return str(Path(value.replace("$HOME", str(home))).expanduser())
+        except Exception:
+            pass
+
+    return str((home / "Downloads").expanduser())
+
+
+def _ensure_download_directory(config: dict, file_path: str) -> dict:
+    """Guarantee storage.download_directory has a usable default."""
+    storage = config.setdefault("storage", {})
+    download_dir = str(storage.get("download_directory") or "").strip()
+
+    if not download_dir:
+        default_dir = _resolve_default_download_directory()
+        storage["download_directory"] = default_dir
+        try:
+            Path(default_dir).expanduser().mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            save_config_file(file_path, config)
+        except Exception:
+            pass
+
+    return config
 
 
 def get_config_version(file_path: str) -> str:
@@ -243,6 +296,7 @@ def save_config_file(file_path: str, config: dict) -> None:
         f.write(orjson.dumps(config, option=orjson.OPT_INDENT_2))
 
 def get_config_file(file_path: str) -> dict:
+    file_path = str(file_path)
     base, _ = os.path.splitext(file_path)
     json_path = base + ".json"
 
@@ -255,10 +309,12 @@ def get_config_file(file_path: str) -> dict:
     if os.path.exists(json_path):
         status = check_config_file(json_path)
 
+    config_data = None
+
     if status == "normal":
         try:
             with open(json_path, "rb") as f:
-                return orjson.loads(f.read())
+                config_data = orjson.loads(f.read())
         except orjson.JSONDecodeError:
             status = "format_error"
 
@@ -273,8 +329,11 @@ def get_config_file(file_path: str) -> dict:
         except Exception:
             reset_config_file(file_path)
 
-    try:
-        with open(os.path.splitext(file_path)[0] + ".json", "rb") as f:
-            return orjson.loads(f.read())
-    except Exception:
-        return DEFAULT_CONFIG
+    if config_data is None:
+        try:
+            with open(json_path, "rb") as f:
+                config_data = orjson.loads(f.read())
+        except Exception:
+            config_data = copy.deepcopy(DEFAULT_CONFIG)
+
+    return _ensure_download_directory(config_data, json_path)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import flet as ft
 
-from app.constants import MODE
+from app.constants import MODE, FIRST_RUN_MARKER_VERSION
 from app.core.pages import Pages
 from app.plugins import (
     AppNavigationView,
@@ -49,6 +49,18 @@ class CorePlugin(Plugin):
         if isinstance(metadata_profiles, list):
             theme_profiles = metadata_profiles
 
+        first_run_required_version = context.metadata.get("first_run_required_version")
+        try:
+            first_run_required_version = (
+                int(first_run_required_version)
+                if first_run_required_version is not None
+                else FIRST_RUN_MARKER_VERSION
+            )
+        except (TypeError, ValueError):
+            first_run_required_version = FIRST_RUN_MARKER_VERSION
+
+        first_run_pending = bool(context.metadata.get("first_run_pending"))
+
         pages = Pages(
             context.page,
             bing_action_factories=context.bing_action_factories,
@@ -64,8 +76,32 @@ class CorePlugin(Plugin):
             theme_list_handler=context.list_themes,
             theme_apply_handler=context.set_theme_profile,
             theme_profiles=theme_profiles,
+            first_run_required_version=first_run_required_version,
+            first_run_pending=first_run_pending,
+            first_run_next_route="/",
         )
         context.metadata["core_pages"] = pages
+        startup_conflicts = list(context.metadata.get("startup_conflicts") or [])
+        pages.set_startup_conflicts(startup_conflicts)
+
+        startup_sequence: list[str] = []
+        if MODE == "TEST":
+            startup_sequence.append("/test-warning")
+        if first_run_pending:
+            startup_sequence.append("/first-run")
+        if startup_conflicts:
+            startup_sequence.append("/conflict-warning")
+
+        def _next_route(route: str) -> str:
+            try:
+                index = startup_sequence.index(route)
+            except ValueError:
+                return "/"
+            return startup_sequence[index + 1] if index + 1 < len(startup_sequence) else "/"
+
+        pages.set_test_warning_next_route(_next_route("/test-warning"))
+        pages.set_first_run_next_route(_next_route("/first-run"))
+        pages.set_conflict_next_route(_next_route("/conflict-warning"))
 
         navigation_views = [
             AppNavigationView(
@@ -146,11 +182,15 @@ class CorePlugin(Plugin):
         context.add_route_view(
             AppRouteView(route="/first-run", builder=pages.build_first_run_page)
         )
+        context.add_route_view(
+            AppRouteView(
+                route="/conflict-warning",
+                builder=pages.build_conflict_warning_page,
+            )
+        )
 
-        if MODE == "TEST":
-            context.set_initial_route("/test-warning")
-        else:
-            context.set_initial_route("/")
+        initial_route = startup_sequence[0] if startup_sequence else "/"
+        context.set_initial_route(initial_route or "/")
 
         context.add_startup_hook(lambda: pages.refresh_hitokoto())
 

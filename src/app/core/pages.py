@@ -9,6 +9,7 @@ import io
 import json
 import mimetypes
 import os
+import random
 import re
 import shutil
 import tarfile
@@ -29,7 +30,13 @@ from loguru import logger
 
 import ltwapi
 
-from app.constants import BUILD_VERSION, HITOKOTO_API, SHOW_WATERMARK, VER
+from app.constants import (
+    BUILD_VERSION,
+    HITOKOTO_API,
+    SHOW_WATERMARK,
+    VER,
+    FIRST_RUN_MARKER_VERSION,
+)
 from app.paths import LICENSE_PATH, CACHE_DIR
 from app.favorites import (
     FavoriteFolder,
@@ -42,6 +49,7 @@ from app.ui_utils import (
     copy_files_to_clipboard,
     copy_image_to_clipboard,
 )
+from app.sniff import SniffService, SniffedImage, SniffServiceError
 from app.wallpaper_sources import (
     WallpaperCategoryRef,
     WallpaperItem,
@@ -70,6 +78,8 @@ from app.plugins.events import EventDefinition, PluginEventBus
 from app.settings import SettingsStore
 
 from app.startup import StartupManager
+from app.first_run import update_marker
+from app.conflicts import StartupConflict
 
 app_config = SettingsStore()
 
@@ -118,6 +128,9 @@ class Pages:
         theme_list_handler: Callable[[], "PluginOperationResult"] | None = None,
         theme_apply_handler: Callable[[str], "PluginOperationResult"] | None = None,
         theme_profiles: Optional[List[Dict[str, Any]]] = None,
+        first_run_required_version: int | None = None,
+        first_run_pending: bool = False,
+        first_run_next_route: str = "/",
     ):
         self.page = page
         self.event_bus = event_bus
@@ -136,6 +149,8 @@ class Pages:
         self._plugin_file_picker: Optional[ft.FilePicker] = None
         self._favorite_file_picker: Optional[ft.FilePicker] = None
         self._theme_file_picker: Optional[ft.FilePicker] = None
+        self._home_export_picker: Optional[ft.FilePicker] = None
+        self._home_pending_export_source: Path | None = None
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
         self.bing_wallpaper = None
         self.bing_wallpaper_url = None
@@ -189,6 +204,11 @@ class Pages:
         self._favorite_batch_done: int = 0
         self._favorite_preview_cache: dict[str, tuple[float, str]] = {}
         self._favorite_add_local_button: ft.IconButton | None = None
+        self._favorite_view_cache: ft.Control | None = None
+        self._favorite_view_holder: ft.Container | None = None
+        self._favorite_view_loading: bool = False
+        self._favorite_loading_overlay: ft.Container | None = None
+        self._favorite_tabs_container: ft.Container | None = None
 
         self._theme_manager = theme_manager
         self._theme_list_handler = theme_list_handler
@@ -196,6 +216,20 @@ class Pages:
         self._theme_profiles: list[Dict[str, Any]] = list(theme_profiles or [])
         self._theme_cards_wrap: ft.Wrap | None = None
         self._theme_detail_dialog: ft.AlertDialog | None = None
+        try:
+            self._first_run_required_version = (
+                int(first_run_required_version)
+                if first_run_required_version is not None
+                else FIRST_RUN_MARKER_VERSION
+            )
+        except (TypeError, ValueError):
+            logger.warning("首次运行标记版本无效，使用默认值。")
+            self._first_run_required_version = FIRST_RUN_MARKER_VERSION
+        self._first_run_pending = bool(first_run_pending)
+        self._first_run_next_route = first_run_next_route or "/"
+        self._test_warning_next_route: str = "/"
+        self._conflict_next_route: str = "/"
+        self._startup_conflicts: list[StartupConflict] = []
 
         self._generate_provider_dropdown: ft.Dropdown | None = None
         self._generate_seed_field: ft.TextField | None = None
@@ -207,6 +241,39 @@ class Pages:
         self._generate_status_text: ft.Text | None = None
         self._generate_loading_indicator: ft.ProgressRing | None = None
         self._generate_last_file: Path | None = None
+        self._generate_action_buttons: dict[str, ft.Control] = {}
+        self._generate_save_picker: ft.FilePicker | None = None
+        self._generate_pending_save_source: Path | None = None
+        self._generate_last_prompt: str | None = None
+        self._generate_last_seed: str | None = None
+        self._generate_last_width: int | None = None
+        self._generate_last_height: int | None = None
+        self._generate_last_request_url: str | None = None
+        self._generate_last_provider: str | None = None
+        self._generate_last_model: str | None = None
+        self._generate_last_enhance: bool = False
+        self._generate_last_allow_nsfw: bool = False
+
+        # Sniff page state
+        self._sniff_service = SniffService()
+        self._sniff_url_field: ft.TextField | None = None
+        self._sniff_fetch_button: ft.FilledButton | None = None
+        self._sniff_status_text: ft.Text | None = None
+        self._sniff_progress: ft.ProgressRing | None = None
+        self._sniff_grid: ft.GridView | None = None
+        self._sniff_images: list[SniffedImage] = []
+        self._sniff_selected_ids: set[str] = set()
+        self._sniff_action_buttons: dict[str, ft.Control] = {}
+        self._sniff_source_url: str | None = None
+        self._sniff_save_picker: ft.FilePicker | None = None
+        self._sniff_pending_save_ids: set[str] | None = None
+        self._sniff_selection_text: ft.Text | None = None
+        self._sniff_empty_placeholder: ft.Container | None = None
+        self._sniff_image_index: dict[str, SniffedImage] = {}
+        self._sniff_task_text: ft.Text | None = None
+        self._sniff_task_bar: ft.ProgressBar | None = None
+        self._sniff_task_container: ft.Column | None = None
+        self._sniff_actions_busy: bool = False
 
         # IntelliMarkets source marketplace state
         self._im_sources_by_category: dict[str, list[dict[str, Any]]] = {}
@@ -397,6 +464,44 @@ class Pages:
         self._refresh_settings_registry()
         self._register_settings_page_route(entry)
 
+    def set_first_run_next_route(self, route: str) -> None:
+        self._first_run_next_route = route or "/"
+
+    def set_test_warning_next_route(self, route: str) -> None:
+        self._test_warning_next_route = route or "/"
+
+    def set_conflict_next_route(self, route: str) -> None:
+        self._conflict_next_route = route or "/"
+
+    def set_startup_conflicts(self, conflicts: Sequence[StartupConflict]) -> None:
+        self._startup_conflicts = list(conflicts or [])
+
+    @property
+    def first_run_pending(self) -> bool:
+        return self._first_run_pending
+
+    def finish_first_run(self, *, show_feedback: bool = True) -> None:
+        if not self._first_run_pending and show_feedback:
+            self._show_snackbar("已完成首次运行引导。")
+            if self.page is not None:
+                self.page.go(self._first_run_next_route or "/")
+            return
+        try:
+            update_marker(self._first_run_required_version)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error("更新首次运行标记失败: {error}", error=str(exc))
+            self._show_snackbar("保存首次运行状态失败，请稍后再试。", error=True)
+            return
+        self._first_run_pending = False
+        if show_feedback:
+            self._show_snackbar("首次运行引导已完成，欢迎使用。")
+        target_route = self._first_run_next_route or "/"
+        if self.page is None:
+            return
+        try:
+            self.page.go(target_route)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error("首次运行完成后跳转失败: {error}", error=str(exc))
     def iter_plugin_settings_pages(self) -> list["PluginSettingsPage"]:
         self._refresh_settings_registry()
         return list(self._settings_pages)
@@ -1760,7 +1865,35 @@ class Pages:
     def _update_wallpaper(self):
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
 
+    def _build_wallpaper_label_span(self) -> ft.TextSpan:
+        path = self.wallpaper_path
+        label = "当前壁纸：未检测到桌面壁纸"
+        style = ft.TextStyle()
+        on_click = None
+        if path:
+            try:
+                name = Path(path).name or str(path)
+            except (OSError, TypeError, ValueError):
+                name = str(path)
+            label = f"当前壁纸：{name}"
+            style = ft.TextStyle(decoration=ft.TextDecoration.UNDERLINE)
+            def on_click(_):
+                return self._copy_sys_wallpaper_path()
+        return ft.TextSpan(label, style, on_click=on_click)
+
     def _copy_sys_wallpaper_path(self):
+        if not self.wallpaper_path:
+            self.page.open(
+                ft.SnackBar(
+                    ft.Row(
+                        controls=[
+                            ft.Icon(name=ft.Icons.WARNING_AMBER, color=ft.Colors.ON_SECONDARY),
+                            ft.Text("未检测到壁纸路径，请先刷新~"),
+                        ]
+                    )
+                )
+            )
+            return
         pyperclip.copy(self.wallpaper_path)
         self.page.open(
             ft.SnackBar(
@@ -1775,14 +1908,8 @@ class Pages:
 
     def _refresh_home(self, _):
         self._update_wallpaper()
-        self.img.src = self.wallpaper_path
-        self.file_name.spans = [
-            ft.TextSpan(
-                f"当前壁纸：{Path(self.wallpaper_path).name}",
-                ft.TextStyle(decoration=ft.TextDecoration.UNDERLINE),
-                on_click=lambda _: self._copy_sys_wallpaper_path(),
-            )
-        ]
+        self.img.src = self.wallpaper_path or ""
+        self.file_name.spans = [self._build_wallpaper_label_span()]
 
         self.page.update()
 
@@ -1840,21 +1967,116 @@ class Pages:
                 break
         self.page.update()
 
+    def _ensure_home_export_picker(self) -> None:
+        if self._home_export_picker is None:
+            self._home_export_picker = ft.FilePicker(
+                on_result=self._handle_home_export_result
+            )
+        if self.page and self._home_export_picker not in self.page.overlay:
+            self.page.overlay.append(self._home_export_picker)
+            self.page.update()
+
+    def _handle_home_export_clicked(self, _: ft.ControlEvent | None) -> None:
+        path = self.wallpaper_path
+        if not path:
+            self._show_snackbar("当前没有壁纸可导出。", error=True)
+            return
+        try:
+            source = Path(path)
+        except Exception as exc:
+            logger.error("无法解析壁纸路径: {error}", error=str(exc))
+            self._show_snackbar("当前壁纸路径无效。", error=True)
+            return
+        if not source.exists():
+            self._show_snackbar("壁纸文件不存在或已被删除。", error=True)
+            return
+        self._ensure_home_export_picker()
+        picker = self._home_export_picker
+        if picker is None:
+            self._show_snackbar("无法打开文件对话框。", error=True)
+            return
+        self._home_pending_export_source = source
+        file_name = source.name or "wallpaper.jpg"
+        initial_dir = source.parent if source.parent.exists() else Path.home()
+        try:
+            picker.save_file(
+                file_name=file_name,
+                initial_directory=str(initial_dir),
+            )
+        except Exception as exc:
+            logger.error("另存为对话框打开失败: {error}", error=str(exc))
+            self._show_snackbar("无法打开另存为对话框。", error=True)
+            self._home_pending_export_source = None
+
+    def _handle_home_export_result(self, event: ft.FilePickerResultEvent) -> None:
+        source = self._home_pending_export_source
+        self._home_pending_export_source = None
+        if source is None or not source.exists():
+            return
+        if not event.path:
+            return
+        target = Path(event.path)
+        self.page.run_task(self._home_export_save_to_path, source, target)
+
+    async def _home_export_save_to_path(self, source: Path, target: Path) -> None:
+        def _copy() -> Path:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            return target
+
+        try:
+            final_path = await asyncio.to_thread(_copy)
+        except Exception as exc:
+            logger.error("导出壁纸失败: {error}", error=str(exc))
+            self._show_snackbar("导出失败，请查看日志。", error=True)
+            return
+        self._show_snackbar(f"已保存到 {final_path}")
+
+    def _handle_home_add_wallpaper_to_favorite(
+        self, _: ft.ControlEvent | None
+    ) -> None:
+        path = self.wallpaper_path
+        if not path:
+            self._show_snackbar("当前没有壁纸可收藏。", error=True)
+            return
+        try:
+            source = Path(path)
+        except Exception as exc:
+            logger.error("无法解析当前壁纸路径: {error}", error=str(exc))
+            self._show_snackbar("当前壁纸路径无效。", error=True)
+            return
+        if not source.exists():
+            self._show_snackbar("壁纸文件不存在或已被删除。", error=True)
+            return
+        folder_id = (
+            self._favorite_selected_folder
+            if self._favorite_selected_folder not in {"__all__", "__default__"}
+            else None
+        )
+        try:
+            item, created = self._favorite_manager.add_local_item(
+                path=str(source),
+                folder_id=folder_id,
+            )
+        except Exception as exc:
+            logger.error("添加当前壁纸到收藏失败: {error}", error=str(exc))
+            self._show_snackbar("收藏失败，请查看日志。", error=True)
+            return
+        if item:
+            self._schedule_favorite_classification(item.id)
+        self._refresh_favorite_tabs()
+        if created:
+            self._show_snackbar("已将当前壁纸加入收藏。")
+        else:
+            self._show_snackbar("收藏已更新。")
+
     def _build_home(self):
         from app.paths import ASSET_DIR  # local import to avoid circular dependencies
 
-        self.file_name = ft.Text(
-            spans=[
-                ft.TextSpan(
-                    f"当前壁纸：{Path(self.wallpaper_path).name}",
-                    ft.TextStyle(decoration=ft.TextDecoration.UNDERLINE),
-                    on_click=lambda _: self._copy_sys_wallpaper_path(),
-                )
-            ]
-        )
+        self.file_name = ft.Text(spans=[self._build_wallpaper_label_span()])
 
         self.img = ft.Image(
-            src=self.wallpaper_path,
+            src=self.wallpaper_path or "",
             height=200,
             border_radius=10,
             fit=ft.ImageFit.COVER,
@@ -1875,14 +2097,18 @@ class Pages:
                             self.img,
                             ft.Column(
                                 [
-                                    ft.TextButton("导出", icon=ft.Icons.SAVE_ALT),
+                                    ft.TextButton(
+                                        "导出",
+                                        icon=ft.Icons.SAVE_ALT,
+                                        tooltip="另存为当前壁纸",
+                                        on_click=self._handle_home_export_clicked,
+                                    ),
                                     ft.TextButton("更换", icon=ft.Icons.PHOTO_LIBRARY),
                                     ft.TextButton(
                                         "收藏",
                                         icon=ft.Icons.STAR,
-                                        on_click=lambda _: self._open_favorite_editor(
-                                            self._make_current_wallpaper_payload()
-                                        ),
+                                        tooltip="将当前壁纸加入收藏",
+                                        on_click=self._handle_home_add_wallpaper_to_favorite,
                                     ),
                                     ft.TextButton(
                                         "刷新",
@@ -1966,6 +2192,17 @@ class Pages:
             label="种子（相同种子将生成相同图片）",
             value="42",
             input_filter=ft.NumbersOnlyInputFilter(),
+            expand=True,
+        )
+        seed_random_button = ft.IconButton(
+            icon=ft.Icons.SHUFFLE,
+            tooltip="随机生成种子",
+            on_click=self._handle_generate_random_seed,
+        )
+        seed_row = ft.Row(
+            [self._generate_seed_field, seed_random_button],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.END,
         )
         self._generate_width_field = ft.TextField(
             label="图片宽度",
@@ -2000,6 +2237,68 @@ class Pages:
             color=ft.Colors.OUTLINE,
         )
 
+        download_button = ft.FilledTonalButton(
+            "下载",
+            icon=ft.Icons.DOWNLOAD,
+            disabled=True,
+            on_click=lambda _: self.page.run_task(self._generate_download),
+        )
+        save_as_button = ft.FilledTonalButton(
+            "另存为",
+            icon=ft.Icons.SAVE_ALT,
+            disabled=True,
+            on_click=self._handle_generate_save_as_request,
+        )
+        copy_image_button = ft.FilledTonalButton(
+            "复制图片",
+            icon=ft.Icons.CONTENT_COPY,
+            disabled=True,
+            on_click=lambda _: self.page.run_task(self._generate_copy_image),
+        )
+        copy_file_button = ft.FilledTonalButton(
+            "复制文件",
+            icon=ft.Icons.FOLDER_COPY,
+            disabled=True,
+            on_click=lambda _: self.page.run_task(self._generate_copy_file),
+        )
+        favorite_button = ft.FilledTonalButton(
+            "收藏",
+            icon=ft.Icons.BOOKMARK_ADD,
+            disabled=True,
+            on_click=self._handle_generate_favorite,
+        )
+        set_wallpaper_button = ft.FilledTonalButton(
+            "设为壁纸",
+            icon=ft.Icons.WALLPAPER,
+            disabled=True,
+            on_click=lambda _: self.page.run_task(self._generate_set_wallpaper),
+        )
+
+        self._generate_action_buttons = {
+            "download": download_button,
+            "save_as": save_as_button,
+            "copy_image": copy_image_button,
+            "copy_file": copy_file_button,
+            "favorite": favorite_button,
+            "set_wallpaper": set_wallpaper_button,
+        }
+
+        self._generate_update_actions()
+
+        actions_row = ft.Row(
+            [
+                download_button,
+                save_as_button,
+                copy_image_button,
+                copy_file_button,
+                favorite_button,
+                set_wallpaper_button,
+            ],
+            spacing=8,
+            run_spacing=8,
+            wrap=True,
+        )
+
         placeholder = ft.Column(
             [
                 ft.Icon(ft.Icons.IMAGE, size=72, color=ft.Colors.OUTLINE),
@@ -2027,7 +2326,7 @@ class Pages:
             content=ft.Column(
                 [
                     self._generate_provider_dropdown,
-                    self._generate_seed_field,
+                    seed_row,
                     self._generate_width_field,
                     self._generate_height_field,
                     self._generate_enhance_switch,
@@ -2054,6 +2353,7 @@ class Pages:
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
+                    actions_row,
                     self._generate_output_container,
                 ],
                 spacing=16,
@@ -2140,6 +2440,218 @@ class Pages:
         self._generate_output_container.content = image_control
         if self._generate_output_container.page is not None:
             self._generate_output_container.update()
+
+    def _handle_generate_random_seed(self, _: ft.ControlEvent | None) -> None:
+        if self._generate_seed_field is None:
+            return
+        seed_value = str(random.randint(0, 999_999_999))
+        self._generate_seed_field.value = seed_value
+        if self._generate_seed_field.page is not None:
+            self._generate_seed_field.update()
+
+    def _generate_update_actions(self) -> None:
+        path = self._generate_last_file
+        has_file = bool(path and path.exists())
+        if path and not path.exists():
+            self._generate_last_file = None
+        for control in self._generate_action_buttons.values():
+            control.disabled = not has_file
+            if control.page is not None:
+                control.update()
+
+    def _generate_resolve_target_path(self, directory: Path, file_name: str) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / file_name
+        if not target.exists():
+            return target
+        stem = target.stem
+        suffix = target.suffix
+        counter = 1
+        while True:
+            candidate = directory / f"{stem}-{counter}{suffix}"
+            if not candidate.exists():
+                return candidate
+            counter += 1
+
+    def _ensure_generate_save_picker(self) -> None:
+        if self._generate_save_picker is None:
+            self._generate_save_picker = ft.FilePicker(
+                on_result=self._handle_generate_save_result
+            )
+        if self._generate_save_picker not in self.page.overlay:
+            self.page.overlay.append(self._generate_save_picker)
+            self.page.update()
+
+    def _handle_generate_save_result(self, event: ft.FilePickerResultEvent) -> None:
+        source = self._generate_pending_save_source
+        self._generate_pending_save_source = None
+        if source is None or not source.exists():
+            return
+        if not event.path:
+            return
+        target = Path(event.path)
+        self.page.run_task(self._generate_save_to_path, source, target)
+
+    def _handle_generate_save_as_request(self, _: ft.ControlEvent | None) -> None:
+        path = self._generate_last_file
+        if not path or not path.exists():
+            self._show_snackbar("当前没有可用的生成图片。", error=True)
+            self._generate_update_actions()
+            return
+        self._ensure_generate_save_picker()
+        self._generate_pending_save_source = path
+        if self._generate_save_picker is None:
+            return
+        suggested = path.name or "generated-image.png"
+        initial_dir = path.parent if path.parent.exists() else Path.cwd()
+        try:
+            self._generate_save_picker.save_file(
+                file_name=suggested,
+                initial_directory=str(initial_dir),
+            )
+        except Exception as exc:
+            logger.error("另存为对话框打开失败: {error}", error=str(exc))
+            self._show_snackbar("无法打开另存为对话框。", error=True)
+
+    async def _generate_save_to_path(self, source: Path, target: Path) -> None:
+        def _copy() -> Path:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            return target
+
+        try:
+            final_path = await asyncio.to_thread(_copy)
+        except Exception as exc:
+            logger.error("另存为失败: {error}", error=str(exc))
+            self._show_snackbar("另存为失败，请查看日志。", error=True)
+            return
+        self._show_snackbar(f"已保存到 {final_path}")
+
+    async def _generate_download(self) -> None:
+        path = self._generate_last_file
+        if not path or not path.exists():
+            self._show_snackbar("当前没有可用的生成图片。", error=True)
+            self._generate_update_actions()
+            return
+        download_dir = str(app_config.get("storage.download_directory", "")).strip()
+        if not download_dir:
+            self._show_snackbar("尚未配置下载目录。", error=True)
+            return
+        target_dir = Path(download_dir).expanduser()
+
+        def _copy() -> Path:
+            target = self._generate_resolve_target_path(target_dir, path.name)
+            shutil.copy2(path, target)
+            return target
+
+        try:
+            final_path = await asyncio.to_thread(_copy)
+        except Exception as exc:
+            logger.error("下载失败: {error}", error=str(exc))
+            self._show_snackbar("下载失败，请查看日志。", error=True)
+            return
+        self._show_snackbar(f"已下载到 {final_path}")
+
+    async def _generate_copy_image(self) -> None:
+        path = self._generate_last_file
+        if not path or not path.exists():
+            self._show_snackbar("当前没有可用的生成图片。", error=True)
+            self._generate_update_actions()
+            return
+        success = await asyncio.to_thread(copy_image_to_clipboard, path)
+        if success:
+            self._show_snackbar("图片已复制到剪贴板。")
+        else:
+            self._show_snackbar("复制图片失败。", error=True)
+
+    async def _generate_copy_file(self) -> None:
+        path = self._generate_last_file
+        if not path or not path.exists():
+            self._show_snackbar("当前没有可用的生成图片。", error=True)
+            self._generate_update_actions()
+            return
+        success = await asyncio.to_thread(copy_files_to_clipboard, [str(path)])
+        if success:
+            self._show_snackbar("文件已复制到剪贴板。")
+        else:
+            self._show_snackbar("复制文件失败。", error=True)
+
+    async def _generate_set_wallpaper(self) -> None:
+        path = self._generate_last_file
+        if not path or not path.exists():
+            self._show_snackbar("当前没有可用的生成图片。", error=True)
+            self._generate_update_actions()
+            return
+        try:
+            await asyncio.to_thread(ltwapi.set_wallpaper, str(path))
+        except Exception as exc:
+            logger.error("设为壁纸失败: {error}", error=str(exc))
+            self._show_snackbar("设为壁纸失败，请查看日志。", error=True)
+            return
+        self._show_snackbar("已设置为壁纸。")
+
+    def _generate_make_favorite_payload(self) -> Dict[str, Any] | None:
+        path = self._generate_last_file
+        if not path or not path.exists():
+            return None
+        prompt = (self._generate_last_prompt or "").strip()
+        title = self._abbreviate_text(prompt, 40) if prompt else path.stem
+        if not title:
+            title = path.stem or "AI 生成壁纸"
+        try:
+            timestamp = path.stat().st_mtime
+        except Exception:
+            timestamp = time.time()
+        identifier = hashlib.sha1(f"{path}-{timestamp}".encode("utf-8", "ignore")).hexdigest()
+        tags: list[str] = ["generation"]
+        if self._generate_last_provider:
+            tags.append(self._generate_last_provider)
+        tags = [tag for tag in dict.fromkeys(tag for tag in tags if tag)]
+        extra = {
+            "prompt": prompt or None,
+            "seed": self._generate_last_seed or None,
+            "width": self._generate_last_width,
+            "height": self._generate_last_height,
+            "provider": self._generate_last_provider or None,
+            "request_url": self._generate_last_request_url or None,
+            "enhance": self._generate_last_enhance,
+            "allow_nsfw": self._generate_last_allow_nsfw,
+        }
+        extra = {key: value for key, value in extra.items() if value not in (None, "")}
+        extra["file_path"] = str(path)
+        favorite_source = FavoriteSource(
+            type="generation",
+            identifier=identifier,
+            title=title,
+            url=self._generate_last_request_url,
+            preview_url=str(path),
+            local_path=str(path),
+            extra=extra,
+        )
+        default_folder = (
+            self._favorite_selected_folder
+            if self._favorite_selected_folder not in {"__all__", "__default__"}
+            else "default"
+        )
+        payload: Dict[str, Any] = {
+            "folder_id": default_folder,
+            "title": title,
+            "description": "",
+            "tags": tags,
+            "source": favorite_source,
+            "preview_url": str(path),
+            "local_path": str(path),
+            "extra": extra,
+        }
+        return payload
+
+    def _handle_generate_favorite(self, _: ft.ControlEvent | None) -> None:
+        payload = self._generate_make_favorite_payload()
+        if not payload:
+            self._show_snackbar("当前没有可收藏的内容。", error=True)
+            self._generate_update_actions()
+            return
+        self._open_favorite_editor(payload)
 
     def _handle_generate_clicked(self, _: ft.ControlEvent) -> None:
         prompt = (
@@ -2235,7 +2747,7 @@ class Pages:
             width=width,
             height=height,
             seed=seed,
-            model="<default>",
+            provider=provider or "pollinations",
             enhance=enhance,
             safe=params.get("safe"),
         )
@@ -2249,9 +2761,9 @@ class Pages:
             width,
             height,
             seed,
-            "",
             enhance,
             allow_nsfw,
+            provider,
         )
 
     async def _process_generate_request(
@@ -2261,9 +2773,9 @@ class Pages:
         width: int | None,
         height: int | None,
         seed: str,
-        model: str,
         enhance: bool,
         allow_nsfw: bool,
+        provider: str,
     ) -> None:
         cache_dir = CACHE_DIR / "generations"
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -2307,6 +2819,18 @@ class Pages:
             self._handle_generate_error("加载生成的图片失败。")
             return
 
+        self._generate_last_file = path
+        self._generate_last_prompt = prompt
+        self._generate_last_width = width
+        self._generate_last_height = height
+        self._generate_last_seed = seed
+        self._generate_last_request_url = request_url
+        self._generate_last_provider = provider or "pollinations"
+        self._generate_last_model = None
+        self._generate_last_enhance = enhance
+        self._generate_last_allow_nsfw = allow_nsfw
+        self._generate_update_actions()
+
         self._update_generate_status(f"生成完成，已保存到 {path.name}")
         logger.info(
             "Generated image cached locally",
@@ -2315,7 +2839,7 @@ class Pages:
             width=width,
             height=height,
             seed=seed,
-            model="<default>",
+            provider=provider or "pollinations",
             enhance=enhance,
             safe="false" if allow_nsfw else "true",
         )
@@ -6541,55 +7065,115 @@ class Pages:
                 expand=True,
             )
 
-        list_view = ft.ListView(spacing=12, expand=True)
+        grid = ft.GridView(
+            expand=True,
+            runs_count=0,
+            max_extent=360,
+            child_aspect_ratio=1.15,
+            spacing=16,
+            run_spacing=16,
+            auto_scroll=False,
+        )
         for item in items:
-            list_view.controls.append(self._build_favorite_card(item))
+            grid.controls.append(self._build_favorite_card(item))
+
+        if folder_id in (None, "__all__"):
+            folder_label = "全部收藏"
+        else:
+            folder = self._favorite_manager.get_folder(folder_id)
+            folder_label = folder.name if folder else "收藏夹"
+
+        header_row = ft.Row(
+            [
+                ft.Text(folder_label, size=14, weight=ft.FontWeight.BOLD),
+                ft.Text(f"共 {len(items)} 项收藏", size=12, color=ft.Colors.GREY),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
 
         return ft.Container(
             content=ft.Column(
                 [
-                    ft.Text(
-                        f"共 {len(items)} 项收藏",
-                        size=12,
-                        color=ft.Colors.GREY,
-                    ),
-                    list_view,
+                    header_row,
+                    grid,
                 ],
                 spacing=12,
                 expand=True,
             ),
-            padding=16,
+            padding=ft.Padding(12, 12, 12, 16),
             expand=True,
         )
 
-    def _build_favorite_card(self, item: FavoriteItem) -> ft.Card:
+    def _build_favorite_card(self, item: FavoriteItem) -> ft.Control:
         preview_src = self._favorite_preview_source(item)
+        preview_kwargs: dict[str, Any] = {
+            "width": 160,
+            "height": 96,
+            "fit": ft.ImageFit.COVER,
+            "border_radius": 12,
+        }
         if preview_src:
             source_type, value = preview_src
-            preview_kwargs: dict[str, Any] = {
-                "width": 160,
-                "height": 90,
-                "fit": ft.ImageFit.COVER,
-                "border_radius": 8,
-            }
             if source_type == "base64":
                 preview_control = ft.Image(src_base64=value, **preview_kwargs)
             else:
                 preview_control = ft.Image(src=value, **preview_kwargs)
         else:
             preview_control = ft.Container(
-                width=160,
-                height=90,
-                border_radius=8,
+                width=preview_kwargs["width"],
+                height=preview_kwargs["height"],
+                border_radius=preview_kwargs["border_radius"],
                 alignment=ft.alignment.center,
                 content=ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, color=ft.Colors.OUTLINE),
             )
 
+        max_tag_badges = 6
+        tag_controls: list[ft.Control]
         if item.tags:
-            tag_controls: List[ft.Control] = [
-                ft.Chip(label=ft.Text(tag), bgcolor=ft.Colors.SECONDARY_CONTAINER)
-                for tag in item.tags
+            tag_controls = [
+                ft.Container(
+                    content=ft.Text(
+                        tag,
+                        size=11,
+                        color=ft.Colors.ON_SECONDARY_CONTAINER,
+                    ),
+                    padding=ft.Padding(8, 4, 8, 4),
+                    border_radius=ft.border_radius.all(12),
+                    bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                )
+                for tag in item.tags[:max_tag_badges]
             ]
+            overflow_count = len(item.tags) - max_tag_badges
+            if overflow_count > 0:
+                def _open_tags_dialog(
+                    _: ft.ControlEvent | None = None,
+                    entry: FavoriteItem = item,
+                ) -> None:
+                    self._show_favorite_tags_dialog(entry)
+
+                overflow_badge = ft.GestureDetector(
+                    on_tap=_open_tags_dialog,
+                    mouse_cursor=ft.MouseCursor.CLICK,
+                    content=ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Icon(ft.Icons.LABEL_OUTLINE, size=12, color=ft.Colors.GREY),
+                                ft.Text(
+                                    f"+{overflow_count}",
+                                    size=11,
+                                    color=ft.Colors.GREY,
+                                ),
+                            ],
+                            spacing=4,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        padding=ft.Padding(10, 4, 10, 4),
+                        border_radius=ft.border_radius.all(12),
+                        bgcolor=ft.Colors.with_opacity(0.08, ft.Colors.SECONDARY_CONTAINER),
+                    ),
+                )
+                tag_controls.append(overflow_badge)
         else:
             tag_controls = [ft.Text("未添加标签", size=11, color=ft.Colors.GREY)]
 
@@ -6600,6 +7184,8 @@ class Pages:
                     f"AI 建议：{', '.join(item.ai.suggested_tags)}",
                     size=11,
                     color=ft.Colors.SECONDARY,
+                    max_lines=2,
+                    overflow=ft.TextOverflow.ELLIPSIS,
                 )
             )
         elif item.ai.status in {"pending", "running"}:
@@ -6611,20 +7197,28 @@ class Pages:
 
         info_column = ft.Column(
             [
-                ft.Text(item.title, size=16, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    item.title,
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    max_lines=2,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                ),
                 ft.Text(
                     item.description or "暂无描述",
                     size=12,
                     color=ft.Colors.GREY,
+                    max_lines=3,
+                    overflow=ft.TextOverflow.ELLIPSIS,
                 ),
                 ft.Row(
-                    tag_controls,
-                    wrap=True,
+                    controls=tag_controls,
                     spacing=6,
                     run_spacing=6,
+                    wrap=True,
                 ),
             ],
-            spacing=6,
+            spacing=8,
             expand=True,
         )
 
@@ -6634,6 +7228,8 @@ class Pages:
                     f"来源：{item.source.title or item.source.type}",
                     size=11,
                     color=ft.Colors.GREY,
+                    max_lines=1,
+                    overflow=ft.TextOverflow.ELLIPSIS,
                 )
             )
 
@@ -6748,7 +7344,13 @@ class Pages:
                 )
             )
 
-        # 移除“打开本地文件/所在位置”的入口，避免直接跳转到文件夹
+        actions_row = ft.Row(
+            action_buttons,
+            alignment=ft.MainAxisAlignment.END,
+            spacing=4,
+            wrap=True,
+            run_spacing=4,
+        )
 
         body_row = ft.Row(
             [preview_control, info_column],
@@ -6756,21 +7358,89 @@ class Pages:
             vertical_alignment=ft.CrossAxisAlignment.START,
         )
 
-        actions_row = ft.Row(
-            action_buttons,
-            alignment=ft.MainAxisAlignment.END,
-            spacing=4,
+        footer_column = ft.Column(
+            [
+                ft.Divider(
+                    height=1,
+                    thickness=1,
+                    color=ft.Colors.with_opacity(0.08, ft.Colors.OUTLINE),
+                ),
+                actions_row,
+            ],
+            spacing=12,
         )
 
-        return ft.Card(
-            content=ft.Container(
-                content=ft.Column(
-                    [body_row, actions_row],
-                    spacing=12,
-                ),
-                padding=16,
-            )
+        card_body = ft.Column(
+            [body_row, footer_column],
+            spacing=12,
+            expand=True,
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
+
+        card_container = ft.Container(
+            width=320,
+            height=280,
+            padding=16,
+            content=card_body,
+        )
+
+        card = ft.Card(elevation=1, content=card_container)
+
+        return ft.Container(width=320, height=280, content=card)
+
+    def _show_favorite_tags_dialog(self, item: FavoriteItem) -> None:
+        tags = list(item.tags or [])
+        if not tags:
+            return
+
+        tag_items = [
+            ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Icon(ft.Icons.TAG, size=14, color=ft.Colors.SECONDARY),
+                        ft.Text(tag, size=12),
+                    ],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=ft.Padding(12, 6, 12, 6),
+                border_radius=ft.border_radius.all(8),
+                bgcolor=ft.colors.with_opacity(0.04, ft.Colors.SECONDARY_CONTAINER),
+            )
+            for tag in tags
+        ]
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"“{item.title or '收藏'}”的全部标签"),
+            content=ft.Container(
+                width=360,
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            f"共 {len(tags)} 个标签",
+                            size=12,
+                            color=ft.Colors.GREY,
+                        ),
+                        ft.Container(
+                            height=240,
+                            content=ft.Column(
+                                controls=tag_items,
+                                spacing=8,
+                                tight=True,
+                                scroll=ft.ScrollMode.AUTO,
+                            ),
+                        ),
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[ft.TextButton("关闭", on_click=lambda _: self._close_dialog())],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self._open_dialog(dialog)
 
     def _parse_tag_input(self, raw: str) -> List[str]:
         if not raw:
@@ -8372,20 +9042,820 @@ class Pages:
             padding=16,
         )
 
-    def _build_sniff(self):
-        return ft.Column(
+    def _build_sniff(self) -> ft.Control:
+        self._ensure_sniff_save_picker()
+
+        self._sniff_url_field = ft.TextField(
+            label="页面链接",
+            hint_text="输入包含图片的网页链接",
+            autofocus=False,
+            expand=True,
+            on_submit=lambda _: self.page.run_task(self._sniff_start),
+        )
+        self._sniff_fetch_button = ft.FilledButton(
+            "开始嗅探",
+            icon=ft.Icons.SEARCH,
+            on_click=lambda _: self.page.run_task(self._sniff_start),
+        )
+        clear_button = ft.IconButton(
+            ft.Icons.CLEAR_ALL,
+            tooltip="清空结果",
+            on_click=lambda _: self._sniff_reset(clear_url=False),
+        )
+
+        header_row = ft.Row(
+            [
+                self._sniff_url_field,
+                self._sniff_fetch_button,
+                clear_button,
+            ],
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.END,
+        )
+
+        self._sniff_progress = ft.ProgressRing(width=18, height=18)
+        self._sniff_progress.visible = False
+        self._sniff_status_text = ft.Text(
+            "请输入链接并点击开始嗅探。",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+
+        status_row = ft.Row(
+            [
+                self._sniff_progress,
+                self._sniff_status_text,
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        self._sniff_task_text = ft.Text("", size=12, color=ft.Colors.PRIMARY)
+        self._sniff_task_bar = ft.ProgressBar(value=0, expand=True)
+        self._sniff_task_container = ft.Column(
+            [self._sniff_task_text, self._sniff_task_bar],
+            spacing=6,
+        )
+        self._sniff_task_container.visible = False
+
+        set_wallpaper_button = ft.FilledTonalButton(
+            "设为壁纸",
+            icon=ft.Icons.WALLPAPER,
+            disabled=True,
+            on_click=lambda _: self.page.run_task(self._sniff_set_wallpaper),
+        )
+        copy_image_button = ft.FilledTonalButton(
+            "复制图片",
+            icon=ft.Icons.CONTENT_COPY,
+            disabled=True,
+            on_click=lambda _: self.page.run_task(self._sniff_copy_image),
+        )
+        favorite_button = ft.FilledTonalButton(
+            "收藏",
+            icon=ft.Icons.BOOKMARK_ADD,
+            disabled=True,
+            on_click=lambda _: self._sniff_collect_selected(),
+        )
+        copy_file_button = ft.FilledTonalButton(
+            "复制文件",
+            icon=ft.Icons.FOLDER_COPY,
+            disabled=True,
+            on_click=lambda _: self.page.run_task(self._sniff_copy_files),
+        )
+        copy_link_button = ft.FilledTonalButton(
+            "复制链接",
+            icon=ft.Icons.LINK,
+            disabled=True,
+            on_click=lambda _: self._sniff_copy_links(),
+        )
+        download_button = ft.FilledTonalButton(
+            "下载",
+            icon=ft.Icons.DOWNLOAD,
+            disabled=True,
+            on_click=lambda _: self.page.run_task(self._sniff_download),
+        )
+        save_as_button = ft.FilledTonalButton(
+            "另存为",
+            icon=ft.Icons.SAVE_ALT,
+            disabled=True,
+            on_click=lambda _: self._sniff_request_save_as(),
+        )
+
+        self._sniff_action_buttons = {
+            "wallpaper": set_wallpaper_button,
+            "copy_image": copy_image_button,
+            "favorite": favorite_button,
+            "copy_file": copy_file_button,
+            "copy_link": copy_link_button,
+            "download": download_button,
+            "save_as": save_as_button,
+        }
+
+        self._sniff_selection_text = ft.Text(
+            "未选择图片",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+
+        actions_row = ft.Row(
+            [
+                set_wallpaper_button,
+                favorite_button,
+                copy_image_button,
+                copy_file_button,
+                copy_link_button,
+                download_button,
+                save_as_button,
+            ],
+            spacing=8,
+            wrap=True,
+            run_spacing=8,
+        )
+
+        self._sniff_grid = ft.GridView(
+            expand=True,
+            max_extent=220,
+            child_aspect_ratio=1,
+            spacing=12,
+            run_spacing=12,
+        )
+
+        self._sniff_empty_placeholder = ft.Container(
+            expand=True,
+            alignment=ft.alignment.center,
+            content=ft.Column(
+                [
+                    ft.Icon(ft.Icons.IMAGE_SEARCH, size=72, color=ft.Colors.OUTLINE),
+                    ft.Text("暂无图片，请输入链接后开始嗅探。", size=13, color=ft.Colors.GREY),
+                ],
+                spacing=12,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+        )
+
+        content_stack = ft.Stack(
+            controls=[self._sniff_empty_placeholder, self._sniff_grid],
+            expand=True,
+        )
+
+        body = ft.Column(
             [
                 ft.Text("嗅探", size=30),
-                ft.Text("嗅探功能正在开发中，敬请期待~"),
+                ft.Text(
+                    "输入网页链接获取其中的图片，支持单选与多选操作。",
+                    size=12,
+                    color=ft.Colors.GREY,
+                ),
+                header_row,
+                status_row,
+                self._sniff_task_container,
+                ft.Row([self._sniff_selection_text], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                actions_row,
+                ft.Divider(),
+                content_stack,
+            ],
+            spacing=12,
+            expand=True,
+        )
+
+        self._sniff_update_actions()
+        self._sniff_update_placeholder_visibility()
+
+        return ft.Container(body, expand=True, padding=16)
+
+    # -----------------------------
+    # 嗅探功能实现
+    # -----------------------------
+    def _ensure_sniff_save_picker(self) -> None:
+        if self._sniff_save_picker is None:
+            self._sniff_save_picker = ft.FilePicker(
+                on_result=self._handle_sniff_directory_result
+            )
+        if self._sniff_save_picker not in self.page.overlay:
+            self.page.overlay.append(self._sniff_save_picker)
+            self.page.update()
+
+    def _sniff_update_placeholder_visibility(self) -> None:
+        has_images = bool(self._sniff_images)
+        if self._sniff_empty_placeholder is not None:
+            self._sniff_empty_placeholder.visible = not has_images
+            if self._sniff_empty_placeholder.page is not None:
+                self._sniff_empty_placeholder.update()
+        if self._sniff_grid is not None:
+            self._sniff_grid.visible = has_images
+            if self._sniff_grid.page is not None:
+                self._sniff_grid.update()
+
+    def _sniff_update_actions(self) -> None:
+        count = len(self._sniff_selected_ids)
+        for key, control in self._sniff_action_buttons.items():
+            if self._sniff_actions_busy:
+                control.disabled = True
+            elif key in {"wallpaper", "copy_image"}:
+                control.disabled = count != 1
+            else:
+                control.disabled = count == 0
+            if control.page is not None:
+                control.update()
+        if self._sniff_selection_text is not None:
+            self._sniff_selection_text.value = (
+                "未选择图片" if count == 0 else f"已选择 {count} 张图片"
+            )
+            if self._sniff_selection_text.page is not None:
+                self._sniff_selection_text.update()
+
+    def _sniff_update_task_controls(self) -> None:
+        for ctrl in (
+            self._sniff_task_text,
+            self._sniff_task_bar,
+            self._sniff_task_container,
+        ):
+            if ctrl is not None and ctrl.page is not None:
+                ctrl.update()
+
+    def _sniff_set_actions_enabled(self, enabled: bool) -> None:
+        self._sniff_actions_busy = not enabled
+        if self._sniff_fetch_button is not None:
+            self._sniff_fetch_button.disabled = not enabled
+            if self._sniff_fetch_button.page is not None:
+                self._sniff_fetch_button.update()
+        self._sniff_update_actions()
+
+    def _sniff_task_start(self, message: str) -> None:
+        self._sniff_set_actions_enabled(False)
+        if self._sniff_task_text is not None:
+            self._sniff_task_text.value = message
+        if self._sniff_task_bar is not None:
+            self._sniff_task_bar.value = None
+        if self._sniff_task_container is not None:
+            self._sniff_task_container.visible = True
+        self._sniff_update_task_controls()
+
+    def _sniff_task_finish(self, message: str | None = None) -> None:
+        if self._sniff_task_text is not None and message:
+            self._sniff_task_text.value = message
+        if self._sniff_task_bar is not None:
+            self._sniff_task_bar.value = 0
+        if self._sniff_task_container is not None:
+            self._sniff_task_container.visible = False
+        self._sniff_set_actions_enabled(True)
+        self._sniff_update_task_controls()
+
+    def _sniff_reset(self, *, clear_url: bool = True) -> None:
+        self._sniff_images.clear()
+        self._sniff_image_index.clear()
+        self._sniff_selected_ids.clear()
+        if clear_url and self._sniff_url_field is not None:
+            self._sniff_url_field.value = ""
+            if self._sniff_url_field.page is not None:
+                self._sniff_url_field.update()
+        if self._sniff_status_text is not None:
+            self._sniff_status_text.value = "请输入链接并点击开始嗅探。"
+            if self._sniff_status_text.page is not None:
+                self._sniff_status_text.update()
+        if self._sniff_grid is not None:
+            self._sniff_grid.controls.clear()
+            if self._sniff_grid.page is not None:
+                self._sniff_grid.update()
+        if self._sniff_task_container is not None:
+            self._sniff_task_container.visible = False
+        if self._sniff_task_bar is not None:
+            self._sniff_task_bar.value = 0
+        self._sniff_update_task_controls()
+        self._sniff_update_actions()
+        self._sniff_update_placeholder_visibility()
+
+    def _sniff_set_loading(self, loading: bool, message: str | None = None) -> None:
+        if self._sniff_progress is not None:
+            self._sniff_progress.visible = loading
+            if self._sniff_progress.page is not None:
+                self._sniff_progress.update()
+        if self._sniff_fetch_button is not None:
+            self._sniff_fetch_button.disabled = loading
+            if self._sniff_fetch_button.page is not None:
+                self._sniff_fetch_button.update()
+        if message and self._sniff_status_text is not None:
+            self._sniff_status_text.value = message
+            if self._sniff_status_text.page is not None:
+                self._sniff_status_text.update()
+
+    async def _sniff_start(self) -> None:
+        url = (self._sniff_url_field.value.strip() if self._sniff_url_field else "")
+        if not url:
+            self._show_snackbar("请输入有效的链接。", error=True)
+            return
+        self._sniff_set_loading(True, "正在嗅探图片…")
+        try:
+            images = await self._sniff_service.sniff(url)
+        except SniffServiceError as exc:
+            logger.warning("嗅探失败: {}", exc)
+            if self._sniff_status_text is not None:
+                self._sniff_status_text.value = str(exc)
+                if self._sniff_status_text.page is not None:
+                    self._sniff_status_text.update()
+            self._show_snackbar(str(exc), error=True)
+            return
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error("嗅探意外失败: {}", exc)
+            if self._sniff_status_text is not None:
+                self._sniff_status_text.value = "嗅探失败，请稍后重试。"
+                if self._sniff_status_text.page is not None:
+                    self._sniff_status_text.update()
+            self._show_snackbar("嗅探失败，请稍后重试。", error=True)
+            return
+        finally:
+            self._sniff_set_loading(False)
+
+        self._sniff_images = list(images)
+        self._sniff_image_index = {image.id: image for image in images}
+        self._sniff_selected_ids.clear()
+        self._sniff_source_url = url
+
+        if self._sniff_status_text is not None:
+            if images:
+                self._sniff_status_text.value = f"共发现 {len(images)} 张图片"
+            else:
+                self._sniff_status_text.value = "未找到可用图片，尝试其他链接。"
+            if self._sniff_status_text.page is not None:
+                self._sniff_status_text.update()
+
+        self._sniff_render_grid()
+        self._sniff_update_actions()
+        self._sniff_update_placeholder_visibility()
+        if not images:
+            self._show_snackbar("未发现图片，请检查链接。")
+
+    def _sniff_render_grid(self) -> None:
+        if self._sniff_grid is None:
+            return
+        self._sniff_grid.controls.clear()
+        for image in self._sniff_images:
+            self._sniff_grid.controls.append(self._sniff_build_tile(image))
+        if self._sniff_grid.page is not None:
+            self._sniff_grid.update()
+
+    def _sniff_build_tile(self, image: SniffedImage) -> ft.Control:
+        selected = image.id in self._sniff_selected_ids
+        border_color = (
+            ft.Colors.PRIMARY if selected else ft.Colors.OUTLINE_VARIANT
+        )
+        border_width = 3 if selected else 1
+
+        image_control = ft.Image(
+            src=image.url,
+            fit=ft.ImageFit.COVER,
+            expand=True,
+        )
+
+        check_badge = ft.Container(
+            width=28,
+            height=28,
+            border_radius=20,
+            bgcolor=ft.Colors.PRIMARY,
+            alignment=ft.alignment.center,
+            content=ft.Icon(ft.Icons.CHECK, size=18, color=ft.Colors.WHITE),
+            visible=selected,
+        )
+
+        stack = ft.Stack(
+            controls=
+            [
+                image_control,
+                ft.Container(alignment=ft.alignment.top_right, padding=8, content=check_badge),
             ],
             expand=True,
         )
 
+        return ft.Container(
+            content=stack,
+            border=ft.border.all(border_width, border_color),
+            border_radius=12,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            tooltip=f"{image.filename}\n{image.url}",
+            on_click=lambda _: self._sniff_toggle_selection(image.id),
+        )
+
+    def _sniff_toggle_selection(self, image_id: str) -> None:
+        if image_id in self._sniff_selected_ids:
+            self._sniff_selected_ids.remove(image_id)
+        else:
+            self._sniff_selected_ids.add(image_id)
+        self._sniff_render_grid()
+        self._sniff_update_actions()
+
+    def _sniff_get_selected_images(self) -> list[SniffedImage]:
+        return [
+            self._sniff_image_index[image_id]
+            for image_id in self._sniff_selected_ids
+            if image_id in self._sniff_image_index
+        ]
+
+    async def _sniff_set_wallpaper(self) -> None:
+        images = self._sniff_get_selected_images()
+        if len(images) != 1:
+            self._show_snackbar("请选择一张图片。", error=True)
+            return
+        image = images[0]
+        self._sniff_task_start("正在设置壁纸…")
+        try:
+            cached_path = await self._sniff_service.ensure_cached(image)
+            await asyncio.to_thread(ltwapi.set_wallpaper, str(cached_path))
+        except Exception as exc:
+            logger.error("设为壁纸失败: {}", exc)
+            self._show_snackbar("设为壁纸失败，请查看日志。", error=True)
+        else:
+            self._show_snackbar("已设置为壁纸。")
+        finally:
+            self._sniff_task_finish()
+
+    def _sniff_collect_selected(self) -> None:
+        images = self._sniff_get_selected_images()
+        if not images:
+            self._show_snackbar("请先选择图片。", error=True)
+            return
+        if len(images) == 1:
+            payload = self._sniff_make_favorite_payload(images[0])
+            if not payload:
+                self._show_snackbar("无法添加收藏。", error=True)
+                return
+            self._open_favorite_editor(payload)
+            return
+        self._sniff_open_batch_favorite_dialog(images)
+
+    def _sniff_make_favorite_payload(self, image: SniffedImage) -> Dict[str, Any]:
+        favorite_source = FavoriteSource(
+            type="sniff",
+            identifier=image.id,
+            title=image.filename,
+            url=image.url,
+            preview_url=image.url,
+            extra={"source_url": self._sniff_source_url},
+        )
+        default_folder = (
+            self._favorite_selected_folder
+            if self._favorite_selected_folder not in {"__all__", "__default__"}
+            else "default"
+        )
+        return {
+            "folder_id": default_folder,
+            "title": image.filename,
+            "description": "",
+            "tags": ["sniff"],
+            "source": favorite_source,
+            "preview_url": image.url,
+            "extra": {"url": image.url, "from": "sniff", "source_url": self._sniff_source_url},
+        }
+
+    def _sniff_open_batch_favorite_dialog(self, images: Sequence[SniffedImage]) -> None:
+        folders = self._favorite_folders()
+        if not folders:
+            self._show_snackbar("暂无可用的收藏夹，请先创建一个。", error=True)
+            return
+
+        initial_folder = self._favorite_selected_folder
+        if initial_folder in {None, "__all__", "__default__"}:
+            initial_folder = folders[0].id if folders else "default"
+
+        folder_dropdown = ft.Dropdown(
+            label="收藏夹",
+            value=initial_folder,
+            expand=True,
+        )
+
+        def _refresh_dropdown(selected: str | None = None) -> None:
+            folder_dropdown.options = [
+                ft.DropdownOption(key=folder.id, text=folder.name) for folder in self._favorite_folders()
+            ] or [ft.DropdownOption(key="default", text="默认收藏夹")]
+            new_value = selected or folder_dropdown.value
+            option_keys = {opt.key for opt in folder_dropdown.options}
+            folder_dropdown.value = new_value if new_value in option_keys else next(iter(option_keys), "default")
+            if folder_dropdown.page is not None:
+                folder_dropdown.update()
+
+        def _create_folder(_: ft.ControlEvent | None = None) -> None:
+            self._open_new_folder_dialog(on_created=lambda folder: _refresh_dropdown(folder.id))
+
+        _refresh_dropdown(initial_folder)
+
+        status_text = ft.Text(f"将添加 {len(images)} 张图片到收藏。", size=12, color=ft.Colors.GREY)
+
+        def _submit(_: ft.ControlEvent | None = None) -> None:
+            target_folder = folder_dropdown.value or "default"
+            created_count = 0
+            try:
+                for image in images:
+                    payload = self._sniff_make_favorite_payload(image)
+                    payload["folder_id"] = target_folder
+                    item, created = self._favorite_manager.add_or_update_item(
+                        folder_id=payload["folder_id"],
+                        title=payload.get("title", image.filename),
+                        description=payload.get("description", ""),
+                        tags=payload.get("tags", []),
+                        source=payload.get("source"),
+                        preview_url=payload.get("preview_url"),
+                        local_path=payload.get("local_path"),
+                        extra=payload.get("extra"),
+                        merge_tags=True,
+                    )
+                    if created:
+                        created_count += 1
+                    self._schedule_favorite_classification(item.id)
+            except Exception as exc:
+                logger.error("批量收藏失败: {}", exc)
+                self._show_snackbar("收藏失败，请查看日志。", error=True)
+                return
+
+            self._favorite_selected_folder = target_folder
+            self._close_dialog()
+            if created_count and created_count != len(images):
+                self._show_snackbar(
+                    f"已收藏 {len(images)} 张图片，其中 {created_count} 张为新项目。"
+                )
+            else:
+                self._show_snackbar(f"已收藏 {len(images)} 张图片。")
+            self._refresh_favorite_tabs()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("批量收藏"),
+            content=ft.Container(
+                width=360,
+                content=ft.Column(
+                    [
+                        status_text,
+                        ft.Row(
+                            [
+                                folder_dropdown,
+                                ft.IconButton(
+                                    icon=ft.Icons.CREATE_NEW_FOLDER,
+                                    tooltip="新建收藏夹",
+                                    on_click=_create_folder,
+                                ),
+                            ],
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.END,
+                        ),
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
+                ft.FilledButton("收藏", icon=ft.Icons.CHECK, on_click=_submit),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self._open_dialog(dialog)
+
+    async def _sniff_copy_image(self) -> None:
+        images = self._sniff_get_selected_images()
+        if len(images) != 1:
+            self._show_snackbar("请选择一张图片。", error=True)
+            return
+        try:
+            cached_path = await self._sniff_service.ensure_cached(images[0])
+            success = await asyncio.to_thread(copy_image_to_clipboard, cached_path)
+        except Exception as exc:
+            logger.error("复制图片失败: {}", exc)
+            self._show_snackbar("复制图片失败。", error=True)
+            return
+        if success:
+            self._show_snackbar("图片已复制到剪贴板。")
+        else:
+            self._show_snackbar("复制图片失败。", error=True)
+
+    async def _sniff_copy_files(self) -> None:
+        images = self._sniff_get_selected_images()
+        if not images:
+            self._show_snackbar("请先选择图片。", error=True)
+            return
+        self._sniff_task_start("正在复制文件…")
+        try:
+            cached_paths = await asyncio.gather(
+                *[self._sniff_service.ensure_cached(image) for image in images]
+            )
+            path_strings = [str(path) for path in cached_paths]
+            success = await asyncio.to_thread(copy_files_to_clipboard, path_strings)
+        except Exception as exc:
+            logger.error("复制文件失败: {}", exc)
+            self._show_snackbar("复制文件失败。", error=True)
+        else:
+            if success:
+                self._show_snackbar("文件已复制到剪贴板。")
+            else:
+                self._show_snackbar("复制文件失败。", error=True)
+        finally:
+            self._sniff_task_finish()
+
+    def _sniff_copy_links(self) -> None:
+        images = self._sniff_get_selected_images()
+        if not images:
+            self._show_snackbar("请先选择图片。", error=True)
+            return
+        links = ",".join(image.url for image in images) if len(images) > 1 else images[0].url
+        try:
+            pyperclip.copy(links)
+        except pyperclip.PyperclipException as exc:  # pragma: no cover - platform specific
+            logger.error("复制链接失败: {}", exc)
+            self._show_snackbar("复制链接失败。", error=True)
+            return
+        self._show_snackbar("链接已复制。")
+
+    async def _sniff_download(self) -> None:
+        images = self._sniff_get_selected_images()
+        if not images:
+            self._show_snackbar("请先选择图片。", error=True)
+            return
+        download_dir = app_config.get("storage.download_directory")
+        if not download_dir:
+            self._show_snackbar("尚未配置下载目录。", error=True)
+            return
+        base_dir = Path(download_dir).expanduser()
+        if len(images) > 1:
+            folder_name = time.strftime("sniff-%Y%m%d-%H%M%S")
+            target_dir = base_dir / folder_name
+        else:
+            target_dir = base_dir
+        self._sniff_task_start("正在下载图片…")
+        try:
+            paths = await self._sniff_service.download_many(images, target_dir)
+        except Exception as exc:
+            logger.error("下载失败: {}", exc)
+            self._show_snackbar("下载失败，请查看日志。", error=True)
+        else:
+            if paths:
+                if len(paths) == 1:
+                    self._show_snackbar(f"已下载到 {paths[0]}")
+                else:
+                    self._show_snackbar(f"已下载 {len(paths)} 张图片。")
+            else:
+                self._show_snackbar("下载失败，请重试。", error=True)
+        finally:
+            self._sniff_task_finish()
+
+    def _sniff_request_save_as(self) -> None:
+        images = self._sniff_get_selected_images()
+        if not images:
+            self._show_snackbar("请先选择图片。", error=True)
+            return
+        if self._sniff_save_picker is None:
+            self._ensure_sniff_save_picker()
+        self._sniff_pending_save_ids = {image.id for image in images}
+        if self._sniff_save_picker is not None:
+            self._sniff_save_picker.get_directory_path()
+
+    def _handle_sniff_directory_result(
+        self, event: ft.FilePickerResultEvent
+    ) -> None:
+        pending = self._sniff_pending_save_ids
+        self._sniff_pending_save_ids = None
+        if not pending:
+            return
+        if not event.path:
+            return
+        selected = [
+            self._sniff_image_index[image_id]
+            for image_id in pending
+            if image_id in self._sniff_image_index
+        ]
+        if not selected:
+            return
+        target_dir = Path(event.path)
+        self.page.run_task(self._sniff_save_to_directory, target_dir, selected)
+
+    async def _sniff_save_to_directory(
+        self, directory: Path, images: Sequence[SniffedImage]
+    ) -> None:
+        self._sniff_task_start("正在保存图片…")
+        try:
+            paths = await self._sniff_service.download_many(images, directory)
+        except Exception as exc:
+            logger.error("另存为失败: {}", exc)
+            self._show_snackbar("另存为失败，请查看日志。", error=True)
+        else:
+            if paths:
+                self._show_snackbar(f"已保存 {len(paths)} 张图片。")
+            else:
+                self._show_snackbar("未保存任何图片。", error=True)
+        finally:
+            self._sniff_task_finish()
+
+    def _favorite_loading_placeholder(self) -> ft.Control:
+        logger.warning("显示收藏页加载占位符")
+        return ft.Container(
+            expand=True,
+            alignment=ft.alignment.center,
+            content=ft.Column(
+                [
+                    ft.ProgressRing(width=56, height=56, stroke_width=4),
+                    ft.Text("正在准备收藏页…", size=13, color=ft.Colors.GREY),
+                ],
+                spacing=16,
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                tight=True,
+            ),
+        )
+
     def _build_favorite(self):
+        holder = ft.Container(expand=True)
+        self._favorite_view_holder = holder
+        holder.content = self._favorite_loading_placeholder()
+        self._start_favorite_initialization()
+        return holder
+
+    def show_favorite_loading(self) -> None:
+        if self._favorite_view_holder is None:
+            return
+        self._favorite_view_holder.content = self._favorite_loading_placeholder()
+        if self._favorite_view_holder.page is not None:
+            self._favorite_view_holder.update()
+        overlay = self._favorite_loading_overlay
+        if overlay is not None:
+            overlay.visible = False
+            if overlay.page is not None:
+                overlay.update()
+        self._favorite_view_loading = False
+        self._start_favorite_initialization()
+
+    def _start_favorite_initialization(self) -> None:
+        if self._favorite_view_loading:
+            return
+        self._favorite_view_loading = True
+
+        async def _runner() -> None:
+            try:
+                await asyncio.sleep(0)
+                await self._initialize_favorite_view()
+            finally:
+                self._favorite_view_loading = False
+                overlay = self._favorite_loading_overlay
+                if overlay is not None:
+                    overlay.visible = False
+                    if overlay.page is not None:
+                        overlay.update()
+
+        if self.page is not None:
+            self.page.run_task(_runner)
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(_runner())
+        else:
+            loop.create_task(_runner())
+
+    async def _initialize_favorite_view(self) -> None:
+        if self._favorite_view_cache is None:
+            view = self._create_favorite_view()
+            self._favorite_view_cache = view
+        else:
+            view = self._favorite_view_cache
+            await asyncio.sleep(0)
+
+        if self._favorite_view_holder is not None:
+            self._favorite_view_holder.content = view
+            if self._favorite_view_holder.page is not None:
+                self._favorite_view_holder.update()
+        if self._favorite_loading_overlay is not None:
+            self._favorite_loading_overlay.visible = False
+            if self._favorite_loading_overlay.page is not None:
+                self._favorite_loading_overlay.update()
+        if self.page is not None:
+            self.page.update()
+
+    def _create_favorite_view(self):
         self._favorite_tabs = ft.Tabs(
             animation_duration=300,
             expand=True,
             on_change=self._on_favorite_tab_change,
+        )
+        self._favorite_tabs_container = ft.Container(self._favorite_tabs, expand=True)
+        overlay_surface = getattr(ft.Colors, "SURFACE_VARIANT", ft.Colors.SURFACE)
+        self._favorite_loading_overlay = ft.Container(
+            visible=False,
+            expand=True,
+            bgcolor=ft.Colors.with_opacity(0.06, overlay_surface),
+            alignment=ft.alignment.center,
+            content=ft.Column(
+                [
+                    ft.ProgressRing(width=48, height=48, stroke_width=4),
+                    ft.Text("正在刷新收藏内容…", size=12, color=ft.Colors.GREY),
+                ],
+                spacing=16,
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+        favorite_body_stack = ft.Stack(
+            controls=[
+                self._favorite_tabs_container,
+                self._favorite_loading_overlay,
+            ],
+            expand=True,
         )
 
         self._favorite_edit_folder_button = ft.IconButton(
@@ -8519,7 +9989,7 @@ class Pages:
                         color=ft.Colors.GREY,
                     ),
                     ft.Container(toolbar, padding=ft.Padding(0, 12, 0, 12)),
-                    ft.Container(self._favorite_tabs, expand=True),
+                    favorite_body_stack,
                 ],
                 spacing=8,
                 expand=True,
@@ -9475,22 +10945,22 @@ class Pages:
             text_align=ft.TextAlign.CENTER,
         )
         enter_button = ft.Button(
-            text=f"{countdown_seconds} 秒后可进入首页",
-            icon=ft.Icons.HOME,
+            text=f"{countdown_seconds} 秒后可继续",
+            icon=ft.Icons.NAVIGATE_NEXT,
             disabled=True,
-            on_click=lambda _: self.page.go("/"),
+            on_click=lambda _: self.page.go(self._test_warning_next_route),
         )
 
         async def _count_down():
             remaining = countdown_seconds
             while remaining > 0:
-                enter_button.text = f"{remaining} 秒后可进入首页"
+                enter_button.text = f"{remaining} 秒后可继续"
                 countdown_hint.value = f"请认真阅读提示，{remaining} 秒后可继续。"
                 self.page.update()
                 await asyncio.sleep(1)
                 remaining -= 1
-            enter_button.text = "进入首页"
-            countdown_hint.value = "已确认提示，现在可以返回首页。"
+            enter_button.text = "进入下一步"
+            countdown_hint.value = "已确认提示，现在可以继续。"
             enter_button.disabled = False
             self.page.update()
 
@@ -9528,30 +10998,208 @@ class Pages:
         )
     def build_first_run_page(self):
 
+        tips = ft.Column(
+            [
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=ft.Colors.PRIMARY),
+                        ft.Text("确认系统壁纸权限已授予，以确保自动更换生效。"),
+                    ],
+                    spacing=16,
+                    tight=True,
+                    alignment=ft.MainAxisAlignment.START,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.IMAGE_SEARCH, color=ft.Colors.PRIMARY),
+                        ft.Text("浏览“资源”页挑选壁纸源，或从本地导入自定义源。"),
+                    ],
+                    spacing=16,
+                    tight=True,
+                    alignment=ft.MainAxisAlignment.START,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.STAR_BORDER, color=ft.Colors.PRIMARY),
+                        ft.Text("在“收藏”页整理你喜欢的壁纸，快速查找。"),
+                    ],
+                    spacing=16,
+                    tight=True,
+                    alignment=ft.MainAxisAlignment.START,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ],
+            spacing=18,
+            tight=True,
+        )
+
+        buttons = ft.Row(
+            [
+                ft.TextButton(
+                    "跳过本次引导",
+                    on_click=lambda _: self.finish_first_run(show_feedback=False),
+                ),
+                ft.FilledButton(
+                    "完成并开始使用",
+                    icon=ft.Icons.CHECK_CIRCLE,
+                    on_click=lambda _: self.finish_first_run(show_feedback=True),
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        )
+
+        status_text = "首次运行向导" if self._first_run_pending else "再次查看首次运行指引"
+
         return ft.View(
             "/first-run",
             [
                 ft.AppBar(
-                    title=ft.Text("首次运行"),
-                    leading=ft.Icon(ft.Icons.WARNING),
+                    title=ft.Text(status_text),
+                    leading=ft.Icon(ft.Icons.FLAG),
                     bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
                 ),
                 ft.Container(
                     ft.Column(
                         [
-                            ft.Column([]),
-                            ft.Row(
-                                [
-                                    ft.Text("欢迎使用小树壁纸 Next！"),
-                                    ft.TextButton("跳过引导",on_click=lambda _:self.page.go("/"))
-                                ],
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+                            ft.Text(
+                                "欢迎使用小树壁纸 Next！",
+                                size=26,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                            ft.Text(
+
+                                "我们为你准备了几个快速提示，帮助你快速了解主要功能。",
+                                size=14,
+                                color=ft.Colors.GREY,
+                            ),
+                            ft.Divider(opacity=0),
+                            tips,
+                            ft.Container(
+                                ft.Column(
+                                    [
+                                        ft.Text(
+                                            f"当前版本：{BUILD_VERSION}",
+                                            size=12,
+                                            color=ft.Colors.GREY,
+                                        ),
+                                        ft.Text(
+                                            "如果稍后需要再次查看，可以从“测试和调试”页打开此页面。",
+                                            size=12,
+                                            color=ft.Colors.GREY,
+                                        ),
+                                    ],
+                                    spacing=4,
+                                ),
+                                padding=ft.padding.only(top=12, bottom=24),
+                            ),
+                            buttons,
                         ],
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        spacing=18,
+                        expand=True,
                     ),
                     alignment=ft.alignment.center,
-                    padding=50,
+                    padding=ft.padding.all(32),
                     expand=True,
+                ),
+            ],
+        )
+
+    def build_conflict_warning_page(self) -> ft.View:
+        conflicts = list(self._startup_conflicts)
+        has_conflict = bool(conflicts)
+
+        title_text = (
+            "检测到同类软件正在运行"
+            if has_conflict
+            else "未检测到同类壁纸软件"
+        )
+        description_text = (
+            "下列应用可能会干扰小树壁纸Next的功能，请考虑先关闭它们，或忽略继续使用。"
+            if has_conflict
+            else "当前没有检测到潜在冲突，可以直接继续使用应用。"
+        )
+
+        conflict_cards: list[ft.Control] = []
+        if has_conflict:
+            for entry in conflicts:
+                process_rows = [
+                    ft.Text(f"- {proc}", selectable=True) for proc in entry.processes
+                ]
+                card_elements: list[ft.Control] = [
+                    ft.Text(
+                        entry.title,
+                        size=20,
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    ft.Column(process_rows, spacing=4, tight=True),
+                ]
+                if entry.note:
+                    card_elements.append(
+                        ft.Text(
+                            entry.note,
+                            color=ft.Colors.SECONDARY,
+                            size=12,
+                        )
+                    )
+                conflict_cards.append(
+                    ft.Card(
+                        content=ft.Container(
+                            ft.Column(card_elements, spacing=8, tight=True),
+                            padding=20,
+                        )
+                    )
+                )
+
+        continue_button_label = "忽略并继续" if has_conflict else "继续"
+
+        content_column_children: list[ft.Control] = [
+            ft.Text(
+                title_text,
+                size=26,
+                weight=ft.FontWeight.BOLD,
+                text_align=ft.TextAlign.CENTER,
+            ),
+            ft.Text(
+                description_text,
+                text_align=ft.TextAlign.CENTER,
+                size=14,
+            ),
+        ]
+        content_column_children.extend(conflict_cards)
+        content_column_children.append(
+            ft.Row(
+                [
+                    ft.FilledButton(
+                        continue_button_label,
+                        icon=ft.Icons.CHECK_CIRCLE,
+                        on_click=lambda _: self.page.go(self._conflict_next_route),
+                    )
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+            )
+        )
+
+        return ft.View(
+            "/conflict-warning",
+            [
+                ft.AppBar(
+                    title=ft.Text("冲突提示"),
+                    leading=ft.Icon(ft.Icons.WARNING_AMBER),
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                ),
+                ft.Container(
+                    ft.Column(
+                        content_column_children,
+                        spacing=20,
+                        alignment=ft.MainAxisAlignment.START,
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        tight=True,
+                    ),
+                    expand=True,
+                    padding=ft.padding.symmetric(horizontal=40, vertical=32),
+                    alignment=ft.alignment.center,
                 ),
             ],
         )

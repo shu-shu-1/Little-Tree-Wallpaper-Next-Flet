@@ -12,7 +12,7 @@ from loguru import logger
 
 import ltwapi
 
-from .constants import BUILD_VERSION, MODE
+from .constants import BUILD_VERSION, MODE, FIRST_RUN_MARKER_VERSION
 from .paths import (
     CACHE_DIR,
     CONFIG_DIR,
@@ -49,6 +49,8 @@ from .ui_utils import build_watermark
 from .settings import SettingsStore
 from .theme import ThemeManager
 from .tray import TrayIcon
+from .first_run import should_show_first_run
+from .conflicts import StartupConflict, detect_conflicts
 
 app_config = SettingsStore()
 
@@ -147,6 +149,8 @@ class Application:
         self._ipc_plugin_subscriptions: Dict[str, Set[str]] = {}
         self._reload_required = False
         self._start_hidden = start_hidden
+        self._first_run_pending = False
+        self._startup_conflicts: list[StartupConflict] = []
 
     def __call__(self, page: ft.Page) -> None:
         self._page = page
@@ -279,7 +283,14 @@ class Application:
             page.add(ft.Text("未发现可用插件"))
             return
 
-        base_metadata = {"app_version": BUILD_VERSION}
+        self._first_run_pending = should_show_first_run(FIRST_RUN_MARKER_VERSION)
+        self._startup_conflicts = detect_conflicts()
+        base_metadata = {
+            "app_version": BUILD_VERSION,
+            "first_run_pending": self._first_run_pending,
+            "first_run_required_version": FIRST_RUN_MARKER_VERSION,
+        }
+        base_metadata["startup_conflicts"] = tuple(self._startup_conflicts)
 
         def build_context(plugin: Plugin, manifest: PluginManifest) -> PluginContext:
             if manifest is None:
@@ -425,7 +436,16 @@ class Application:
 
         def on_nav_change(e: ft.ControlEvent) -> None:
             selected_index = e.control.selected_index
-            content_container.content = navigation_views[selected_index].content
+            selected_view = navigation_views[selected_index]
+            if (
+                selected_view.id == "favorite"
+                and getattr(self, "_core_pages", None) is not None
+            ):
+                try:
+                    self._core_pages.show_favorite_loading()
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.warning("刷新收藏页占位符失败: {error}", error=str(exc))
+            content_container.content = selected_view.content
             page.update()
 
         navigation_rail = ft.NavigationRail(
