@@ -192,7 +192,7 @@ class CorePlugin(Plugin):
         initial_route = startup_sequence[0] if startup_sequence else "/"
         context.set_initial_route(initial_route or "/")
 
-        context.add_startup_hook(lambda: pages.refresh_hitokoto())
+        context.add_startup_hook(lambda: pages.refresh_home_quote())
 
 
 PLUGIN = CorePlugin()

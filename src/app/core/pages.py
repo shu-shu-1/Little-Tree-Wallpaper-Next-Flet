@@ -34,9 +34,11 @@ import ltwapi
 from app.constants import (
     BUILD_VERSION,
     HITOKOTO_API,
+    HITOKOTO_CATEGORY_LABELS,
     SHOW_WATERMARK,
     VER,
     FIRST_RUN_MARKER_VERSION,
+    ZHAOYU_API_URL,
 )
 from app.paths import LICENSE_PATH, CACHE_DIR
 from app.favorites import (
@@ -159,6 +161,20 @@ class Pages:
         self._home_export_picker: Optional[ft.FilePicker] = None
         self._home_pending_export_source: Path | None = None
         self._home_change_button: ft.TextButton | None = None
+        self.home_quote_text: ft.Text | None = None
+        self.home_quote_loading: ft.ProgressRing | None = None
+        self._home_source_dropdown: ft.Dropdown | None = None
+        self._home_show_author_switch: ft.Switch | None = None
+        self._home_show_source_switch: ft.Switch | None = None
+        self._home_hitokoto_region_dropdown: ft.Dropdown | None = None
+        self._home_hitokoto_category_checks: dict[str, ft.Checkbox] = {}
+        self._home_hitokoto_section: ft.Container | None = None
+        self._home_zhaoyu_section: ft.Container | None = None
+        self._home_custom_section: ft.Container | None = None
+        self._home_custom_entries: list[dict[str, str]] = []
+        self._home_custom_entries_column: ft.GridView | None = None
+        self._home_custom_import_picker: ft.FilePicker | None = None
+        self._home_custom_export_picker: ft.FilePicker | None = None
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
         self.bing_wallpaper = None
         self.bing_wallpaper_url = None
@@ -222,7 +238,7 @@ class Pages:
         self._theme_list_handler = theme_list_handler
         self._theme_apply_handler = theme_apply_handler
         self._theme_profiles: list[Dict[str, Any]] = list(theme_profiles or [])
-        self._theme_cards_wrap: ft.Wrap | None = None
+        self._theme_cards_wrap: ft.Row | None = None
         self._theme_detail_dialog: ft.AlertDialog | None = None
         try:
             self._first_run_required_version = (
@@ -715,8 +731,23 @@ class Pages:
         schedule_section = self._build_auto_schedule_section()
         slideshow_section = self._build_auto_slideshow_section()
 
-        settings_container = ft.Container(
-            content=ft.Column(
+        # settings_container = ft.Container(
+        #     content=ft.Column(
+        #         [
+        #             ft.Text("自动更换", size=18, weight=ft.FontWeight.BOLD),
+        #             header_row,
+        #             interval_section,
+        #             schedule_section,
+        #             slideshow_section,
+        #         ],
+        #         spacing=16,
+        #         tight=True,
+        #     ),
+        #     bgcolor=self._bgcolor_surface_low,
+        #     border_radius=8,
+        #     padding=16,
+        # )
+        settings_column = ft.Column(
                 [
                     ft.Text("自动更换", size=18, weight=ft.FontWeight.BOLD),
                     header_row,
@@ -726,15 +757,12 @@ class Pages:
                 ],
                 spacing=16,
                 tight=True,
-            ),
-            bgcolor=self._bgcolor_surface_low,
-            border_radius=8,
-            padding=16,
-        )
+            )
+
 
         lists_section = self._build_auto_change_lists_section()
         wrapper = ft.Column(
-            [settings_container, lists_section],
+            [settings_column, lists_section],
             spacing=16,
             tight=True,
         )
@@ -4160,24 +4188,139 @@ class Pages:
 
         return "\n\n".join(parts) if parts else "暂无许可证信息"
 
-    async def _load_hitokoto(self):
+    def _home_settings_dict(self) -> dict[str, Any]:
+        data = app_config.get("home_page", {})
+        return data if isinstance(data, dict) else {}
+
+    def _home_subdict(self, key: str) -> dict[str, Any]:
+        settings = self._home_settings_dict()
+        value = settings.get(key)
+        return value if isinstance(value, dict) else {}
+
+    def _home_custom_items(self) -> list[dict[str, str]]:
+        custom = self._home_subdict("custom")
+        items = custom.get("items")
+        if not isinstance(items, list):
+            return []
+        result: list[dict[str, str]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or item.get("sentence") or "").strip()
+            author = str(item.get("author") or "").strip()
+            source = str(item.get("source") or item.get("from") or "").strip()
+            if text:
+                result.append({"text": text, "author": author, "source": source})
+        return result
+
+    async def _fetch_hitokoto_quote(self, settings: dict[str, Any]) -> dict[str, str]:
+        hitokoto_settings = settings.get("hitokoto")
+        if not isinstance(hitokoto_settings, dict):
+            hitokoto_settings = {}
+        region = str(hitokoto_settings.get("region") or "domestic").lower()
+        base_url = HITOKOTO_API[1] if region == "international" else HITOKOTO_API[0]
+        categories = hitokoto_settings.get("categories")
+        params: list[tuple[str, str]] = [("encode", "json")]
+        if isinstance(categories, list):
+            for code in categories:
+                code_str = str(code).strip()
+                if code_str:
+                    params.append(("c", code_str))
+        query = urlencode(params, doseq=True) if params else ""
+        url = f"{base_url}?{query}" if query else base_url
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                data = await response.json()
+        text = str(data.get("hitokoto") or "").strip()
+        author = str(
+            data.get("from_who")
+            or data.get("creator")
+            or data.get("author")
+            or ""
+        ).strip()
+        source = str(data.get("from") or data.get("origin") or "").strip()
+        if not text:
+            raise ValueError("Empty response from Hitokoto API")
+        return {"text": text, "author": author, "source": source}
+
+    async def _fetch_zhaoyu_quote(self, settings: dict[str, Any]) -> dict[str, str]:
+        zhaoyu_settings = settings.get("zhaoyu")
+        if not isinstance(zhaoyu_settings, dict):
+            zhaoyu_settings = {}
+        params: list[tuple[str, str]] = []
+        for key in ("catalog", "theme", "author"):
+            value = str(zhaoyu_settings.get(key) or "all").strip()
+            if value:
+                params.append((key, value))
+        params.append(("suffix", "json"))
+        base_url = ZHAOYU_API_URL.rstrip("/")
+        query = urlencode(params, doseq=True)
+        url = f"{base_url}?{query}" if query else base_url
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                data = await response.json()
+        payload = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid response structure from Zaoyu API")
+        text = str(payload.get("sentence") or payload.get("content") or "").strip()
+        if not text:
+            raise ValueError("Empty response from Zaoyu API")
+        author = str(payload.get("author") or "").strip()
+        source = str(
+            payload.get("name") or payload.get("catalog") or payload.get("src_url") or ""
+        ).strip()
+        return {"text": text, "author": author, "source": source}
+
+    def _pick_custom_quote(self, settings: dict[str, Any]) -> dict[str, str]:
+        items = self._home_custom_items()
+        if not items:
+            raise ValueError("No custom quotes configured")
+        return random.choice(items)
+
+    async def _load_home_quote_data(self) -> dict[str, str]:
+        settings = self._home_settings_dict()
+        source = str(settings.get("source") or "hitokoto").lower()
         try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(HITOKOTO_API[1]) as r:
-                    return (await r.json())["hitokoto"]
-        except Exception:
+            if source == "zhaoyu":
+                return await self._fetch_zhaoyu_quote(settings)
+            if source == "custom":
+                return self._pick_custom_quote(settings)
+            return await self._fetch_hitokoto_quote(settings)
+        except Exception as exc:
+            logger.error("获取主页语句失败: {error}", error=str(exc))
+            return {"text": "一言获取失败", "author": "", "source": ""}
+
+    def _format_home_quote(self, data: dict[str, Any]) -> str:
+        text = str(data.get("text") or "").strip()
+        if not text:
             return "一言获取失败"
+        display = f"「{text}」"
+        show_author = bool(app_config.get("home_page.show_author", True))
+        show_source = bool(app_config.get("home_page.show_source", True))
+        meta_parts: list[str] = []
+        author = str(data.get("author") or "").strip()
+        source = str(data.get("source") or "").strip()
+        if show_author and author:
+            meta_parts.append(author)
+        if show_source and source:
+            meta_parts.append(source)
+        if meta_parts:
+            display = f"{display}\n—— {' · '.join(meta_parts)}"
+        return display
 
-    async def _show_hitokoto(self):
-        self.hitokoto_text.value = ""
-        self.hitokoto_loading.visible = True
+    async def _show_home_quote(self):
+        if self.home_quote_text is None or self.home_quote_loading is None:
+            return
+        self.home_quote_text.value = ""
+        self.home_quote_loading.visible = True
         self.page.update()
-        self.hitokoto_text.value = f"「{await self._load_hitokoto()}」"
-        self.hitokoto_loading.visible = False
+        data = await self._load_home_quote_data()
+        self.home_quote_text.value = self._format_home_quote(data)
+        self.home_quote_loading.visible = False
         self.page.update()
 
-    def refresh_hitokoto(self, _=None):
-        self.page.run_task(self._show_hitokoto)
+    def refresh_home_quote(self, _=None):
+        self.page.run_task(self._show_home_quote)
 
     def _update_wallpaper(self):
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
@@ -4227,6 +4370,7 @@ class Pages:
         self._update_wallpaper()
         self.img.src = self.wallpaper_path or ""
         self.file_name.spans = [self._build_wallpaper_label_span()]
+        self.refresh_home_quote()
 
         self.page.update()
 
@@ -4407,10 +4551,12 @@ class Pages:
             tooltip="当前计算机的壁纸",
             error_content=ft.Container(ft.Text("图片已失效，请刷新数据~"), padding=20),
         )
-        self.hitokoto_loading = ft.ProgressRing(visible=False, width=24, height=24)
-        self.hitokoto_text = ft.Text("", size=16, font_family="HITOKOTOFont")
+        self.home_quote_loading = ft.ProgressRing(visible=False, width=24, height=24)
+        self.home_quote_text = ft.Text("", size=16, font_family="HITOKOTOFont")
         refresh_btn = ft.IconButton(
-            icon=ft.Icons.REFRESH, tooltip="刷新一言", on_click=self.refresh_hitokoto
+            icon=ft.Icons.REFRESH,
+            tooltip="刷新语句",
+            on_click=self.refresh_home_quote,
         )
         self._home_change_button = ft.TextButton(
             "更换",
@@ -4464,7 +4610,7 @@ class Pages:
                         margin=ft.margin.only(top=30),
                     ),
                     ft.Row(
-                        [self.hitokoto_loading, self.hitokoto_text, refresh_btn],
+                        [self.home_quote_loading, self.home_quote_text, refresh_btn],
                         alignment=ft.MainAxisAlignment.START,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
@@ -4473,6 +4619,447 @@ class Pages:
             ),
             expand=True,
             padding=16,
+        )
+
+    def _update_home_settings_visibility(self, source: str) -> None:
+        target = source.lower().strip()
+        if self._home_hitokoto_section is not None:
+            self._home_hitokoto_section.visible = target == "hitokoto"
+            self._home_hitokoto_section.update()
+        if self._home_zhaoyu_section is not None:
+            self._home_zhaoyu_section.visible = target == "zhaoyu"
+            self._home_zhaoyu_section.update()
+        if self._home_custom_section is not None:
+            self._home_custom_section.visible = target == "custom"
+            self._home_custom_section.update()
+
+    def _handle_home_source_change(self, e: ft.ControlEvent) -> None:
+        value = str(getattr(e.control, "value", "") or "hitokoto").lower()
+        if value not in {"hitokoto", "zhaoyu", "custom"}:
+            value = "hitokoto"
+        app_config.set("home_page.source", value)
+        if value == "zhaoyu":
+            app_config.set("home_page.zhaoyu.catalog", "all")
+            app_config.set("home_page.zhaoyu.theme", "all")
+            app_config.set("home_page.zhaoyu.author", "all")
+        self._update_home_settings_visibility(value)
+        self.refresh_home_quote()
+
+    def _handle_home_show_author_toggle(self, e: ft.ControlEvent) -> None:
+        value = bool(getattr(e.control, "value", False))
+        app_config.set("home_page.show_author", value)
+        self.refresh_home_quote()
+
+    def _handle_home_show_source_toggle(self, e: ft.ControlEvent) -> None:
+        value = bool(getattr(e.control, "value", False))
+        app_config.set("home_page.show_source", value)
+        self.refresh_home_quote()
+
+    def _handle_home_hitokoto_region_change(self, e: ft.ControlEvent) -> None:
+        value = str(getattr(e.control, "value", "") or "domestic").lower()
+        if value not in {"domestic", "international"}:
+            value = "domestic"
+        app_config.set("home_page.hitokoto.region", value)
+        if str(app_config.get("home_page.source", "hitokoto")).lower() == "hitokoto":
+            self.refresh_home_quote()
+
+    def _handle_home_hitokoto_category_change(self, category: str, selected: bool) -> None:
+        existing = app_config.get("home_page.hitokoto.categories", [])
+        values = [str(item).strip() for item in existing if isinstance(item, str) and item]
+        if selected and category not in values:
+            values.append(category)
+        elif not selected and category in values:
+            values.remove(category)
+        app_config.set("home_page.hitokoto.categories", values)
+        if str(app_config.get("home_page.source", "hitokoto")).lower() == "hitokoto":
+            self.refresh_home_quote()
+
+    def _build_home_custom_entry_row(self, index: int, item: dict[str, str]) -> ft.Control:
+        sentence_field = ft.TextField(
+            label=f"语句 {index + 1}",
+            value=item.get("text", ""),
+            multiline=True,
+            min_lines=1,
+            max_lines=3,
+            data={"index": index, "field": "text"},
+            on_change=self._handle_home_custom_entry_field_change,
+            expand=True,
+        )
+        author_field = ft.TextField(
+            label="作者（可选）",
+            value=item.get("author", ""),
+            data={"index": index, "field": "author"},
+            on_change=self._handle_home_custom_entry_field_change,
+            width=220,
+        )
+        source_field = ft.TextField(
+            label="来源（可选）",
+            value=item.get("source", ""),
+            data={"index": index, "field": "source"},
+            on_change=self._handle_home_custom_entry_field_change,
+            width=220,
+        )
+        remove_button = ft.IconButton(
+            icon=ft.Icons.DELETE_FOREVER,
+            tooltip="删除此语句",
+            on_click=lambda _=None, idx=index: self._handle_home_custom_remove_entry(idx),
+        )
+        return ft.Card(
+            content=ft.Container(
+                padding=16,
+                content=ft.Column(
+                    [
+                        sentence_field,
+                        ft.Row(
+                            [author_field, source_field],
+                            spacing=12,
+                            run_spacing=12,
+                            wrap=True,
+                        ),
+                        ft.Row(
+                            [remove_button],
+                            alignment=ft.MainAxisAlignment.END,
+                        ),
+                    ],
+                    spacing=12,
+                ),
+            )
+        )
+
+    def _refresh_home_custom_entries_ui(self) -> None:
+        if self._home_custom_entries_column is None:
+            return
+        controls: list[ft.Control] = []
+        if not self._home_custom_entries:
+            controls.append(
+                ft.Text(
+                    "暂无自定义语句。点击下方“新增语句”按钮进行添加。",
+                    size=12,
+                    color=ft.Colors.GREY,
+                )
+            )
+        else:
+            for idx, item in enumerate(self._home_custom_entries):
+                controls.append(self._build_home_custom_entry_row(idx, item))
+        self._home_custom_entries_column.controls = controls
+        if getattr(self._home_custom_entries_column, "page", None):
+            self._home_custom_entries_column.update()
+
+    def _handle_home_custom_add_entry(self, _: ft.ControlEvent | None = None) -> None:
+        self._home_custom_entries.append({"text": "", "author": "", "source": ""})
+        app_config.set("home_page.custom.items", copy.deepcopy(self._home_custom_entries))
+        self._refresh_home_custom_entries_ui()
+
+    def _handle_home_custom_remove_entry(self, index: int) -> None:
+        if 0 <= index < len(self._home_custom_entries):
+            self._home_custom_entries.pop(index)
+            app_config.set("home_page.custom.items", copy.deepcopy(self._home_custom_entries))
+            self._refresh_home_custom_entries_ui()
+            if str(app_config.get("home_page.source", "hitokoto")).lower() == "custom":
+                self.refresh_home_quote()
+
+    def _handle_home_custom_entry_field_change(self, e: ft.ControlEvent) -> None:
+        meta = getattr(e.control, "data", None)
+        if not isinstance(meta, dict):
+            return
+        index = meta.get("index")
+        field = meta.get("field")
+        if not isinstance(index, int) or field not in {"text", "author", "source"}:
+            return
+        if not (0 <= index < len(self._home_custom_entries)):
+            return
+        value = str(getattr(e.control, "value", "") or "")
+        self._home_custom_entries[index][field] = value
+        app_config.set("home_page.custom.items", copy.deepcopy(self._home_custom_entries))
+
+    def _ensure_home_custom_file_pickers(self) -> None:
+        changed = False
+        if self._home_custom_import_picker is None:
+            self._home_custom_import_picker = ft.FilePicker(
+                on_result=self._handle_home_custom_import_result
+            )
+            changed = True
+        if self._home_custom_export_picker is None:
+            self._home_custom_export_picker = ft.FilePicker(
+                on_result=self._handle_home_custom_export_result
+            )
+            changed = True
+        for picker in (self._home_custom_import_picker, self._home_custom_export_picker):
+            if picker and self.page and picker not in self.page.overlay:
+                self.page.overlay.append(picker)
+                changed = True
+        if changed and self.page is not None:
+            self.page.update()
+
+    def _open_home_custom_import_picker(self, _: ft.ControlEvent | None = None) -> None:
+        self._ensure_home_custom_file_pickers()
+        if self._home_custom_import_picker is None:
+            self._show_snackbar("无法打开文件选择器。", error=True)
+            return
+        self._home_custom_import_picker.pick_files(
+            allow_multiple=False,
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["json"],
+        )
+
+    def _handle_home_custom_import_result(self, event: ft.FilePickerResultEvent) -> None:
+        if not event.files:
+            return
+        file = event.files[0]
+        if not getattr(file, "path", None):
+            self._show_snackbar("未选择有效的文件。", error=True)
+            return
+        path = Path(file.path)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.error("导入自定义语句失败: {error}", error=str(exc))
+            self._show_snackbar("导入失败，请确认文件格式。", error=True)
+            return
+
+        raw_items = None
+        if isinstance(data, dict):
+            raw_items = data.get("items")
+        elif isinstance(data, list):
+            raw_items = data
+        if not isinstance(raw_items, list):
+            self._show_snackbar("文件中未找到有效的语句列表。", error=True)
+            return
+
+        imported: list[dict[str, str]] = []
+        for entry in raw_items:
+            if not isinstance(entry, dict):
+                continue
+            text = str(entry.get("text") or entry.get("sentence") or "").strip()
+            author = str(entry.get("author") or "").strip()
+            source = str(entry.get("source") or entry.get("from") or "").strip()
+            if text:
+                imported.append({"text": text, "author": author, "source": source})
+
+        if not imported:
+            self._show_snackbar("文件中没有有效的语句。", error=True)
+            return
+
+        self._home_custom_entries = imported
+        app_config.set("home_page.custom.items", copy.deepcopy(self._home_custom_entries))
+        self._refresh_home_custom_entries_ui()
+        if str(app_config.get("home_page.source", "hitokoto")).lower() == "custom":
+            self.refresh_home_quote()
+        self._show_snackbar("已导入自定义语句。")
+
+    def _open_home_custom_export_picker(self, _: ft.ControlEvent | None = None) -> None:
+        if not self._home_custom_entries:
+            self._show_snackbar("暂无自定义语句可导出。", error=True)
+            return
+        self._ensure_home_custom_file_pickers()
+        if self._home_custom_export_picker is None:
+            self._show_snackbar("无法打开文件对话框。", error=True)
+            return
+        self._home_custom_export_picker.save_file(
+            file_name="home_quotes.json",
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["json"],
+        )
+
+    def _handle_home_custom_export_result(self, event: ft.FilePickerResultEvent) -> None:
+        if not event.path:
+            return
+        if not self._home_custom_entries:
+            self._show_snackbar("暂无自定义语句可导出。", error=True)
+            return
+        payload = {
+            "scheme": "littletree_home_quotes_v1",
+            "items": copy.deepcopy(self._home_custom_entries),
+        }
+        try:
+            Path(event.path).write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.error("导出自定义语句失败: {error}", error=str(exc))
+            self._show_snackbar("导出失败，请重试。", error=True)
+            return
+        self._show_snackbar("已导出自定义语句。")
+
+    def _build_home_settings_section(self) -> ft.Control:
+        source_value = str(app_config.get("home_page.source", "hitokoto") or "hitokoto").lower()
+
+        self._home_source_dropdown = ft.Dropdown(
+            label="主页语句源",
+            value=source_value,
+            options=[
+                ft.DropdownOption(key="hitokoto", text="一言"),
+                ft.DropdownOption(key="zhaoyu", text="诏预"),
+                ft.DropdownOption(key="custom", text="自定义语句"),
+            ],
+            on_change=self._handle_home_source_change,
+            width=260,
+        )
+
+        self._home_show_author_switch = ft.Switch(
+            label="显示作者",
+            value=bool(app_config.get("home_page.show_author", True)),
+            on_change=self._handle_home_show_author_toggle,
+        )
+        self._home_show_source_switch = ft.Switch(
+            label="显示来源",
+            value=bool(app_config.get("home_page.show_source", True)),
+            on_change=self._handle_home_show_source_toggle,
+        )
+
+        hitokoto_region = str(
+            app_config.get("home_page.hitokoto.region", "domestic") or "domestic"
+        ).lower()
+        if hitokoto_region not in {"domestic", "international"}:
+            hitokoto_region = "domestic"
+        self._home_hitokoto_region_dropdown = ft.Dropdown(
+            label="一言服务地区",
+            value=hitokoto_region,
+            options=[
+                ft.DropdownOption(key="domestic", text="国内节点"),
+                ft.DropdownOption(key="international", text="国际节点"),
+            ],
+            on_change=self._handle_home_hitokoto_region_change,
+            width=220,
+        )
+
+        categories_value = app_config.get("home_page.hitokoto.categories", [])
+        selected_categories = {
+            str(item).strip()
+            for item in categories_value
+            if isinstance(item, str) and item
+        }
+        self._home_hitokoto_category_checks = {}
+        category_controls: list[ft.Control] = []
+        for code, label in HITOKOTO_CATEGORY_LABELS.items():
+            checkbox = ft.Checkbox(
+                label=f"{label} ({code})",
+                value=code in selected_categories,
+                on_change=lambda e, cat=code: self._handle_home_hitokoto_category_change(
+                    cat, bool(getattr(e.control, "value", False))
+                ),
+            )
+            self._home_hitokoto_category_checks[code] = checkbox
+            category_controls.append(checkbox)
+
+        self._home_hitokoto_section = ft.Column(
+            controls=[
+                ft.Text("一言设置", size=16, weight=ft.FontWeight.BOLD),
+                self._home_hitokoto_region_dropdown,
+                ft.Text("分类筛选（留空表示全部随机）", size=12, color=ft.Colors.GREY),
+                ft.Row(
+                    controls=category_controls,
+                    spacing=12,
+                    run_spacing=12,
+                    wrap=True,
+                ),
+            ],
+            spacing=12,
+            visible=source_value == "hitokoto",
+        )
+
+        # zhaoyu_settings = self._home_subdict("zhaoyu")
+        # catalog_value = str(zhaoyu_settings.get("catalog", "all") or "all")
+        # theme_value = str(zhaoyu_settings.get("theme", "all") or "all")
+        # author_value = str(zhaoyu_settings.get("author", "all") or "all")
+
+        def _pill(text: str) -> ft.Container:
+            return ft.Container(
+                content=ft.Text(text, size=12, color=ft.Colors.ON_SECONDARY_CONTAINER),
+                bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                border_radius=16,
+            )
+
+        self._home_zhaoyu_section = ft.Column(
+            controls=[
+                ft.Text("诏预 API 设置", size=16, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    "诏预接口当前固定使用默认参数，暂不支持自定义分类、主题或古籍。",
+                    size=12,
+                    color=ft.Colors.GREY,
+                ),
+                # ft.Row(
+                #     controls=[
+                #         _pill(f"catalog：{catalog_value}"),
+                #         _pill(f"theme：{theme_value}"),
+                #         _pill(f"author：{author_value}"),
+                #     ],
+                #     spacing=12,
+                #     run_spacing=12,
+                #     wrap=True,
+                # ),
+            ],
+            spacing=12,
+            visible=source_value == "zhaoyu",
+        )
+
+        self._home_custom_entries = self._home_custom_items()
+        self._home_custom_entries_column = ft.GridView(
+            expand=True,
+            runs_count=0,
+            max_extent=420,
+            spacing=12,
+            run_spacing=12,
+            child_aspect_ratio=0.75,
+            controls=[],
+        )
+        self._refresh_home_custom_entries_ui()
+        custom_grid_container = ft.Container(
+            content=self._home_custom_entries_column,
+            height=360,
+            padding=ft.padding.only(right=4),
+        )
+        custom_actions = ft.Row(
+            controls=[
+                ft.TextButton(
+                    "新增语句",
+                    icon=ft.Icons.ADD,
+                    on_click=self._handle_home_custom_add_entry,
+                ),
+                ft.TextButton(
+                    "导入",
+                    icon=ft.Icons.UPLOAD_FILE,
+                    on_click=self._open_home_custom_import_picker,
+                ),
+                ft.TextButton(
+                    "导出",
+                    icon=ft.Icons.DOWNLOAD,
+                    on_click=self._open_home_custom_export_picker,
+                ),
+            ],
+            spacing=12,
+            run_spacing=12,
+            wrap=True,
+        )
+        self._home_custom_section = ft.Column(
+            controls=[
+                ft.Text("自定义语句", size=16, weight=ft.FontWeight.BOLD),
+                ft.Text("将随机展示列表中的语句。", size=12, color=ft.Colors.GREY),
+                custom_grid_container,
+                custom_actions,
+            ],
+            spacing=12,
+            visible=source_value == "custom",
+        )
+
+        return ft.Column(
+            controls=[
+                ft.Text("主页内容", size=18, weight=ft.FontWeight.BOLD),
+                self._home_source_dropdown,
+                ft.Text("选择主页语句来源，并配置附加信息显示。", size=12, color=ft.Colors.GREY),
+                ft.Row(
+                    [self._home_show_author_switch, self._home_show_source_switch],
+                    spacing=16,
+                    wrap=True,
+                ),
+                self._home_hitokoto_section,
+                self._home_zhaoyu_section,
+                self._home_custom_section,
+            ],
+            spacing=16,
+            tight=True,
         )
 
     def _build_resource(self):
@@ -13068,7 +13655,7 @@ class Pages:
             ),
             open=False,
         )
-        general = tab_content("通用")
+        general = tab_content("通用", self._build_home_settings_section())
         download = tab_content("下载")
         resource = tab_content(
             "内容",

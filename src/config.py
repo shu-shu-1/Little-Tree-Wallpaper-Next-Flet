@@ -68,9 +68,32 @@ DEFAULT_CONFIG = {
         },
     },
     "home_page": {
+        "source": "hitokoto",
+        "show_author": True,
+        "show_source": True,
         "hitokoto": {
-            "API": "default",
-            "type": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "k", "l"],
+            "region": "domestic",
+            "categories": [
+                "a",
+                "b",
+                "c",
+                "d",
+                "e",
+                "f",
+                "g",
+                "h",
+                "i",
+                "k",
+                "l",
+            ],
+        },
+        "zhaoyu": {
+            "catalog": "all",
+            "theme": "all",
+            "author": "all",
+        },
+        "custom": {
+            "items": [],
         },
     },
     "im": {
@@ -170,6 +193,70 @@ def _ensure_auto_change_config(config: dict, file_path: str) -> dict:
         wallpaper["auto_change"] = _merge(migrated, raw_auto)
     else:
         wallpaper["auto_change"] = default_auto
+
+    return config
+
+
+def _ensure_home_page_config(config: dict, file_path: str) -> dict:
+    home = config.get("home_page")
+    default_home = copy.deepcopy(DEFAULT_CONFIG["home_page"])
+
+    if not isinstance(home, dict):
+        config["home_page"] = copy.deepcopy(default_home)
+        try:
+            save_config_file(file_path, config)
+        except Exception:
+            pass
+        return config
+
+    changed = False
+
+    hitokoto_settings = home.get("hitokoto") if isinstance(home.get("hitokoto"), dict) else None
+    if hitokoto_settings:
+        api_value = hitokoto_settings.get("API")
+        if "region" not in hitokoto_settings and isinstance(api_value, str):
+            region = "international" if api_value.lower().startswith("international") else "domestic"
+            hitokoto_settings["region"] = region
+            changed = True
+        type_value = hitokoto_settings.get("type")
+        if "categories" not in hitokoto_settings and isinstance(type_value, list):
+            hitokoto_settings["categories"] = [
+                str(item)
+                for item in type_value
+                if isinstance(item, str) and item
+            ]
+            changed = True
+        if "API" in hitokoto_settings:
+            hitokoto_settings.pop("API", None)
+            changed = True
+        if "type" in hitokoto_settings:
+            hitokoto_settings.pop("type", None)
+            changed = True
+
+    def _merge_missing(target: dict, source: dict) -> None:
+        for key, value in source.items():
+            if key not in target:
+                target[key] = copy.deepcopy(value)
+            elif isinstance(target[key], dict) and isinstance(value, dict):
+                _merge_missing(target[key], value)
+
+    _merge_missing(home, default_home)
+
+    if not isinstance(home.get("source"), str) or not home["source"]:
+        home["source"] = default_home["source"]
+        changed = True
+    if not isinstance(home.get("show_author"), bool):
+        home["show_author"] = bool(default_home["show_author"])
+        changed = True
+    if not isinstance(home.get("show_source"), bool):
+        home["show_source"] = bool(default_home["show_source"])
+        changed = True
+
+    if changed:
+        try:
+            save_config_file(file_path, config)
+        except Exception:
+            pass
 
     return config
 
@@ -397,4 +484,5 @@ def get_config_file(file_path: str) -> dict:
 
     config_data = _ensure_download_directory(config_data, json_path)
     config_data = _ensure_auto_change_config(config_data, json_path)
+    config_data = _ensure_home_page_config(config_data, json_path)
     return config_data

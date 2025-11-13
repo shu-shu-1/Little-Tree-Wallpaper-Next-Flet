@@ -22,5 +22,22 @@ HITOKOTO_API = [
     "https://international.v1.hitokoto.cn/",
 ]
 
+HITOKOTO_CATEGORY_LABELS = {
+    "a": "动画",
+    "b": "漫画",
+    "c": "游戏",
+    "d": "文学",
+    "e": "原创",
+    "f": "网络",
+    "g": "其他",
+    "h": "影视",
+    "i": "诗词",
+    "j": "网易云",
+    "k": "哲学",
+    "l": "抖机灵",
+}
+
+ZHAOYU_API_URL = "https://hub.saintic.com/openservice/sentence/"
+
 # 是否显示右下角“测试版”水印（稳定版不显示）
 SHOW_WATERMARK = MODE != "STABLE"
