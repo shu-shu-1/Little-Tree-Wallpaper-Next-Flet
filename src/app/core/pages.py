@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import hashlib
 import io
 import json
@@ -80,6 +81,12 @@ from app.settings import SettingsStore
 from app.startup import StartupManager
 from app.first_run import update_marker
 from app.conflicts import StartupConflict
+from app.auto_change import (
+    AutoChangeList,
+    AutoChangeListEntry,
+    AutoChangeListStore,
+    AutoChangeService,
+)
 
 app_config = SettingsStore()
 
@@ -151,6 +158,7 @@ class Pages:
         self._theme_file_picker: Optional[ft.FilePicker] = None
         self._home_export_picker: Optional[ft.FilePicker] = None
         self._home_pending_export_source: Path | None = None
+        self._home_change_button: ft.TextButton | None = None
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
         self.bing_wallpaper = None
         self.bing_wallpaper_url = None
@@ -348,6 +356,58 @@ class Pages:
         self._ws_preview_item: WallpaperItem | None = None
         self._ws_preview_item_id: str | None = None
 
+        self._auto_list_store = AutoChangeListStore()
+        self._auto_change_service = AutoChangeService(
+            settings_store=app_config,
+            list_store=self._auto_list_store,
+            wallpaper_source_manager=self._wallpaper_source_manager,
+            favorite_manager=self._favorite_manager,
+        )
+        self._auto_lists_column: ft.Column | None = None
+        self._auto_lists_summary_text: ft.Text | None = None
+        self._auto_list_picker: ft.FilePicker | None = None
+        self._auto_list_picker_mode: str | None = None
+        self._auto_list_pending_export_id: str | None = None
+        self._auto_fixed_image_picker: ft.FilePicker | None = None
+        self._auto_slideshow_file_picker: ft.FilePicker | None = None
+        self._auto_slideshow_dir_picker: ft.FilePicker | None = None
+        self._auto_change_config_cache: dict[str, Any] = {}
+        self._auto_enable_switch: ft.Switch | None = None
+        self._auto_mode_dropdown: ft.Dropdown | None = None
+        self._auto_interval_section: ft.Container | None = None
+        self._auto_schedule_section: ft.Container | None = None
+        self._auto_slideshow_section: ft.Container | None = None
+        self._auto_interval_value_field: ft.TextField | None = None
+        self._auto_interval_unit_dropdown: ft.Dropdown | None = None
+        self._auto_interval_order_dropdown: ft.Dropdown | None = None
+        self._auto_interval_lists_wrap: ft.Column | None = None
+        self._auto_interval_list_checks: dict[str, ft.Checkbox] = {}
+        self._auto_interval_fixed_image_display: ft.Text | None = None
+        self._auto_interval_select_button: ft.TextButton | None = None
+        self._auto_interval_clear_button: ft.TextButton | None = None
+        self._auto_schedule_entries_column: ft.Column | None = None
+        self._auto_schedule_add_button: ft.TextButton | None = None
+        self._auto_schedule_column: ft.Column | None = None
+        self._auto_schedule_dialog: ft.AlertDialog | None = None
+        self._auto_schedule_dialog_state: dict[str, Any] = {}
+        self._auto_schedule_order_dropdown: ft.Dropdown | None = None
+        self._auto_slideshow_interval_field: ft.TextField | None = None
+        self._auto_slideshow_unit_dropdown: ft.Dropdown | None = None
+        self._auto_slideshow_mode_dropdown: ft.Dropdown | None = None
+        self._auto_slideshow_items_column: ft.Column | None = None
+        self._auto_slideshow_items: list[dict[str, Any]] = []
+        self._auto_slideshow_add_file_button: ft.TextButton | None = None
+        self._auto_slideshow_add_folder_button: ft.TextButton | None = None
+        self._auto_editor_dialog: ft.AlertDialog | None = None
+        self._auto_editor_state: dict[str, Any] = {}
+        self._auto_entry_dialog: ft.AlertDialog | None = None
+        self._auto_entry_dialog_state: dict[str, Any] = {}
+        self._auto_fixed_image_target: tuple[str, Any] | None = None
+        self._auto_updating_auto_ui: bool = False
+
+        self.page.run_task(self._auto_change_service.ensure_running)
+        self._load_auto_change_config()
+
         self.home = self._build_home()
         self.resource = self._build_resource()
         self.generate = self._build_generate()
@@ -370,6 +430,10 @@ class Pages:
     def favorite_manager(self) -> FavoriteManager:
         return self._favorite_manager
 
+    @property
+    def auto_change_service(self) -> AutoChangeService:
+        return self._auto_change_service
+
     def _ensure_global_namespaces(self) -> None:
         if not self._global_data:
             return
@@ -386,6 +450,2259 @@ class Pages:
             )
         except GlobalDataError as exc:
             logger.error(f"初始化全局数据命名空间失败: {exc}")
+
+    # ------------------------------------------------------------------
+    # auto-change helpers
+    # ------------------------------------------------------------------
+    def _load_auto_change_config(self) -> dict[str, Any]:
+        data = app_config.get("wallpaper.auto_change", {}) or {}
+        if not isinstance(data, dict):
+            data = {}
+        self._auto_change_config_cache = copy.deepcopy(data)
+        return self._auto_change_config_cache
+
+    def _auto_current_config(self) -> dict[str, Any]:
+        if not self._auto_change_config_cache:
+            self._load_auto_change_config()
+        return self._auto_change_config_cache
+
+    def _auto_commit_config(self, config: dict[str, Any]) -> None:
+        app_config.set("wallpaper.auto_change", config)
+        self._auto_change_config_cache = copy.deepcopy(config)
+        self._auto_change_service.refresh()
+        self._refresh_auto_change_controls()
+
+    def _update_home_change_button_state(
+        self,
+        *,
+        interval_enabled: bool,
+        slideshow_enabled: bool,
+    ) -> None:
+        if self._home_change_button is None:
+            return
+        available = interval_enabled or slideshow_enabled
+        tooltip = (
+            "立即触发自动更换（仅限间隔与轮播模式）"
+            if available
+            else "仅在启用间隔或轮播模式时可用"
+        )
+        self._home_change_button.disabled = not available
+        self._home_change_button.tooltip = tooltip
+        if self._home_change_button.page is not None:
+            self._home_change_button.update()
+
+    def _refresh_auto_change_controls(self) -> None:
+        config = self._auto_current_config()
+        enabled = bool(config.get("enabled", False))
+        mode = str(config.get("mode") or "off")
+        interval_config = config.get("interval") or {}
+        interval_unit = str(interval_config.get("unit") or "minutes")
+        if interval_unit not in {"seconds", "minutes", "hours"}:
+            interval_unit = "minutes"
+        interval_value = interval_config.get("value", 30) or 30
+        if not isinstance(interval_value, int):
+            try:
+                interval_value = int(interval_value)
+            except Exception:
+                interval_value = 30
+        interval_order = str(interval_config.get("order") or "random")
+        if interval_order == "shuffle":
+            interval_order = "random"
+        if interval_order not in {"random", "random_no_repeat", "sequential"}:
+            interval_order = "random"
+        fixed_path = interval_config.get("fixed_image") or ""
+        schedule_config = config.get("schedule") or {}
+        schedule_order = str(schedule_config.get("order") or "random")
+        if schedule_order == "shuffle":
+            schedule_order = "random"
+        if schedule_order not in {"random", "random_no_repeat", "sequential"}:
+            schedule_order = "random"
+        slideshow_config = config.get("slideshow") or {}
+        slideshow_unit = str(slideshow_config.get("unit") or "minutes")
+        if slideshow_unit not in {"seconds", "minutes", "hours"}:
+            slideshow_unit = "minutes"
+        slideshow_value = slideshow_config.get("value", 5) or 5
+        if not isinstance(slideshow_value, int):
+            try:
+                slideshow_value = int(slideshow_value)
+            except Exception:
+                slideshow_value = 5
+        slideshow_mode = str(slideshow_config.get("order") or "sequential")
+        if slideshow_mode == "shuffle":
+            slideshow_mode = "random"
+        if slideshow_mode not in {"sequential", "random", "random_no_repeat"}:
+            slideshow_mode = "sequential"
+        schedule_enabled = enabled and mode == "schedule"
+        interval_enabled = enabled and mode == "interval"
+        slideshow_enabled = enabled and mode == "slideshow"
+        self._update_home_change_button_state(
+            interval_enabled=interval_enabled,
+            slideshow_enabled=slideshow_enabled,
+        )
+        self._auto_updating_auto_ui = True
+        try:
+            if self._auto_enable_switch is not None:
+                self._auto_enable_switch.value = enabled
+                if self._auto_enable_switch.page is not None:
+                    self._auto_enable_switch.update()
+            if self._auto_mode_dropdown is not None:
+                target_mode = mode if mode in {"off", "interval", "schedule", "slideshow"} else "off"
+                self._auto_mode_dropdown.value = target_mode
+                self._auto_mode_dropdown.disabled = not enabled
+                if self._auto_mode_dropdown.page is not None:
+                    self._auto_mode_dropdown.update()
+            if self._auto_interval_value_field is not None:
+                self._auto_interval_value_field.value = str(interval_value)
+                self._auto_interval_value_field.error_text = None
+                self._auto_interval_value_field.disabled = not interval_enabled
+                if self._auto_interval_value_field.page is not None:
+                    self._auto_interval_value_field.update()
+            if self._auto_interval_unit_dropdown is not None:
+                self._auto_interval_unit_dropdown.value = interval_unit
+                self._auto_interval_unit_dropdown.disabled = not interval_enabled
+                if self._auto_interval_unit_dropdown.page is not None:
+                    self._auto_interval_unit_dropdown.update()
+            if self._auto_interval_order_dropdown is not None:
+                self._auto_interval_order_dropdown.value = interval_order
+                self._auto_interval_order_dropdown.disabled = not interval_enabled
+                if self._auto_interval_order_dropdown.page is not None:
+                    self._auto_interval_order_dropdown.update()
+            self._auto_refresh_interval_lists(enabled=interval_enabled)
+            if self._auto_interval_fixed_image_display is not None:
+                display_text = str(fixed_path) if fixed_path else "未选择"
+                display_color = ft.Colors.ON_SURFACE if fixed_path else ft.Colors.GREY
+                self._auto_interval_fixed_image_display.value = display_text
+                self._auto_interval_fixed_image_display.color = display_color
+                if self._auto_interval_fixed_image_display.page is not None:
+                    self._auto_interval_fixed_image_display.update()
+            if self._auto_interval_select_button is not None:
+                self._auto_interval_select_button.disabled = not interval_enabled
+                if self._auto_interval_select_button.page is not None:
+                    self._auto_interval_select_button.update()
+            if self._auto_interval_clear_button is not None:
+                self._auto_interval_clear_button.disabled = not (interval_enabled and bool(fixed_path))
+                if self._auto_interval_clear_button.page is not None:
+                    self._auto_interval_clear_button.update()
+            if self._auto_slideshow_interval_field is not None:
+                self._auto_slideshow_interval_field.value = str(slideshow_value)
+                self._auto_slideshow_interval_field.error_text = None
+                self._auto_slideshow_interval_field.disabled = not slideshow_enabled
+                if self._auto_slideshow_interval_field.page is not None:
+                    self._auto_slideshow_interval_field.update()
+            if self._auto_slideshow_unit_dropdown is not None:
+                self._auto_slideshow_unit_dropdown.value = slideshow_unit
+                self._auto_slideshow_unit_dropdown.disabled = not slideshow_enabled
+                if self._auto_slideshow_unit_dropdown.page is not None:
+                    self._auto_slideshow_unit_dropdown.update()
+            if self._auto_slideshow_mode_dropdown is not None:
+                self._auto_slideshow_mode_dropdown.value = slideshow_mode
+                self._auto_slideshow_mode_dropdown.disabled = not slideshow_enabled
+                if self._auto_slideshow_mode_dropdown.page is not None:
+                    self._auto_slideshow_mode_dropdown.update()
+            if self._auto_schedule_order_dropdown is not None:
+                self._auto_schedule_order_dropdown.value = schedule_order
+                self._auto_schedule_order_dropdown.disabled = not schedule_enabled
+                if self._auto_schedule_order_dropdown.page is not None:
+                    self._auto_schedule_order_dropdown.update()
+            if self._auto_slideshow_add_file_button is not None:
+                self._auto_slideshow_add_file_button.disabled = not slideshow_enabled
+                if self._auto_slideshow_add_file_button.page is not None:
+                    self._auto_slideshow_add_file_button.update()
+            if self._auto_slideshow_add_folder_button is not None:
+                self._auto_slideshow_add_folder_button.disabled = not slideshow_enabled
+                if self._auto_slideshow_add_folder_button.page is not None:
+                    self._auto_slideshow_add_folder_button.update()
+        finally:
+            self._auto_updating_auto_ui = False
+
+        if self._auto_interval_section is not None:
+            self._auto_interval_section.visible = mode == "interval"
+            if self._auto_interval_section.page is not None:
+                self._auto_interval_section.update()
+        if self._auto_schedule_section is not None:
+            self._auto_schedule_section.visible = mode == "schedule"
+            if self._auto_schedule_section.page is not None:
+                self._auto_schedule_section.update()
+        if self._auto_slideshow_section is not None:
+            self._auto_slideshow_section.visible = mode == "slideshow"
+            if self._auto_slideshow_section.page is not None:
+                self._auto_slideshow_section.update()
+
+        self._auto_refresh_schedule_entries(enabled=schedule_enabled)
+        self._auto_refresh_slideshow_items(enabled=slideshow_enabled)
+
+    def _ensure_auto_list_picker(self) -> None:
+        if self.page is None:
+            return
+        if self._auto_list_picker is None:
+            self._auto_list_picker = ft.FilePicker(on_result=self._handle_auto_list_picker_result)
+        if self._auto_list_picker not in self.page.overlay:
+            self.page.overlay.append(self._auto_list_picker)
+            self.page.update()
+
+    def _handle_auto_list_picker_result(self, event: ft.FilePickerResultEvent) -> None:
+        mode = self._auto_list_picker_mode
+        self._auto_list_picker_mode = None
+        if not mode:
+            return
+        if mode == "import":
+            if not event.files:
+                return
+            existing_ids = {auto_list.id for auto_list in self._auto_list_store.all()}
+            imported_any = False
+            for file in event.files:
+                path = getattr(file, "path", None)
+                if not path:
+                    continue
+                try:
+                    lists = self._auto_list_store.import_file(Path(path))
+                except Exception as exc:
+                    logger.error("导入自动更换列表失败: {error}", error=str(exc))
+                    self._show_snackbar(f"导入失败：{exc}", error=True)
+                    continue
+                for auto_list in lists:
+                    while auto_list.id in existing_ids:
+                        auto_list.id = uuid.uuid4().hex
+                    existing_ids.add(auto_list.id)
+                    self._auto_list_store.upsert(auto_list)
+                    imported_any = True
+            if imported_any:
+                self._refresh_auto_lists_view()
+                self._auto_change_service.refresh()
+                self._show_snackbar("已导入自动更换列表。")
+            return
+        if mode == "export_all":
+            if not event.path:
+                return
+            try:
+                self._auto_list_store.export_all(Path(event.path))
+                self._show_snackbar("已导出所有自动更换列表。")
+            except Exception as exc:
+                logger.error("导出自动更换列表失败: {error}", error=str(exc))
+                self._show_snackbar(f"导出失败：{exc}", error=True)
+
+    def _build_auto_change_settings_section(self) -> ft.Control:
+        config = self._auto_current_config()
+        enabled = bool(config.get("enabled", False))
+        mode = str(config.get("mode") or "off")
+
+        self._auto_enable_switch = ft.Switch(
+            label="启用自动更换",
+            value=enabled,
+            on_change=self._auto_on_toggle_enabled,
+        )
+        mode_options = [
+            ft.DropdownOption(key="off", text="关闭"),
+            ft.DropdownOption(key="interval", text="间隔模式"),
+            ft.DropdownOption(key="schedule", text="定时模式"),
+            ft.DropdownOption(key="slideshow", text="轮播模式"),
+        ]
+        self._auto_mode_dropdown = ft.Dropdown(
+            label="模式",
+            value=mode if mode in {option.key for option in mode_options} else "off",
+            options=mode_options,
+            dense=True,
+            on_change=self._auto_on_mode_change,
+        )
+
+        header_row = ft.Row(
+            [self._auto_enable_switch, self._auto_mode_dropdown],
+            spacing=16,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        interval_section = self._build_auto_interval_section()
+        schedule_section = self._build_auto_schedule_section()
+        slideshow_section = self._build_auto_slideshow_section()
+
+        settings_container = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text("自动更换", size=18, weight=ft.FontWeight.BOLD),
+                    header_row,
+                    interval_section,
+                    schedule_section,
+                    slideshow_section,
+                ],
+                spacing=16,
+                tight=True,
+            ),
+            bgcolor=self._bgcolor_surface_low,
+            border_radius=8,
+            padding=16,
+        )
+
+        lists_section = self._build_auto_change_lists_section()
+        wrapper = ft.Column(
+            [settings_container, lists_section],
+            spacing=16,
+            tight=True,
+        )
+        self._refresh_auto_change_controls()
+        return wrapper
+
+    def _build_auto_change_lists_section(self) -> ft.Control:
+        self._ensure_auto_list_picker()
+        header = ft.Row(
+            [
+                ft.Text("自动更换列表", size=18, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    [
+                        ft.TextButton(
+                            "新建列表",
+                            icon=ft.Icons.ADD,
+                            on_click=lambda _: self._auto_create_list(),
+                        ),
+                        ft.TextButton(
+                            "导入",
+                            icon=ft.Icons.UPLOAD_FILE,
+                            on_click=lambda _: self._auto_open_list_import(),
+                        ),
+                        ft.TextButton(
+                            "导出全部",
+                            icon=ft.Icons.DOWNLOAD,
+                            on_click=lambda _: self._auto_open_list_export_all(),
+                        ),
+                    ],
+                    spacing=8,
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        self._auto_lists_summary_text = ft.Text("", size=12, color=ft.Colors.GREY)
+        self._auto_lists_column = ft.Column(spacing=8, tight=True)
+        container = ft.Container(
+            content=self._auto_lists_column,
+            bgcolor=self._bgcolor_surface_low,
+            border_radius=8,
+            padding=12,
+        )
+        description_text = ft.Text(
+            "自动更换列表用于管理要轮换的壁纸条目，可混合本地文件、收藏夹和壁纸源，并在各模式下复用。",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+        self._refresh_auto_lists_view()
+        return ft.Column(
+            [header, description_text, self._auto_lists_summary_text, container],
+            spacing=12,
+        )
+
+    def _build_auto_interval_section(self) -> ft.Container:
+        config = self._auto_current_config()
+        interval_config = config.get("interval") or {}
+        interval_title = ft.Text("间隔模式", size=16, weight=ft.FontWeight.BOLD)
+        self._auto_interval_value_field = ft.TextField(
+            label="间隔时长",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            on_blur=self._auto_on_interval_value_change,
+            on_submit=self._auto_on_interval_value_change,
+            width=140,
+        )
+        unit_options = [
+            ft.DropdownOption(key="minutes", text="分钟"),
+            ft.DropdownOption(key="hours", text="小时"),
+            ft.DropdownOption(key="seconds", text="秒"),
+        ]
+        self._auto_interval_unit_dropdown = ft.Dropdown(
+            label="单位",
+            options=unit_options,
+            dense=True,
+            width=140,
+            on_change=self._auto_on_interval_unit_change,
+        )
+        interval_value_row = ft.Row(
+            [self._auto_interval_value_field, self._auto_interval_unit_dropdown],
+            spacing=16,
+            vertical_alignment=ft.CrossAxisAlignment.END,
+        )
+
+        order_options = [
+            ft.DropdownOption(key="random", text="随机"),
+            ft.DropdownOption(key="random_no_repeat", text="不重复随机"),
+            ft.DropdownOption(key="sequential", text="顺序"),
+        ]
+        interval_order = str(interval_config.get("order") or "random")
+        if interval_order == "shuffle":
+            interval_order = "random"
+        if interval_order not in {option.key for option in order_options}:
+            interval_order = "random"
+        self._auto_interval_order_dropdown = ft.Dropdown(
+            label="列表顺序",
+            value=interval_order,
+            options=order_options,
+            dense=True,
+            width=200,
+            on_change=self._auto_on_interval_order_change,
+        )
+        order_hint = ft.Text("随机从列表中选择条目或按照顺序轮换。", size=12, color=ft.Colors.GREY)
+        order_section = ft.Column(
+            [self._auto_interval_order_dropdown, order_hint],
+            spacing=4,
+            tight=True,
+        )
+
+        self._auto_interval_lists_wrap = ft.Column(spacing=4, tight=True)
+        list_header = ft.Text("使用的自动更换列表", size=14, weight=ft.FontWeight.BOLD)
+        list_wrapper = ft.Column(
+            [list_header, self._auto_interval_lists_wrap],
+            spacing=8,
+            tight=True,
+        )
+
+        self._auto_interval_fixed_image_display = ft.Text(
+            "未选择", size=12, color=ft.Colors.GREY
+        )
+        self._auto_interval_select_button = ft.TextButton(
+            "选择图片",
+            icon=ft.Icons.FOLDER_OPEN,
+            on_click=lambda _: self._auto_open_fixed_image_picker("interval"),
+        )
+        self._auto_interval_clear_button = ft.TextButton(
+            "清除",
+            icon=ft.Icons.CLEAR,
+            on_click=lambda _: self._auto_clear_interval_fixed_image(),
+        )
+        fixed_row = ft.Column(
+            [
+                ft.Text("固定图片（可选）", size=14, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    [
+                        self._auto_interval_fixed_image_display,
+                        self._auto_interval_select_button,
+                        self._auto_interval_clear_button,
+                    ],
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ],
+            spacing=8,
+            tight=True,
+        )
+
+        body = ft.Column(
+            [interval_title, interval_value_row, order_section, list_wrapper, fixed_row],
+            spacing=12,
+            tight=True,
+        )
+        self._auto_interval_section = ft.Container(
+            content=body,
+            bgcolor=ft.Colors.SURFACE,
+            border_radius=8,
+            padding=12,
+        )
+        self._auto_refresh_interval_lists()
+        return self._auto_interval_section
+
+    def _build_auto_schedule_section(self) -> ft.Container:
+        config = self._auto_current_config()
+        schedule_config = config.get("schedule") or {}
+        self._auto_schedule_entries_column = ft.Column(spacing=8, tight=True)
+        self._auto_schedule_column = self._auto_schedule_entries_column
+        self._auto_schedule_add_button = ft.TextButton(
+            "添加时间段",
+            icon=ft.Icons.ADD,
+            on_click=lambda _: self._auto_open_schedule_entry_dialog(),
+        )
+        header_row = ft.Row(
+            [
+                ft.Text("定时模式", size=16, weight=ft.FontWeight.BOLD),
+                self._auto_schedule_add_button,
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        hint_text = ft.Text(
+            "可按时间点执行自动更换，未选择列表则使用固定图片。",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+        schedule_order_options = [
+            ft.DropdownOption(key="random", text="随机"),
+            ft.DropdownOption(key="random_no_repeat", text="不重复随机"),
+            ft.DropdownOption(key="sequential", text="顺序"),
+        ]
+        schedule_order_value = str(schedule_config.get("order") or "random")
+        if schedule_order_value == "shuffle":
+            schedule_order_value = "random"
+        if schedule_order_value not in {option.key for option in schedule_order_options}:
+            schedule_order_value = "random"
+        self._auto_schedule_order_dropdown = ft.Dropdown(
+            label="列表顺序",
+            value=schedule_order_value,
+            options=schedule_order_options,
+            dense=True,
+            width=220,
+            on_change=self._auto_on_schedule_order_change,
+        )
+        schedule_order_hint = ft.Text(
+            "控制定时执行时从自动更换列表取图的方式。",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+        order_section = ft.Column(
+            [self._auto_schedule_order_dropdown, schedule_order_hint],
+            spacing=4,
+            tight=True,
+        )
+        body = ft.Column(
+            [header_row, hint_text, order_section, self._auto_schedule_entries_column],
+            spacing=12,
+            tight=True,
+        )
+        self._auto_schedule_section = ft.Container(
+            content=body,
+            bgcolor=ft.Colors.SURFACE,
+            border_radius=8,
+            padding=12,
+            visible=str(config.get("mode") or "off") == "schedule",
+        )
+        self._auto_refresh_schedule_entries()
+        return self._auto_schedule_section
+
+    def _build_auto_slideshow_section(self) -> ft.Container:
+        config = self._auto_current_config()
+        slideshow_config = config.get("slideshow") or {}
+        self._auto_slideshow_interval_field = ft.TextField(
+            label="间隔时长",
+            value=str(slideshow_config.get("value", 5) or 5),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            on_blur=self._auto_on_slideshow_value_change,
+            on_submit=self._auto_on_slideshow_value_change,
+            width=140,
+        )
+        unit_options = [
+            ft.DropdownOption(key="minutes", text="分钟"),
+            ft.DropdownOption(key="hours", text="小时"),
+            ft.DropdownOption(key="seconds", text="秒"),
+        ]
+        self._auto_slideshow_unit_dropdown = ft.Dropdown(
+            label="单位",
+            value=str(slideshow_config.get("unit") or "minutes"),
+            options=unit_options,
+            dense=True,
+            width=140,
+            on_change=self._auto_on_slideshow_unit_change,
+        )
+        interval_row = ft.Row(
+            [self._auto_slideshow_interval_field, self._auto_slideshow_unit_dropdown],
+            spacing=16,
+            vertical_alignment=ft.CrossAxisAlignment.END,
+        )
+
+        slideshow_order_options = [
+            ft.DropdownOption(key="sequential", text="顺序"),
+            ft.DropdownOption(key="random", text="随机"),
+            ft.DropdownOption(key="random_no_repeat", text="不重复随机"),
+        ]
+        slideshow_order_value = str(slideshow_config.get("order") or "sequential")
+        if slideshow_order_value == "shuffle":
+            slideshow_order_value = "random"
+        if slideshow_order_value not in {option.key for option in slideshow_order_options}:
+            slideshow_order_value = "sequential"
+        self._auto_slideshow_mode_dropdown = ft.Dropdown(
+            label="播放顺序",
+            value=slideshow_order_value,
+            options=slideshow_order_options,
+            dense=True,
+            width=200,
+            on_change=self._auto_on_slideshow_order_change,
+        )
+        slideshow_order_hint = ft.Text(
+            "顺序播放或随机播放轮播素材。不重复随机会遍历全部素材后再重新洗牌。",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+        order_section = ft.Column(
+            [self._auto_slideshow_mode_dropdown, slideshow_order_hint],
+            spacing=4,
+            tight=True,
+        )
+
+        self._auto_slideshow_add_file_button = ft.TextButton(
+            "添加图片",
+            icon=ft.Icons.IMAGE,
+            on_click=lambda _: self._auto_open_slideshow_file_picker(),
+        )
+        self._auto_slideshow_add_folder_button = ft.TextButton(
+            "添加文件夹",
+            icon=ft.Icons.FOLDER_OPEN,
+            on_click=lambda _: self._auto_open_slideshow_dir_picker(),
+        )
+        action_row = ft.Row(
+            [self._auto_slideshow_add_file_button, self._auto_slideshow_add_folder_button],
+            spacing=12,
+        )
+
+        self._auto_slideshow_items_column = ft.Column(spacing=8, tight=True)
+        items_wrapper = ft.Column(
+            [
+                ft.Text("轮播素材", size=14, weight=ft.FontWeight.BOLD),
+                self._auto_slideshow_items_column,
+            ],
+            spacing=8,
+            tight=True,
+        )
+
+        hint_text = ft.Text(
+            "支持手动选择图片或整个文件夹，按顺序轮播。",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+
+        body = ft.Column(
+            [
+                ft.Text("轮播模式", size=16, weight=ft.FontWeight.BOLD),
+                hint_text,
+                interval_row,
+                order_section,
+                action_row,
+                items_wrapper,
+            ],
+            spacing=12,
+            tight=True,
+        )
+        self._auto_slideshow_section = ft.Container(
+            content=body,
+            bgcolor=ft.Colors.SURFACE,
+            border_radius=8,
+            padding=12,
+            visible=str(config.get("mode") or "off") == "slideshow",
+        )
+        self._auto_refresh_slideshow_items()
+        return self._auto_slideshow_section
+
+    def _auto_refresh_schedule_entries(self, *, enabled: bool | None = None) -> None:
+        if self._auto_schedule_entries_column is None:
+            return
+        config = self._auto_current_config()
+        schedule = config.get("schedule") or {}
+        raw_entries = schedule.get("entries") or []
+        indexed_entries: list[tuple[int, dict[str, Any]]] = []
+        for idx, item in enumerate(raw_entries):
+            if isinstance(item, dict):
+                indexed_entries.append((idx, dict(item)))
+        indexed_entries.sort(key=lambda pair: str(pair[1].get("time") or "00:00"))
+        list_map = {auto_list.id: auto_list.name for auto_list in self._auto_list_store.all()}
+        enabled_state = bool(enabled) if enabled is not None else bool(
+            config.get("enabled", False) and str(config.get("mode") or "off") == "schedule"
+        )
+        column = self._auto_schedule_entries_column
+        column.controls.clear()
+        if not indexed_entries:
+            column.controls.append(
+                ft.Text("尚未添加任何定时任务。", size=12, color=ft.Colors.GREY)
+            )
+        else:
+            for config_index, entry in indexed_entries:
+                column.controls.append(
+                    self._auto_build_schedule_entry_card(
+                        config_index, entry, list_map, enabled=enabled_state
+                    )
+                )
+        if column.page is not None:
+            column.update()
+        if self._auto_schedule_add_button is not None:
+            self._auto_schedule_add_button.disabled = not enabled_state
+            if self._auto_schedule_add_button.page is not None:
+                self._auto_schedule_add_button.update()
+
+    def _auto_build_schedule_entry_card(
+        self,
+        config_index: int,
+        entry: dict[str, Any],
+        list_map: dict[str, str],
+        *,
+        enabled: bool,
+    ) -> ft.Control:
+        time_str = str(entry.get("time") or "00:00")
+        list_ids = [str(item) for item in entry.get("list_ids", []) if item]
+        if list_ids:
+            list_names = [list_map.get(list_id, list_id) for list_id in list_ids]
+            lists_summary = "，".join(list_names)
+        else:
+            lists_summary = "未选择列表，将使用固定图片"
+        fixed_image = entry.get("fixed_image") or ""
+        if fixed_image:
+            fixed_label = Path(fixed_image).name if Path(fixed_image).name else fixed_image
+            fixed_summary = f"固定图片：{fixed_label}"
+        else:
+            fixed_summary = "固定图片：未设置"
+        info = ft.Column(
+            [
+                ft.Text(f"时间：{time_str}", size=14, weight=ft.FontWeight.BOLD),
+                ft.Text(lists_summary, size=12, color=ft.Colors.GREY),
+                ft.Text(fixed_summary, size=12, color=ft.Colors.GREY),
+            ],
+            spacing=4,
+            tight=True,
+        )
+        actions = ft.Row(
+            [
+                ft.TextButton(
+                    "编辑",
+                    icon=ft.Icons.EDIT,
+                    on_click=lambda _: self._auto_open_schedule_entry_dialog(config_index),
+                    disabled=not enabled,
+                ),
+                ft.TextButton(
+                    "删除",
+                    icon=ft.Icons.DELETE,
+                    on_click=lambda _: self._auto_delete_schedule_entry(config_index),
+                    disabled=not enabled,
+                ),
+            ],
+            spacing=8,
+        )
+        return ft.Card(
+            content=ft.Container(
+                ft.Row(
+                    [info, actions],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=ft.padding.symmetric(vertical=8, horizontal=12),
+            )
+        )
+
+    def _auto_open_schedule_entry_dialog(self, index: int | None = None) -> None:
+        config = self._auto_current_config()
+        schedule = config.get("schedule") or {}
+        raw_entries = schedule.get("entries") or []
+        existing = {}
+        if index is not None and 0 <= index < len(raw_entries):
+            raw_entry = raw_entries[index]
+            if isinstance(raw_entry, dict):
+                existing = dict(raw_entry)
+        now_struct = time.localtime()
+        default_time = f"{now_struct.tm_hour:02d}:{now_struct.tm_min:02d}"
+        time_value = str(existing.get("time") or default_time)
+        time_field = ft.TextField(label="时间 (HH:MM)", value=time_value, width=140)
+        selected_ids = {str(item) for item in existing.get("list_ids", []) if item}
+        list_checks: dict[str, ft.Checkbox] = {}
+        list_controls: list[ft.Control] = []
+        available_lists = self._auto_list_store.all()
+        if not available_lists:
+            list_controls.append(
+                ft.Text("暂无自动更换列表，可在下方新建。", size=12, color=ft.Colors.GREY)
+            )
+        else:
+            for auto_list in available_lists:
+                checkbox = ft.Checkbox(
+                    label=f"{auto_list.name}（{len(auto_list.entries)} 条目）",
+                    value=auto_list.id in selected_ids,
+                )
+                list_checks[auto_list.id] = checkbox
+                list_controls.append(checkbox)
+        lists_column = ft.Column(list_controls, spacing=4, tight=True)
+
+        fixed_image = existing.get("fixed_image") or None
+        fixed_display = ft.Text(
+            fixed_image if fixed_image else "未选择",
+            size=12,
+            color=ft.Colors.ON_SURFACE if fixed_image else ft.Colors.GREY,
+        )
+        clear_button = ft.TextButton(
+            "清除",
+            icon=ft.Icons.CLEAR,
+            on_click=lambda _: self._auto_schedule_dialog_clear_fixed_image(),
+            disabled=not fixed_image,
+        )
+        select_button = ft.TextButton(
+            "选择图片",
+            icon=ft.Icons.FOLDER_OPEN,
+            on_click=lambda _: self._auto_schedule_dialog_open_fixed_image_picker(),
+        )
+        fixed_row = ft.Row(
+            [fixed_display, select_button, clear_button],
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        dialog_content = ft.Column(
+            [
+                ft.Text("设定每天的执行时间（24 小时制）", size=12, color=ft.Colors.GREY),
+                time_field,
+                ft.Text("选择自动更换列表 (可多选)", size=12, color=ft.Colors.GREY),
+                lists_column,
+                ft.Text("固定图片 (可选)", size=12, color=ft.Colors.GREY),
+                fixed_row,
+            ],
+            spacing=10,
+            tight=True,
+        )
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("编辑定时任务" if existing else "新增定时任务"),
+            content=ft.Container(dialog_content, width=420),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._auto_schedule_dialog_cancel()),
+                ft.FilledButton("保存", on_click=lambda _: self._auto_schedule_dialog_save()),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._auto_schedule_dialog = dialog
+        self._auto_schedule_dialog_state = {
+            "index": index,
+            "time_field": time_field,
+            "list_checks": list_checks,
+            "fixed_image": fixed_image,
+            "fixed_display": fixed_display,
+            "clear_button": clear_button,
+        }
+        self._open_dialog(dialog)
+
+    def _auto_schedule_dialog_open_fixed_image_picker(self) -> None:
+        if not self._auto_schedule_dialog_state:
+            return
+        self._ensure_auto_fixed_image_picker()
+        if self._auto_fixed_image_picker is None:
+            self._show_snackbar("无法打开文件选择器。", error=True)
+            return
+        self._auto_fixed_image_target = ("schedule_dialog", None)
+        try:
+            self._auto_fixed_image_picker.pick_files(
+                allow_multiple=False,
+                file_type=ft.FilePickerFileType.IMAGE,
+            )
+        except Exception as exc:
+            logger.error("打开文件选择器失败: {error}", error=str(exc))
+            self._show_snackbar("无法打开文件选择器。", error=True)
+
+    def _auto_schedule_dialog_set_fixed_image(self, path: str | None) -> None:
+        if not self._auto_schedule_dialog_state:
+            return
+        fixed_image = path or None
+        self._auto_schedule_dialog_state["fixed_image"] = fixed_image
+        display: ft.Text = self._auto_schedule_dialog_state.get("fixed_display")  # type: ignore[assignment]
+        clear_button: ft.TextButton = self._auto_schedule_dialog_state.get("clear_button")  # type: ignore[assignment]
+        if display is not None:
+            display.value = fixed_image if fixed_image else "未选择"
+            display.color = ft.Colors.ON_SURFACE if fixed_image else ft.Colors.GREY
+            if display.page is not None:
+                display.update()
+        if clear_button is not None:
+            clear_button.disabled = not fixed_image
+            if clear_button.page is not None:
+                clear_button.update()
+
+    def _auto_schedule_dialog_clear_fixed_image(self) -> None:
+        self._auto_schedule_dialog_set_fixed_image(None)
+
+    def _auto_schedule_dialog_save(self) -> None:
+        state = self._auto_schedule_dialog_state
+        if not state:
+            self._auto_schedule_dialog_cancel()
+            return
+        time_field: ft.TextField = state.get("time_field")  # type: ignore[assignment]
+        if time_field is None:
+            self._auto_schedule_dialog_cancel()
+            return
+        raw_time = str(time_field.value or "").strip()
+        normalized_time = self._auto_normalize_schedule_time(raw_time)
+        if normalized_time is None:
+            time_field.error_text = "请输入合法的 24 小时时间，如 08:30"
+            if time_field.page is not None:
+                time_field.update()
+            return
+        time_field.error_text = None
+        if time_field.page is not None:
+            time_field.update()
+        list_checks: dict[str, ft.Checkbox] = state.get("list_checks", {})  # type: ignore[assignment]
+        selected_ids = [list_id for list_id, checkbox in list_checks.items() if bool(checkbox.value)]
+        fixed_image = state.get("fixed_image") or None
+        entry_data = {
+            "time": normalized_time,
+            "list_ids": selected_ids,
+            "fixed_image": fixed_image,
+        }
+        config = copy.deepcopy(self._auto_current_config())
+        schedule = dict(config.get("schedule") or {})
+        entries = [dict(item) for item in schedule.get("entries", []) if isinstance(item, dict)]
+        index = state.get("index")
+        if isinstance(index, int) and 0 <= index < len(entries):
+            entries[index] = entry_data
+        else:
+            entries.append(entry_data)
+        entries.sort(key=lambda item: str(item.get("time") or "00:00"))
+        schedule["entries"] = entries
+        config["schedule"] = schedule
+        self._auto_schedule_dialog_state = {}
+        self._close_dialog()
+        self._auto_schedule_dialog = None
+        self._auto_commit_config(config)
+        self._show_snackbar("定时任务已保存。")
+
+    def _auto_schedule_dialog_cancel(self) -> None:
+        self._auto_schedule_dialog_state = {}
+        if self._auto_schedule_dialog is not None:
+            self._close_dialog()
+            self._auto_schedule_dialog = None
+
+    def _auto_normalize_schedule_time(self, value: str) -> str | None:
+        if not value:
+            return None
+        parts = value.split(":", 1)
+        if len(parts) != 2:
+            return None
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1])
+        except ValueError:
+            return None
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            return None
+        return f"{hour:02d}:{minute:02d}"
+
+    def _auto_delete_schedule_entry(self, index: int) -> None:
+        config = copy.deepcopy(self._auto_current_config())
+        schedule = dict(config.get("schedule") or {})
+        entries = [dict(item) for item in schedule.get("entries", []) if isinstance(item, dict)]
+        if not (0 <= index < len(entries)):
+            self._show_snackbar("未找到该定时任务。", error=True)
+            return
+        entries.pop(index)
+        schedule["entries"] = entries
+        config["schedule"] = schedule
+        self._auto_commit_config(config)
+        self._show_snackbar("已删除定时任务。")
+
+    def _auto_on_schedule_order_change(self, event: ft.ControlEvent) -> None:
+        if self._auto_updating_auto_ui:
+            return
+        value = str(getattr(event.control, "value", "") or "random")
+        if value not in {"random", "random_no_repeat", "sequential"}:
+            value = "random"
+        config = copy.deepcopy(self._auto_current_config())
+        schedule = dict(config.get("schedule") or {})
+        current = str(schedule.get("order") or "random")
+        if current == "shuffle":
+            current = "random"
+        if current == value:
+            return
+        schedule["order"] = value
+        config["schedule"] = schedule
+        self._auto_commit_config(config)
+
+    def _auto_refresh_slideshow_items(self, *, enabled: bool | None = None) -> None:
+        if self._auto_slideshow_items_column is None:
+            return
+        config = self._auto_current_config()
+        slideshow = config.get("slideshow") or {}
+        items = [dict(item) for item in slideshow.get("items", []) if isinstance(item, dict)]
+        self._auto_slideshow_items = items
+        enabled_state = bool(enabled) if enabled is not None else bool(
+            config.get("enabled", False) and str(config.get("mode") or "off") == "slideshow"
+        )
+        column = self._auto_slideshow_items_column
+        column.controls.clear()
+        if not items:
+            column.controls.append(
+                ft.Text("尚未添加任何轮播素材。", size=12, color=ft.Colors.GREY)
+            )
+        else:
+            for item in items:
+                column.controls.append(
+                    self._auto_build_slideshow_item_row(item, enabled=enabled_state)
+                )
+        if column.page is not None:
+            column.update()
+        for button in (self._auto_slideshow_add_file_button, self._auto_slideshow_add_folder_button):
+            if button is not None:
+                button.disabled = not enabled_state
+                if button.page is not None:
+                    button.update()
+
+    def _auto_build_slideshow_item_row(self, item: dict[str, Any], *, enabled: bool) -> ft.Control:
+        item_id = str(item.get("id") or uuid.uuid4().hex)
+        kind = str(item.get("kind") or "file")
+        path = str(item.get("path") or "")
+        icon = ft.Icons.IMAGE if kind == "file" else ft.Icons.FOLDER
+        name = Path(path).name or path or "(空路径)"
+        info_column = ft.Column(
+            [
+                ft.Row(
+                    [ft.Icon(icon, size=16), ft.Text(name, size=13, weight=ft.FontWeight.BOLD)],
+                    spacing=6,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Text(path, size=12, color=ft.Colors.GREY),
+            ],
+            spacing=2,
+            tight=True,
+        )
+        remove_button = ft.IconButton(
+            icon=ft.Icons.DELETE,
+            tooltip="移除",
+            on_click=lambda _: self._auto_remove_slideshow_item(item_id),
+            disabled=not enabled,
+        )
+        return ft.Container(
+            ft.Row(
+                [info_column, remove_button],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            bgcolor=self._bgcolor_surface_low,
+            border_radius=8,
+            padding=ft.padding.symmetric(vertical=6, horizontal=10),
+        )
+
+    def _auto_open_slideshow_file_picker(self) -> None:
+        self._ensure_auto_slideshow_file_picker()
+        if self._auto_slideshow_file_picker is None:
+            self._show_snackbar("无法打开文件选择器。", error=True)
+            return
+        try:
+            self._auto_slideshow_file_picker.pick_files(
+                allow_multiple=True,
+                file_type=ft.FilePickerFileType.IMAGE,
+            )
+        except Exception as exc:
+            logger.error("选择图片失败: {error}", error=str(exc))
+            self._show_snackbar("无法选择图片。", error=True)
+
+    def _auto_open_slideshow_dir_picker(self) -> None:
+        self._ensure_auto_slideshow_dir_picker()
+        if self._auto_slideshow_dir_picker is None:
+            self._show_snackbar("无法打开文件选择器。", error=True)
+            return
+        try:
+            self._auto_slideshow_dir_picker.get_directory_path()
+        except Exception as exc:
+            logger.error("选择文件夹失败: {error}", error=str(exc))
+            self._show_snackbar("无法选择文件夹。", error=True)
+
+    def _ensure_auto_slideshow_file_picker(self) -> None:
+        if self.page is None:
+            return
+        if self._auto_slideshow_file_picker is None:
+            self._auto_slideshow_file_picker = ft.FilePicker(
+                on_result=self._handle_auto_slideshow_file_result
+            )
+        if self._auto_slideshow_file_picker not in self.page.overlay:
+            self.page.overlay.append(self._auto_slideshow_file_picker)
+            self.page.update()
+
+    def _ensure_auto_slideshow_dir_picker(self) -> None:
+        if self.page is None:
+            return
+        if self._auto_slideshow_dir_picker is None:
+            self._auto_slideshow_dir_picker = ft.FilePicker(
+                on_result=self._handle_auto_slideshow_dir_result
+            )
+        if self._auto_slideshow_dir_picker not in self.page.overlay:
+            self.page.overlay.append(self._auto_slideshow_dir_picker)
+            self.page.update()
+
+    def _handle_auto_slideshow_file_result(self, event: ft.FilePickerResultEvent) -> None:
+        if not event.files:
+            return
+        paths = [getattr(item, "path", None) for item in event.files]
+        valid_paths = [path for path in paths if path]
+        if not valid_paths:
+            return
+        self._auto_add_slideshow_items("file", valid_paths)
+
+    def _handle_auto_slideshow_dir_result(self, event: ft.FilePickerResultEvent) -> None:
+        path = getattr(event, "path", None) or getattr(event, "full_path", None)
+        if not path:
+            return
+        self._auto_add_slideshow_items("folder", [path])
+
+    def _auto_add_slideshow_items(self, kind: str, paths: Sequence[str]) -> None:
+        if not paths:
+            return
+        config = copy.deepcopy(self._auto_current_config())
+        slideshow = dict(config.get("slideshow") or {})
+        items = [dict(item) for item in slideshow.get("items", []) if isinstance(item, dict)]
+        existing_paths = {item.get("path") for item in items}
+        added = False
+        for path in paths:
+            if not path or path in existing_paths:
+                continue
+            items.append({"id": uuid.uuid4().hex, "kind": kind, "path": path})
+            existing_paths.add(path)
+            added = True
+        if not added:
+            self._show_snackbar("未添加新项目。")
+            return
+        slideshow["items"] = items
+        config["slideshow"] = slideshow
+        self._auto_commit_config(config)
+        self._show_snackbar("已添加轮播素材。")
+
+    def _auto_remove_slideshow_item(self, item_id: str) -> None:
+        config = copy.deepcopy(self._auto_current_config())
+        slideshow = dict(config.get("slideshow") or {})
+        items = [dict(item) for item in slideshow.get("items", []) if isinstance(item, dict)]
+        new_items = [item for item in items if str(item.get("id")) != item_id]
+        if len(new_items) == len(items):
+            self._show_snackbar("未找到该项目。", error=True)
+            return
+        slideshow["items"] = new_items
+        config["slideshow"] = slideshow
+        self._auto_commit_config(config)
+        self._show_snackbar("已移除轮播素材。")
+
+    def _auto_on_slideshow_value_change(self, event: ft.ControlEvent) -> None:
+        control: ft.TextField = event.control  # type: ignore[assignment]
+        if control is None or self._auto_updating_auto_ui:
+            return
+        raw = str(control.value or "").strip()
+        if not raw:
+            control.error_text = "请输入数字"
+            if control.page is not None:
+                control.update()
+            return
+        try:
+            value = int(raw)
+        except ValueError:
+            control.error_text = "请输入数字"
+            if control.page is not None:
+                control.update()
+            return
+        if value <= 0:
+            control.error_text = "必须大于 0"
+            if control.page is not None:
+                control.update()
+            return
+        control.error_text = None
+        if control.page is not None:
+            control.update()
+        config = copy.deepcopy(self._auto_current_config())
+        slideshow = dict(config.get("slideshow") or {})
+        slideshow["value"] = value
+        config["slideshow"] = slideshow
+        self._auto_commit_config(config)
+
+    def _auto_on_slideshow_unit_change(self, event: ft.ControlEvent) -> None:
+        if self._auto_updating_auto_ui:
+            return
+        value = str(getattr(event.control, "value", "") or "minutes")
+        if value not in {"seconds", "minutes", "hours"}:
+            value = "minutes"
+        config = copy.deepcopy(self._auto_current_config())
+        slideshow = dict(config.get("slideshow") or {})
+        slideshow["unit"] = value
+        config["slideshow"] = slideshow
+        self._auto_commit_config(config)
+
+    def _auto_on_slideshow_order_change(self, event: ft.ControlEvent) -> None:
+        if self._auto_updating_auto_ui:
+            return
+        value = str(getattr(event.control, "value", "") or "sequential")
+        if value not in {"sequential", "random", "random_no_repeat"}:
+            value = "sequential"
+        config = copy.deepcopy(self._auto_current_config())
+        slideshow = dict(config.get("slideshow") or {})
+        current = str(slideshow.get("order") or "sequential")
+        if current == "shuffle":
+            current = "random"
+        if current == value:
+            return
+        slideshow["order"] = value
+        config["slideshow"] = slideshow
+        self._auto_commit_config(config)
+
+    def _auto_on_toggle_enabled(self, event: ft.ControlEvent) -> None:
+        if self._auto_updating_auto_ui:
+            return
+        new_value = bool(getattr(event.control, "value", False))
+        config = copy.deepcopy(self._auto_current_config())
+        config["enabled"] = new_value
+        self._auto_commit_config(config)
+
+    def _auto_on_mode_change(self, event: ft.ControlEvent) -> None:
+        if self._auto_updating_auto_ui:
+            return
+        value = str(getattr(event.control, "value", "") or "off")
+        if value not in {"off", "interval", "schedule", "slideshow"}:
+            value = "off"
+        config = copy.deepcopy(self._auto_current_config())
+        config["mode"] = value
+        self._auto_commit_config(config)
+
+    def _auto_on_interval_value_change(self, event: ft.ControlEvent) -> None:
+        control: ft.TextField = event.control  # type: ignore[assignment]
+        if control is None:
+            return
+        if self._auto_updating_auto_ui:
+            return
+        raw = str(control.value or "").strip()
+        if not raw:
+            control.error_text = "请输入数字"
+            if control.page is not None:
+                control.update()
+            return
+        try:
+            value = int(raw)
+        except ValueError:
+            control.error_text = "请输入数字"
+            if control.page is not None:
+                control.update()
+            return
+        if value <= 0:
+            control.error_text = "必须大于 0"
+            if control.page is not None:
+                control.update()
+            return
+        control.error_text = None
+        if control.page is not None:
+            control.update()
+        config = copy.deepcopy(self._auto_current_config())
+        interval = dict(config.get("interval") or {})
+        interval["value"] = value
+        config["interval"] = interval
+        self._auto_commit_config(config)
+
+    def _auto_on_interval_unit_change(self, event: ft.ControlEvent) -> None:
+        if self._auto_updating_auto_ui:
+            return
+        value = str(getattr(event.control, "value", "") or "minutes")
+        if value not in {"seconds", "minutes", "hours"}:
+            value = "minutes"
+        config = copy.deepcopy(self._auto_current_config())
+        interval = dict(config.get("interval") or {})
+        interval["unit"] = value
+        config["interval"] = interval
+        self._auto_commit_config(config)
+
+    def _auto_on_interval_order_change(self, event: ft.ControlEvent) -> None:
+        if self._auto_updating_auto_ui:
+            return
+        value = str(getattr(event.control, "value", "") or "random")
+        if value not in {"random", "random_no_repeat", "sequential"}:
+            value = "random"
+        config = copy.deepcopy(self._auto_current_config())
+        interval = dict(config.get("interval") or {})
+        current = str(interval.get("order") or "random")
+        if current == "shuffle":
+            current = "random"
+        if current == value:
+            return
+        interval["order"] = value
+        config["interval"] = interval
+        self._auto_commit_config(config)
+
+    def _auto_refresh_interval_lists(self, *, enabled: bool | None = None) -> None:
+        if self._auto_interval_lists_wrap is None:
+            return
+        config = self._auto_current_config()
+        selected_ids = set((config.get("interval") or {}).get("list_ids") or [])
+        enabled_state = bool(config.get("enabled", False)) if enabled is None else bool(enabled)
+        lists = self._auto_list_store.all()
+        self._auto_interval_list_checks = {}
+        self._auto_interval_lists_wrap.controls.clear()
+        if not lists:
+            self._auto_interval_lists_wrap.controls.append(
+                ft.Text("暂无自动更换列表，可在下方新建。", size=12, color=ft.Colors.GREY)
+            )
+        else:
+            for auto_list in lists:
+                label = f"{auto_list.name}（{len(auto_list.entries)} 条目）"
+                checkbox = ft.Checkbox(
+                    label=label,
+                    value=auto_list.id in selected_ids,
+                    on_change=lambda e, list_id=auto_list.id: self._auto_on_interval_list_toggle(
+                        list_id, bool(getattr(e.control, "value", False))
+                    ),
+                    disabled=not enabled_state,
+                )
+                self._auto_interval_list_checks[auto_list.id] = checkbox
+                self._auto_interval_lists_wrap.controls.append(checkbox)
+        if self._auto_interval_lists_wrap.page is not None:
+            self._auto_interval_lists_wrap.update()
+
+    def _auto_on_interval_list_toggle(self, list_id: str, checked: bool) -> None:
+        if self._auto_updating_auto_ui:
+            return
+        config = copy.deepcopy(self._auto_current_config())
+        interval = dict(config.get("interval") or {})
+        list_ids = [str(item) for item in interval.get("list_ids", []) if item]
+        if checked and list_id not in list_ids:
+            list_ids.append(list_id)
+        if not checked and list_id in list_ids:
+            list_ids = [item for item in list_ids if item != list_id]
+        interval["list_ids"] = list_ids
+        config["interval"] = interval
+        self._auto_commit_config(config)
+
+    def _auto_set_interval_fixed_image(self, path: str | None) -> None:
+        config = copy.deepcopy(self._auto_current_config())
+        interval = dict(config.get("interval") or {})
+        interval["fixed_image"] = path or None
+        config["interval"] = interval
+        self._auto_commit_config(config)
+
+    def _auto_clear_interval_fixed_image(self) -> None:
+        self._auto_set_interval_fixed_image(None)
+
+    def _auto_open_fixed_image_picker(self, target: str, index: int | None = None) -> None:
+        self._ensure_auto_fixed_image_picker()
+        if self._auto_fixed_image_picker is None:
+            self._show_snackbar("无法打开文件选择器。", error=True)
+            return
+        self._auto_fixed_image_target = (target, index)
+        try:
+            self._auto_fixed_image_picker.pick_files(
+                allow_multiple=False,
+                file_type=ft.FilePickerFileType.IMAGE,
+            )
+        except Exception as exc:
+            logger.error("打开文件选择器失败: {error}", error=str(exc))
+            self._show_snackbar("无法打开文件选择器。", error=True)
+
+    def _ensure_auto_fixed_image_picker(self) -> None:
+        if self.page is None:
+            return
+        if self._auto_fixed_image_picker is None:
+            self._auto_fixed_image_picker = ft.FilePicker(
+                on_result=self._handle_auto_fixed_image_picker_result
+            )
+        if self._auto_fixed_image_picker not in self.page.overlay:
+            self.page.overlay.append(self._auto_fixed_image_picker)
+            self.page.update()
+
+    def _handle_auto_fixed_image_picker_result(self, event: ft.FilePickerResultEvent) -> None:
+        target = self._auto_fixed_image_target
+        self._auto_fixed_image_target = None
+        if not target:
+            return
+        path: str | None = None
+        if event.files:
+            file = event.files[0]
+            path = getattr(file, "path", None)
+        if not path:
+            return
+        target_name, target_index = target
+        if target_name == "interval":
+            self._auto_set_interval_fixed_image(path)
+        elif target_name == "schedule":
+            self._auto_update_schedule_entry_fixed_image(target_index, path)
+        elif target_name == "schedule_dialog":
+            self._auto_schedule_dialog_set_fixed_image(path)
+
+    def _auto_update_schedule_entry_fixed_image(self, index: int | None, path: str | None) -> None:
+        # 占位：定时模式界面尚未实现
+        if index is None:
+            return
+        config = copy.deepcopy(self._auto_current_config())
+        schedule = dict(config.get("schedule") or {})
+        entries = [dict(item) for item in schedule.get("entries", [])]
+        if not (0 <= index < len(entries)):
+            return
+        entries[index]["fixed_image"] = path or None
+        schedule["entries"] = entries
+        config["schedule"] = schedule
+        self._auto_commit_config(config)
+
+    def _auto_open_list_import(self) -> None:
+        self._ensure_auto_list_picker()
+        if self._auto_list_picker is None:
+            self._show_snackbar("无法打开文件选择器。", error=True)
+            return
+        self._auto_list_picker_mode = "import"
+        try:
+            self._auto_list_picker.pick_files(allow_multiple=True, file_type=ft.FilePickerFileType.CUSTOM, allowed_extensions=["json"])
+        except Exception as exc:
+            logger.error("打开导入对话框失败: {error}", error=str(exc))
+            self._show_snackbar("无法打开导入对话框。", error=True)
+
+    def _auto_open_list_export_all(self) -> None:
+        self._ensure_auto_list_picker()
+        if self._auto_list_picker is None:
+            self._show_snackbar("无法打开文件选择器。", error=True)
+            return
+        self._auto_list_picker_mode = "export_all"
+        try:
+            self._auto_list_picker.save_file(file_name="auto_lists.json")
+        except Exception as exc:
+            logger.error("打开导出对话框失败: {error}", error=str(exc))
+            self._show_snackbar("无法打开导出对话框。", error=True)
+
+    def _auto_refresh_auto_lists_summary(self, lists: list[AutoChangeList]) -> None:
+        if self._auto_lists_summary_text is None:
+            return
+        self._auto_lists_summary_text.value = (
+            f"当前共 {len(lists)} 个列表，可在自动更换设置中随时选择使用。"
+        )
+        if self._auto_lists_summary_text.page is not None:
+            self._auto_lists_summary_text.update()
+
+    def _refresh_auto_lists_view(self) -> None:
+        if self._auto_lists_column is None:
+            return
+        lists = self._auto_list_store.all()
+        self._auto_refresh_auto_lists_summary(lists)
+        self._auto_lists_column.controls.clear()
+        if not lists:
+            self._auto_lists_column.controls.append(
+                ft.Text("尚未创建任何自动更换列表。", size=12, color=ft.Colors.GREY)
+            )
+        else:
+            for auto_list in lists:
+                self._auto_lists_column.controls.append(
+                    self._auto_build_list_card(auto_list)
+                )
+        if self._auto_lists_column.page is not None:
+            self._auto_lists_column.update()
+
+    def _auto_build_list_card(self, auto_list: AutoChangeList) -> ft.Control:
+        entry_count = len(auto_list.entries)
+        subtitle = f"{entry_count} 个条目"
+        description = auto_list.description.strip()
+        info_column = ft.Column(
+            [
+                ft.Text(auto_list.name, size=16, weight=ft.FontWeight.BOLD),
+                ft.Text(subtitle, size=12, color=ft.Colors.GREY),
+            ]
+            + ([ft.Text(description, size=12)] if description else []),
+            spacing=4,
+            tight=True,
+        )
+        actions = ft.Row(
+            [
+                ft.TextButton(
+                    "编辑",
+                    icon=ft.Icons.EDIT,
+                    on_click=lambda _: self._auto_open_list_editor(auto_list.id),
+                ),
+                ft.TextButton(
+                    "导出",
+                    icon=ft.Icons.DOWNLOAD,
+                    on_click=lambda _: self._auto_export_single_list(auto_list.id),
+                ),
+                ft.TextButton(
+                    "删除",
+                    icon=ft.Icons.DELETE,
+                    on_click=lambda _: self._auto_confirm_delete_list(auto_list.id),
+                ),
+            ],
+            spacing=8,
+        )
+        summary = ft.Column(
+            [info_column, actions],
+            spacing=8,
+        )
+        return ft.Card(
+            content=ft.Container(
+                summary,
+                padding=12,
+            )
+        )
+
+    def _auto_create_list(self) -> None:
+        new_list = AutoChangeList(id=uuid.uuid4().hex, name="新建列表")
+        self._auto_start_list_editor(new_list)
+
+    def _auto_open_list_editor(self, list_id: str) -> None:
+        auto_list = self._auto_list_store.get(list_id)
+        if auto_list is None:
+            self._show_snackbar("未找到该列表。", error=True)
+            return
+        self._auto_start_list_editor(auto_list)
+
+    def _auto_export_single_list(self, list_id: str) -> None:
+        self._ensure_auto_list_picker()
+        if self._auto_list_picker is None:
+            self._show_snackbar("无法打开另存为对话框。", error=True)
+            return
+        self._auto_list_picker_mode = "export_single"
+        self._auto_list_pending_export_id = list_id
+        try:
+            self._auto_list_picker.save_file(file_name=f"auto_list_{list_id}.json")
+        except Exception as exc:
+            logger.error("打开导出对话框失败: {error}", error=str(exc))
+            self._show_snackbar("无法打开导出对话框。", error=True)
+
+    def _auto_confirm_delete_list(self, list_id: str) -> None:
+        auto_list = self._auto_list_store.get(list_id)
+        if auto_list is None:
+            self._show_snackbar("未找到该列表。", error=True)
+            return
+
+        def _on_confirm(_: ft.ControlEvent | None = None) -> None:
+            self._close_dialog()
+            self._auto_delete_list(list_id)
+
+        def _on_cancel(_: ft.ControlEvent | None = None) -> None:
+            self._close_dialog()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("删除自动更换列表"),
+            content=ft.Text(f"确定要删除列表“{auto_list.name}”吗？该操作不可撤销。"),
+            actions=[
+                ft.TextButton("取消", on_click=_on_cancel),
+                ft.TextButton("删除", on_click=_on_confirm),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._open_dialog(dialog)
+
+    def _auto_delete_list(self, list_id: str) -> None:
+        removed = self._auto_list_store.delete(list_id)
+        if not removed:
+            self._show_snackbar("删除失败，列表不存在。", error=True)
+            return
+        config = self._auto_current_config()
+        changed = False
+        interval = config.get("interval") or {}
+        list_ids = interval.get("list_ids") or []
+        if list_id in list_ids:
+            interval["list_ids"] = [item for item in list_ids if item != list_id]
+            config["interval"] = interval
+            changed = True
+        schedule = config.get("schedule") or {}
+        entries = schedule.get("entries") or []
+        new_entries = []
+        for entry in entries:
+            ids = [item for item in entry.get("list_ids", []) if item != list_id]
+            if ids != entry.get("list_ids", []):
+                changed = True
+            entry["list_ids"] = ids
+            new_entries.append(entry)
+        if schedule.get("entries") != new_entries:
+            schedule["entries"] = new_entries
+            config["schedule"] = schedule
+        if changed:
+            self._auto_commit_config(config)
+        self._refresh_auto_lists_view()
+        self._show_snackbar("已删除自动更换列表。")
+
+    def _auto_start_list_editor(self, auto_list: AutoChangeList) -> None:
+        name_field = ft.TextField(label="列表名称", value=auto_list.name, autofocus=True)
+        desc_field = ft.TextField(
+            label="描述",
+            value=auto_list.description,
+            multiline=True,
+            min_lines=1,
+            max_lines=3,
+        )
+        entries = [entry.to_dict() for entry in auto_list.entries]
+        entries_column = ft.Column(spacing=8, tight=True)
+        entry_editor = ft.Container()
+        self._auto_editor_state = {
+            "list": auto_list,
+            "name_field": name_field,
+            "desc_field": desc_field,
+            "entries": entries,
+            "entries_column": entries_column,
+            "entry_editor": entry_editor,
+        }
+
+        add_button = ft.PopupMenuButton(
+            icon=ft.Icons.ADD,
+            items=[
+                ft.PopupMenuItem(
+                    text="Bing 每日",
+                    on_click=lambda _: self._auto_editor_add_entry_type("bing"),
+                ),
+                ft.PopupMenuItem(
+                    text="Windows 聚焦",
+                    on_click=lambda _: self._auto_editor_add_entry_type("spotlight"),
+                ),
+                ft.PopupMenuItem(
+                    text="收藏夹",
+                    on_click=lambda _: self._auto_editor_add_entry_type("favorite_folder"),
+                ),
+                ft.PopupMenuItem(
+                    text="壁纸源",
+                    on_click=lambda _: self._auto_editor_add_entry_type("wallpaper_source"),
+                ),
+                ft.PopupMenuItem(
+                    text="IM 图片源",
+                    on_click=lambda _: self._auto_editor_add_entry_type("im_source"),
+                ),
+                ft.PopupMenuItem(
+                    text="AI 生成",
+                    on_click=lambda _: self._auto_editor_add_entry_type("ai"),
+                ),
+                ft.PopupMenuItem(
+                    text="本地图片",
+                    on_click=lambda _: self._auto_editor_add_entry_type("local_image"),
+                ),
+                ft.PopupMenuItem(
+                    text="本地文件夹",
+                    on_click=lambda _: self._auto_editor_add_entry_type("local_folder"),
+                ),
+            ],
+        )
+
+        controls = ft.Column(
+            [
+                name_field,
+                desc_field,
+                ft.Row(
+                    [ft.Text("条目", size=14, weight=ft.FontWeight.BOLD), add_button],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                entries_column,
+                entry_editor,
+            ],
+            spacing=12,
+            tight=True,
+            scroll=ft.ScrollMode.AUTO,
+        )
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("编辑自动更换列表"),
+            content=ft.Container(controls, width=520),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._auto_editor_cancel()),
+                ft.FilledButton("保存", on_click=lambda _: self._auto_editor_save()),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._auto_editor_dialog = dialog
+        self._open_dialog(dialog)
+        self._auto_editor_refresh_entries()
+
+    def _auto_editor_cancel(self) -> None:
+        self._auto_editor_state = {}
+        if self._auto_editor_dialog is not None:
+            self._close_dialog()
+            self._auto_editor_dialog = None
+
+    def _auto_editor_save(self) -> None:
+        state = self._auto_editor_state
+        if not state:
+            self._auto_editor_cancel()
+            return
+        name_field: ft.TextField = state["name_field"]
+        desc_field: ft.TextField = state["desc_field"]
+        raw_name = (name_field.value or "").strip() or "未命名列表"
+        raw_desc = (desc_field.value or "").strip()
+        entries_data: list[dict[str, Any]] = state.get("entries", [])
+        auto_list: AutoChangeList = state["list"]
+        auto_list.name = raw_name
+        auto_list.description = raw_desc
+        auto_list.entries = [AutoChangeListEntry.from_dict(entry) for entry in entries_data]
+        self._auto_list_store.upsert(auto_list)
+        self._auto_editor_cancel()
+        self._refresh_auto_lists_view()
+        self._auto_change_service.refresh()
+        self._show_snackbar("已保存自动更换列表。")
+
+    def _auto_editor_refresh_entries(self) -> None:
+        state = self._auto_editor_state
+        if not state:
+            return
+        entries_column: ft.Column = state.get("entries_column")
+        if entries_column is None:
+            return
+        entries = state.get("entries", [])
+        entries_column.controls.clear()
+        if not entries:
+            entries_column.controls.append(
+                ft.Text("当前列表暂无条目。", size=12, color=ft.Colors.GREY)
+            )
+        else:
+            for index, entry in enumerate(entries):
+                entries_column.controls.append(
+                    self._auto_build_editor_entry_row(index, entry)
+                )
+        if entries_column.page is not None:
+            entries_column.update()
+
+    def _auto_build_editor_entry_row(self, index: int, entry: dict[str, Any]) -> ft.Control:
+        summary = self._auto_entry_summary(entry)
+        return ft.Container(
+            ft.Row(
+                [
+                    ft.Text(summary, size=13),
+                    ft.Row(
+                        [
+                            ft.IconButton(
+                                icon=ft.Icons.EDIT,
+                                tooltip="编辑",
+                                on_click=lambda _: self._auto_editor_add_entry_type(
+                                    entry.get("type", ""), index
+                                ),
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DELETE,
+                                tooltip="删除",
+                                on_click=lambda _: self._auto_editor_remove_entry(index),
+                            ),
+                        ],
+                        spacing=4,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.padding.symmetric(vertical=4, horizontal=8),
+            bgcolor=self._bgcolor_surface_low,
+            border_radius=8,
+        )
+
+    def _auto_editor_remove_entry(self, index: int) -> None:
+        entries = self._auto_editor_state.get("entries")
+        if not isinstance(entries, list):
+            return
+        if 0 <= index < len(entries):
+            entries.pop(index)
+            self._auto_editor_refresh_entries()
+
+    def _auto_entry_summary(self, entry: dict[str, Any]) -> str:
+        entry_type = entry.get("type", "")
+        config = entry.get("config") or {}
+        if entry_type == "bing":
+            return "Bing 每日"
+        if entry_type == "spotlight":
+            return "Windows 聚焦"
+        if entry_type == "favorite_folder":
+            folder_id = config.get("folder_id")
+            folder = self._favorite_manager.get_folder(folder_id) if folder_id else None
+            name = folder.name if folder else "未知收藏夹"
+            return f"收藏夹：{name}"
+        if entry_type == "wallpaper_source":
+            category_id = config.get("category_id")
+            ref = self._wallpaper_source_manager.find_category(category_id) if category_id else None
+            if ref is None:
+                return "壁纸源：未找到分类"
+            return f"壁纸源：{ref.source_name} · {ref.label}"
+        if entry_type == "im_source":
+            source = config.get("source") or {}
+            friendly = source.get("friendly_name") or source.get("file_name") or "未命名源"
+            category = source.get("category")
+            if category:
+                return f"IM：{category} / {friendly}"
+            return f"IM：{friendly}"
+        if entry_type == "ai":
+            provider = config.get("provider") or "AI"
+            prompt = (config.get("prompt") or "").strip()
+            if len(prompt) > 20:
+                prompt = prompt[:20] + "…"
+            return f"AI：{provider} · {prompt or '无提示'}"
+        if entry_type == "local_image":
+            path = config.get("path") or ""
+            return f"图片：{path or '未选择'}"
+        if entry_type == "local_folder":
+            path = config.get("path") or ""
+            return f"文件夹：{path or '未选择'}"
+        return entry_type or "未知条目"
+
+    def _auto_editor_add_entry_type(self, entry_type: str, index: int | None = None) -> None:
+        state = self._auto_editor_state
+        if not state:
+            return
+        entries = state.get("entries")
+        if not isinstance(entries, list):
+            return
+        existing = entries[index] if index is not None and 0 <= index < len(entries) else None
+        self._auto_open_entry_dialog(entry_type, existing, index)
+
+    def _auto_open_entry_dialog(
+        self,
+        entry_type: str,
+        existing: dict[str, Any] | None,
+        index: int | None,
+    ) -> None:
+        normalized_type = entry_type or (existing.get("type") if existing else "")
+        normalized_type = str(normalized_type or "").strip()
+        if not normalized_type:
+            self._show_snackbar("暂不支持该条目类型。", error=True)
+            return
+        config = dict(existing.get("config") or {}) if existing else {}
+        controls: list[ft.Control] = []
+        confirm_enabled = True
+        error_message: str | None = None
+        collected_controls: dict[str, Any] = {}
+
+        def _collect_wallpaper_source() -> dict[str, Any]:
+            dropdown: ft.Dropdown = collected_controls["dropdown"]
+            category_id = dropdown.value
+            if not category_id:
+                raise ValueError("请选择一个壁纸源分类。")
+            ref = self._wallpaper_source_manager.find_category(category_id)
+            if ref is None:
+                raise ValueError("未找到所选壁纸源分类。")
+            params_controls: list[_WSParameterControl] = collected_controls.get("params", [])
+            params: dict[str, Any] = {}
+            for control in params_controls:
+                value = control.getter()
+                if getattr(control.option, "required", False) and value in (None, ""):
+                    label = getattr(control.option, "label", None) or getattr(control.option, "key", "参数")
+                    raise ValueError(f"请填写 {label}。")
+                if value not in (None, ""):
+                    params[control.option.key] = value
+            return {"category_id": category_id, "params": params}
+
+        def _collect_favorite_folder() -> dict[str, Any]:
+            dropdown: ft.Dropdown = collected_controls["dropdown"]
+            folder_id = dropdown.value
+            if not folder_id:
+                raise ValueError("请选择一个收藏夹。")
+            return {"folder_id": folder_id}
+
+        def _collect_im_source() -> dict[str, Any]:
+            dropdown: ft.Dropdown = collected_controls["dropdown"]
+            source_key = dropdown.value
+            if not source_key:
+                raise ValueError("请选择一个 IM 图片源。")
+            source = collected_controls.get("source_map", {}).get(source_key)
+            if not source:
+                raise ValueError("未找到该 IM 图片源。")
+            param_controls: list[_IMParameterControl] = collected_controls.get("params", [])
+            parameters: list[dict[str, Any]] = []
+            for control in param_controls:
+                value = control.getter()
+                config_meta = control.config or {}
+                required = bool(config_meta.get("required"))
+                friendly_label = (
+                    config_meta.get("friendly_name")
+                    or config_meta.get("name")
+                    or control.key
+                )
+                if required and value in (None, ""):
+                    raise ValueError(f"请填写 {friendly_label}。")
+                if value in (None, ""):
+                    continue
+                parameters.append({
+                    "config": copy.deepcopy(config_meta),
+                    "value": value,
+                    "key": control.key,
+                })
+            payload = {"source": source}
+            if parameters:
+                payload["parameters"] = parameters
+            return payload
+
+        def _collect_ai() -> dict[str, Any]:
+            provider_field: ft.Dropdown = collected_controls["provider"]
+            prompt_field: ft.TextField = collected_controls["prompt"]
+            width_field: ft.TextField = collected_controls["width"]
+            height_field: ft.TextField = collected_controls["height"]
+            provider = provider_field.value or ""
+            prompt = (prompt_field.value or "").strip()
+            if not provider:
+                raise ValueError("请选择提供商。")
+            if not prompt:
+                raise ValueError("请输入提示词。")
+            try:
+                width = int(width_field.value or 0)
+                height = int(height_field.value or 0)
+            except ValueError:
+                raise ValueError("请输入合法的尺寸。")
+            if width <= 0 or height <= 0:
+                raise ValueError("尺寸必须大于 0。")
+            return {
+                "provider": provider,
+                "prompt": prompt,
+                "width": width,
+                "height": height,
+            }
+
+        def _collect_local_path(field_key: str, required_text: str) -> dict[str, Any]:
+            text_field: ft.TextField = collected_controls[field_key]
+            value = (text_field.value or "").strip()
+            if not value:
+                raise ValueError(required_text)
+            return {"path": value}
+
+        collect_fn: Callable[[], dict[str, Any]]
+
+        if normalized_type == "bing":
+            controls.append(ft.Text("Bing 每日壁纸将自动获取最新图片。", size=12, color=ft.Colors.GREY))
+
+            def _collect_bing() -> dict[str, Any]:
+                return {}
+
+            collect_fn = _collect_bing
+        elif normalized_type == "spotlight":
+            controls.append(ft.Text("Windows 聚焦将使用系统 Spotlight 壁纸。", size=12, color=ft.Colors.GREY))
+
+            def _collect_spotlight() -> dict[str, Any]:
+                return {}
+
+            collect_fn = _collect_spotlight
+        elif normalized_type == "favorite_folder":
+            folders = self._favorite_manager.list_folders()
+            options = [ft.dropdown.Option(text=folder.name, key=folder.id) for folder in folders]
+            dropdown = ft.Dropdown(label="收藏夹", options=options, dense=True)
+            if not options:
+                confirm_enabled = False
+                error_message = "当前没有收藏夹可用。"
+            default_folder = config.get("folder_id")
+            if default_folder and options:
+                dropdown.value = default_folder
+            elif options:
+                dropdown.value = options[0].key
+            collected_controls["dropdown"] = dropdown
+            controls.append(dropdown)
+            collect_fn = _collect_favorite_folder
+        elif normalized_type == "wallpaper_source":
+            refs = self._auto_collect_wallpaper_categories()
+            if not refs:
+                confirm_enabled = False
+                error_message = "暂无可用壁纸源分类。"
+            dropdown_options: list[ft.dropdown.Option] = []
+            ref_map: dict[str, WallpaperCategoryRef] = {}
+            for ref in refs:
+                dropdown_options.append(
+                    ft.dropdown.Option(text=f"{ref.source_name} · {ref.label}", key=ref.category_id)
+                )
+                ref_map[ref.category_id] = ref
+            dropdown = ft.Dropdown(label="壁纸源分类", options=dropdown_options, dense=True)
+            params_column = ft.Column(spacing=8, tight=True)
+            collected_controls["dropdown"] = dropdown
+            collected_controls["params_column"] = params_column
+
+            def rebuild_params(category_id: str | None) -> None:
+                params_controls: list[_WSParameterControl] = []
+                params_column.controls.clear()
+                if not category_id:
+                    params_column.controls.append(ft.Text("请选择分类。", size=12, color=ft.Colors.GREY))
+                else:
+                    ref = ref_map.get(category_id)
+                    if ref is None:
+                        params_column.controls.append(ft.Text("该分类不可用。", size=12, color=ft.Colors.RED))
+                    else:
+                        record = self._wallpaper_source_manager.get_record(ref.source_id)
+                        cached_params = (
+                            dict(config.get("params") or {})
+                            if ref.category_id == config.get("category_id")
+                            else {}
+                        )
+                        if record is None:
+                            params_column.controls.append(ft.Text("无法加载壁纸源。", size=12, color=ft.Colors.RED))
+                        else:
+                            preset_id = ref.category.param_preset_id
+                            preset = (
+                                record.spec.parameters.get(preset_id)
+                                if preset_id
+                                else None
+                            )
+                            if preset and preset.options:
+                                for option in preset.options:
+                                    if getattr(option, "hidden", False):
+                                        continue
+                                    control = self._ws_make_parameter_control(
+                                        option,
+                                        cached_params.get(option.key),
+                                    )
+                                    params_controls.append(control)
+                                    params_column.controls.append(control.display)
+                            else:
+                                params_column.controls.append(
+                                    ft.Text("该分类无需额外参数。", size=12, color=ft.Colors.GREY)
+                                )
+                collected_controls["params"] = params_controls
+                if params_column.page is not None:
+                    params_column.update()
+
+            def on_change(event: ft.ControlEvent) -> None:
+                rebuild_params(event.control.value)
+
+            dropdown.on_change = on_change
+            default_category = config.get("category_id") if config else None
+            if default_category and default_category in ref_map:
+                dropdown.value = default_category
+            elif dropdown_options:
+                dropdown.value = dropdown_options[0].key
+            rebuild_params(dropdown.value)
+            controls.extend([dropdown, params_column])
+            collect_fn = _collect_wallpaper_source
+        elif normalized_type == "im_source":
+            categories = self._im_sources_by_category or {}
+            if not categories:
+                confirm_enabled = False
+                error_message = "暂无 IM 图片源，请先在“在线图片”页加载。"
+            dropdown_options: list[ft.dropdown.Option] = []
+            source_map: dict[str, dict[str, Any]] = {}
+            for category, items in categories.items():
+                for item in items:
+                    key = self._im_source_id(item)
+                    friendly_name = item.get("friendly_name") or item.get("file_name") or key
+                    dropdown_options.append(
+                        ft.dropdown.Option(text=f"{category} · {friendly_name}", key=key)
+                    )
+                    source_map[key] = item
+            dropdown = ft.Dropdown(label="IM 图片源", options=dropdown_options, dense=True)
+            collected_controls["dropdown"] = dropdown
+            collected_controls["source_map"] = source_map
+            params_column = ft.Column(spacing=8, tight=True)
+            collected_controls["params_column"] = params_column
+
+            def rebuild_im_params(source_key: str | None) -> None:
+                params_controls: list[_IMParameterControl] = []
+                params_column.controls.clear()
+                if not source_key:
+                    params_column.controls.append(ft.Text("请选择图片源。", size=12, color=ft.Colors.GREY))
+                else:
+                    source = source_map.get(source_key)
+                    if source is None:
+                        params_column.controls.append(ft.Text("未找到该图片源。", size=12, color=ft.Colors.RED))
+                    else:
+                        params = source.get("parameters") or []
+                        cached_params: dict[str, Any] = {}
+                        if existing and source_key == self._im_source_id(config.get("source") or {}):
+                            raw_cached = config.get("parameters") or []
+                            if isinstance(raw_cached, Sequence):
+                                for item in raw_cached:
+                                    if not isinstance(item, dict):
+                                        continue
+                                    cache_key = item.get("key")
+                                    if not cache_key:
+                                        meta = item.get("config") or item.get("parameter") or {}
+                                        cache_key = meta.get("name")
+                                    if cache_key:
+                                        cached_params[str(cache_key)] = item.get("value")
+                        for idx, param in enumerate(params):
+                            try:
+                                control = self._make_im_parameter_control(
+                                    param or {},
+                                    cached_params,
+                                    idx,
+                                )
+                            except Exception as exc:
+                                logger.error(f"构建 IM 参数控件失败: {exc}")
+                                continue
+                            params_controls.append(control)
+                            params_column.controls.append(control.display)
+                        if not params_controls:
+                            params_column.controls.append(
+                                ft.Text("该图片源无需参数。", size=12, color=ft.Colors.GREY)
+                            )
+                collected_controls["params"] = params_controls
+                if params_column.page is not None:
+                    params_column.update()
+
+            def im_on_change(event: ft.ControlEvent) -> None:
+                rebuild_im_params(event.control.value)
+
+            dropdown.on_change = im_on_change
+            default_source = None
+            if existing:
+                default_source = self._im_source_id(config.get("source") or {})
+            if default_source and default_source in source_map:
+                dropdown.value = default_source
+            elif dropdown_options:
+                dropdown.value = dropdown_options[0].key
+            rebuild_im_params(dropdown.value)
+            controls.extend([dropdown, params_column])
+            collect_fn = _collect_im_source
+        elif normalized_type == "ai":
+            provider_dropdown = ft.Dropdown(
+                label="提供商",
+                options=[ft.dropdown.Option(key="pollinations", text="Pollinations")],
+                value=config.get("provider") or "pollinations",
+                dense=True,
+            )
+            prompt_field = ft.TextField(
+                label="提示词",
+                value=config.get("prompt") or "",
+                multiline=True,
+                min_lines=2,
+                max_lines=4,
+            )
+            width_field = ft.TextField(
+                label="宽度",
+                value=str(config.get("width") or "512"),
+                keyboard_type=ft.KeyboardType.NUMBER,
+                width=140,
+                dense=True,
+            )
+            height_field = ft.TextField(
+                label="高度",
+                value=str(config.get("height") or "512"),
+                keyboard_type=ft.KeyboardType.NUMBER,
+                width=140,
+                dense=True,
+            )
+            collected_controls["provider"] = provider_dropdown
+            collected_controls["prompt"] = prompt_field
+            collected_controls["width"] = width_field
+            collected_controls["height"] = height_field
+            controls.extend([provider_dropdown, prompt_field, ft.Row([width_field, height_field], spacing=8)])
+            collect_fn = _collect_ai
+        elif normalized_type == "local_image":
+            path_field = ft.TextField(label="图片路径", value=config.get("path") or "")
+            collected_controls["path"] = path_field
+            controls.append(path_field)
+
+            def _collect_local_image() -> dict[str, Any]:
+                return _collect_local_path("path", "请选择图片文件。")
+
+            collect_fn = _collect_local_image
+        elif normalized_type == "local_folder":
+            path_field = ft.TextField(label="文件夹路径", value=config.get("path") or "")
+            collected_controls["path"] = path_field
+            controls.append(path_field)
+
+            def _collect_local_folder() -> dict[str, Any]:
+                return _collect_local_path("path", "请选择图片文件夹。")
+
+            collect_fn = _collect_local_folder
+        else:
+            self._show_snackbar("暂不支持该条目类型。", error=True)
+            return
+
+        body = ft.Column(controls, spacing=12, tight=True)
+        if error_message:
+            body.controls.append(ft.Text(error_message, size=12, color=ft.Colors.RED))
+
+        # If the list editor dialog is open, render the entry editor inline inside it
+        if self._auto_editor_dialog is not None and self._auto_editor_state:
+            # store inline state so confirm handler can access controls/collector
+            self._auto_entry_dialog_state = {
+                "type": normalized_type,
+                "collect": collect_fn,
+                "existing": existing,
+                "index": index,
+                "controls": collected_controls,
+            }
+
+            cancel_btn = ft.TextButton("取消", on_click=lambda _: self._auto_close_entry_inline())
+            confirm_btn = ft.FilledButton(
+                "确定",
+                on_click=lambda _: self._auto_confirm_entry_inline(),
+                disabled=not confirm_enabled,
+            )
+
+            inline_column = ft.Column([body, ft.Row([cancel_btn, confirm_btn], alignment=ft.MainAxisAlignment.END)], spacing=8)
+            placeholder: ft.Container = self._auto_editor_state.get("entry_editor")  # type: ignore[assignment]
+            if placeholder is None:
+                # fallback to dialog if placeholder missing
+                dialog = ft.AlertDialog(
+                    modal=True,
+                    title=ft.Text("编辑条目"),
+                    content=ft.Container(body, width=420),
+                    actions=[cancel_btn, confirm_btn],
+                    actions_alignment=ft.MainAxisAlignment.END,
+                )
+                self._auto_entry_dialog = dialog
+                self._open_dialog(dialog)
+                return
+            placeholder.content = inline_column
+            # update UI
+            if placeholder.page is not None:
+                placeholder.update()
+            return
+
+        # Otherwise fall back to modal dialog
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("编辑条目"),
+            content=ft.Container(body, width=420),
+            actions=[
+                ft.TextButton("取消", on_click=lambda _: self._auto_close_entry_dialog()),
+                ft.FilledButton(
+                    "确定",
+                    on_click=lambda _: self._auto_confirm_entry(normalized_type, collect_fn, existing, index),
+                    disabled=not confirm_enabled,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        self._auto_entry_dialog_state = {
+            "type": normalized_type,
+            "collect": collect_fn,
+            "existing": existing,
+            "index": index,
+            "controls": collected_controls,
+        }
+        self._auto_entry_dialog = dialog
+        self._open_dialog(dialog)
+
+    def _auto_confirm_entry(
+        self,
+        entry_type: str,
+        collect_fn: Callable[[], dict[str, Any]],
+        existing: dict[str, Any] | None,
+        index: int | None,
+    ) -> None:
+        state = self._auto_editor_state
+        if not state:
+            self._auto_close_entry_dialog()
+            return
+        try:
+            config = collect_fn()
+        except ValueError as exc:
+            self._show_snackbar(str(exc), error=True)
+            return
+        entries = state.get("entries")
+        if not isinstance(entries, list):
+            self._auto_close_entry_dialog()
+            return
+        entry_id = existing.get("id") if existing else None
+        if not entry_id:
+            entry_id = uuid.uuid4().hex
+        payload = {"id": entry_id, "type": entry_type, "config": config}
+        if index is None or index >= len(entries):
+            entries.append(payload)
+        else:
+            entries[index] = payload
+        self._auto_close_entry_dialog()
+        self._auto_editor_refresh_entries()
+
+    def _auto_close_entry_dialog(self) -> None:
+        self._auto_entry_dialog_state = {}
+        if self._auto_entry_dialog is not None:
+            self._close_dialog()
+            self._auto_entry_dialog = None
+
+    def _auto_close_entry_inline(self) -> None:
+        # Clear inline editor area in list editor dialog
+        try:
+            placeholder: ft.Container | None = self._auto_editor_state.get("entry_editor")  # type: ignore[assignment]
+        except Exception:
+            placeholder = None
+        if placeholder is not None:
+            placeholder.content = None
+            if placeholder.page is not None:
+                placeholder.update()
+        self._auto_entry_dialog_state = {}
+
+    def _auto_confirm_entry_inline(self) -> None:
+        state = self._auto_entry_dialog_state
+        if not state:
+            self._auto_close_entry_inline()
+            return
+        collect_fn: Callable[[], dict[str, Any]] | None = state.get("collect")
+        existing: dict[str, Any] | None = state.get("existing")
+        index: int | None = state.get("index")
+        if collect_fn is None:
+            self._show_snackbar("内部错误：缺少收集函数。", error=True)
+            return
+        try:
+            config = collect_fn()
+        except ValueError as exc:
+            self._show_snackbar(str(exc), error=True)
+            return
+        editor_state = self._auto_editor_state
+        if not editor_state:
+            self._auto_close_entry_inline()
+            return
+        entries = editor_state.get("entries")
+        if not isinstance(entries, list):
+            self._auto_close_entry_inline()
+            return
+        entry_id = existing.get("id") if existing else None
+        if not entry_id:
+            entry_id = uuid.uuid4().hex
+        payload = {"id": entry_id, "type": state.get("type"), "config": config}
+        if index is None or index >= len(entries):
+            entries.append(payload)
+        else:
+            entries[index] = payload
+        # clear inline editor and refresh entries
+        self._auto_close_entry_inline()
+        self._auto_editor_refresh_entries()
+
+    def _auto_collect_wallpaper_categories(self) -> list[WallpaperCategoryRef]:
+        refs: list[WallpaperCategoryRef] = []
+        for record in self._wallpaper_source_manager.enabled_records():
+            refs.extend(self._wallpaper_source_manager.category_refs(record.identifier))
+        refs.sort(key=lambda ref: (ref.source_name.lower(), ref.label.lower()))
+        return refs
+
 
     def _build_plugin_actions(
         self, factories: list[Callable[[], ft.Control]]
@@ -2070,6 +4387,13 @@ class Pages:
         else:
             self._show_snackbar("收藏已更新。")
 
+    def _handle_home_change_wallpaper(self, _: ft.ControlEvent | None) -> None:
+        success = self._auto_change_service.trigger_immediate_change()
+        if success:
+            self._show_snackbar("已触发自动更换，将立即刷新壁纸。")
+        else:
+            self._show_snackbar("请先启用间隔或轮播模式后再使用该功能。", error=True)
+
     def _build_home(self):
         from app.paths import ASSET_DIR  # local import to avoid circular dependencies
 
@@ -2088,6 +4412,19 @@ class Pages:
         refresh_btn = ft.IconButton(
             icon=ft.Icons.REFRESH, tooltip="刷新一言", on_click=self.refresh_hitokoto
         )
+        self._home_change_button = ft.TextButton(
+            "更换",
+            icon=ft.Icons.PHOTO_LIBRARY,
+            tooltip="立即触发自动更换（仅限间隔与轮播模式）",
+            on_click=self._handle_home_change_wallpaper,
+        )
+        config = self._auto_current_config()
+        enabled = bool(config.get("enabled", False))
+        mode = str(config.get("mode") or "off")
+        self._update_home_change_button_state(
+            interval_enabled=enabled and mode == "interval",
+            slideshow_enabled=enabled and mode == "slideshow",
+        )
         return ft.Container(
             ft.Column(
                 [
@@ -2103,7 +4440,7 @@ class Pages:
                                         tooltip="另存为当前壁纸",
                                         on_click=self._handle_home_export_clicked,
                                     ),
-                                    ft.TextButton("更换", icon=ft.Icons.PHOTO_LIBRARY),
+                                    self._home_change_button,
                                     ft.TextButton(
                                         "收藏",
                                         icon=ft.Icons.STAR,
@@ -9744,7 +12081,7 @@ class Pages:
             self._sniff_task_finish()
 
     def _favorite_loading_placeholder(self) -> ft.Control:
-        logger.warning("显示收藏页加载占位符")
+        logger.debug("显示收藏页加载占位符")
         return ft.Container(
             expand=True,
             alignment=ft.alignment.center,
@@ -10782,6 +13119,10 @@ class Pages:
             + theme_controls,
             spacing=8,
         )
+        wallpaper_tab = tab_content(
+            "壁纸设置",
+            self._build_auto_change_settings_section(),
+        )
         appearance = tab_content(
             "外观",
             # 界面主题
@@ -10875,6 +13216,7 @@ class Pages:
             padding=12,
             tabs=[
                 ft.Tab(text="通用", icon=ft.Icons.SETTINGS, content=general),
+                ft.Tab(text="壁纸", icon=ft.Icons.IMAGE, content=wallpaper_tab),
                 ft.Tab(text="资源", icon=ft.Icons.WALLPAPER, content=resource),
                 ft.Tab(text="下载", icon=ft.Icons.DOWNLOAD, content=download),
                 ft.Tab(text="外观", icon=ft.Icons.PALETTE, content=appearance),
@@ -10890,14 +13232,17 @@ class Pages:
         self._settings_tabs = settings_tabs
         self._settings_tab_indices = {
             "general": 0,
-            "resource": 1,
-            "content": 1,
-            "download": 2,
-            "ui": 3,
-            "appearance": 3,
-            "about": 4,
-            "plugins": 5,
-            "plugin": 5,
+            "wallpaper": 1,
+            "auto": 1,
+            "auto_change": 1,
+            "resource": 2,
+            "content": 2,
+            "download": 3,
+            "ui": 4,
+            "appearance": 4,
+            "about": 5,
+            "plugins": 6,
+            "plugin": 6,
         }
         if self._pending_settings_tab:
             pending = None

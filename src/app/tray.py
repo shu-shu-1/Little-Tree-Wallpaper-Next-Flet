@@ -94,6 +94,40 @@ class TrayIcon:
 
         self._with_page(_handler)
 
+    def _on_change_wallpaper(self, _icon, _item) -> None:
+        def _handler(page: Any) -> None:  # noqa: ARG001 - required by tray callback
+            app = self._app
+            if app is None:
+                return
+            pages = getattr(app, "_core_pages", None)
+            if pages is None and hasattr(app, "_extract_core_pages"):
+                try:
+                    pages = app._extract_core_pages()
+                except Exception:
+                    pages = None
+            if pages is None:
+                return
+            service = getattr(pages, "auto_change_service", None)
+            if service is None:
+                return
+            try:
+                success = service.trigger_immediate_change()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error("托盘更换壁纸失败: {error}", error=str(exc))
+                success = False
+            try:
+                if success:
+                    pages._show_snackbar("已触发自动更换，将立即刷新壁纸。")
+                else:
+                    pages._show_snackbar(
+                        "请先启用间隔或轮播模式后再使用该功能。",
+                        error=True,
+                    )
+            except Exception:
+                pass
+
+        self._with_page(_handler)
+
     def _on_quit(self, _icon, _item) -> None:
         def _handler(page: Any) -> None:
             window = getattr(page, "window", None)
@@ -145,6 +179,7 @@ class TrayIcon:
                     (
                         MenuItem("显示", self._on_show),
                         MenuItem("隐藏", self._on_hide),
+                        MenuItem("立即更换壁纸", self._on_change_wallpaper),
                         Menu.SEPARATOR,
                         MenuItem("退出", self._on_quit),
                     ),

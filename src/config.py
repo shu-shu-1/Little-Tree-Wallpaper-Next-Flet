@@ -36,7 +36,22 @@ DEFAULT_CONFIG = {
         "clear_cache_after_360_source": True,
     },
     "wallpaper": {
-        "auto_change": {"mode": "random", "interval_seconds": 600},
+        "auto_change": {
+            "enabled": False,
+            "mode": "off",
+            "interval": {
+                "value": 30,
+                "unit": "minutes",
+                "list_ids": [],
+                "fixed_image": None,
+            },
+            "schedule": {"entries": []},
+            "slideshow": {
+                "value": 5,
+                "unit": "minutes",
+                "items": [],
+            },
+        },
         "allow_NSFW": False,
     },
     "download": {
@@ -111,6 +126,50 @@ def _ensure_download_directory(config: dict, file_path: str) -> dict:
             save_config_file(file_path, config)
         except Exception:
             pass
+
+    return config
+
+
+def _ensure_auto_change_config(config: dict, file_path: str) -> dict:
+    wallpaper = config.setdefault("wallpaper", {})
+    raw_auto = wallpaper.get("auto_change")
+    default_auto = copy.deepcopy(DEFAULT_CONFIG["wallpaper"]["auto_change"])
+
+    def _merge(target: dict, source: dict) -> dict:
+        for key, value in source.items():
+            if isinstance(value, dict) and isinstance(target.get(key), dict):
+                _merge(target[key], value)
+            else:
+                target[key] = value
+        return target
+
+    def _convert_seconds(seconds: int) -> tuple[int, str]:
+        if seconds % 3600 == 0 and seconds >= 3600:
+            return seconds // 3600, "hours"
+        if seconds % 60 == 0 and seconds >= 60:
+            return seconds // 60, "minutes"
+        return max(seconds, 30), "seconds"
+
+    if isinstance(raw_auto, dict):
+        migrated = copy.deepcopy(default_auto)
+        if "interval_seconds" in raw_auto or "mode" in raw_auto:
+            seconds = int(raw_auto.get("interval_seconds", 600) or 600)
+            value, unit = _convert_seconds(seconds)
+            migrated["interval"]["value"] = value
+            migrated["interval"]["unit"] = unit
+            migrated["mode"] = str(raw_auto.get("mode") or "interval")
+            if migrated["mode"] not in {"interval", "schedule", "slideshow", "off"}:
+                migrated["mode"] = "interval"
+            if "enabled" in raw_auto:
+                migrated["enabled"] = bool(raw_auto.get("enabled"))
+            if raw_auto.get("fixed_image"):
+                migrated["interval"]["fixed_image"] = raw_auto.get("fixed_image")
+            list_ids = raw_auto.get("list_ids")
+            if isinstance(list_ids, list):
+                migrated["interval"]["list_ids"] = [str(item) for item in list_ids]
+        wallpaper["auto_change"] = _merge(migrated, raw_auto)
+    else:
+        wallpaper["auto_change"] = default_auto
 
     return config
 
@@ -336,4 +395,6 @@ def get_config_file(file_path: str) -> dict:
         except Exception:
             config_data = copy.deepcopy(DEFAULT_CONFIG)
 
-    return _ensure_download_directory(config_data, json_path)
+    config_data = _ensure_download_directory(config_data, json_path)
+    config_data = _ensure_auto_change_config(config_data, json_path)
+    return config_data

@@ -148,7 +148,6 @@ def build_with_cx_freeze(entry: Path, app_name: str, windowed: bool) -> Path:
     """
     try:
         from cx_Freeze import Executable, setup
-        from cx_Freeze import build_exe
     except ImportError:
         _err("cx_Freeze not found. Please install it with: pip install cx_Freeze")
         sys.exit(1)
