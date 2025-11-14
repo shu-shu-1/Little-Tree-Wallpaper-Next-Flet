@@ -9134,7 +9134,7 @@ class Pages:
             # 更新结果视图
             await self._update_im_batch_results_view(all_images)
 
-            # 发送事件
+            # 发送执行完成事件（包含完整的获取结果信息）
             event_payload = {
                 "success": True,
                 "source": self._im_active_source,
@@ -9143,22 +9143,34 @@ class Pages:
                 "timestamp": time.time(),
                 "parameters": self._im_param_summary(param_pairs),
                 "batch_count": batch_count,
+                # 添加批量获取相关的额外信息
+                "source_id": self._im_source_id(self._im_active_source),
+                "source_name": self._im_active_source.get("friendly_name", "未知源"),
+                "results": all_images,
+                "fetch_count": len(all_images),
+                "requested_count": batch_count,
             }
             self._emit_im_source_event("resource.im_source.executed", event_payload)
 
         except Exception as exc:  # pragma: no cover - network errors
             logger.error(f"执行图片源失败: {exc}")
             self._set_im_status(f"执行失败：{exc}", error=True)
-            self._emit_im_source_event(
-                "resource.im_source.executed",
-                {
-                    "success": False,
-                    "source": self._im_active_source,
-                    "request": request_info,
-                    "error": str(exc),
-                    "timestamp": time.time(),
-                },
-            )
+            
+            # 合并失败信息到事件载荷中
+            failed_event_payload = {
+                "success": False,
+                "source": self._im_active_source,
+                "request": request_info,
+                "error": str(exc),
+                "timestamp": time.time(),
+                # 添加批量获取相关的额外信息
+                "source_id": self._im_source_id(self._im_active_source) if self._im_active_source else None,
+                "source_name": self._im_active_source.get("friendly_name", "未知源") if self._im_active_source else "未知源",
+                "results": [],
+                "fetch_count": 0,
+                "requested_count": batch_count,
+            }
+            self._emit_im_source_event("resource.im_source.executed", failed_event_payload)
         finally:
             self._reset_im_execution_state()
 

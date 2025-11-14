@@ -220,4 +220,5 @@ CORE_EVENT_DEFINITIONS: List[EventDefinition] = [
         description="当用户对 IntelliMarkets 下载结果执行内置操作（设为壁纸、复制、收藏等）时触发。",
         permission="resource_data",
     ),
+    
 ]
