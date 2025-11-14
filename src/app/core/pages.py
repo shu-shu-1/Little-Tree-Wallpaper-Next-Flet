@@ -9134,7 +9134,7 @@ class Pages:
             # 更新结果视图
             await self._update_im_batch_results_view(all_images)
 
-            # 发送执行完成事件（包含完整的获取结果信息）
+            # 发送事件
             event_payload = {
                 "success": True,
                 "source": self._im_active_source,
@@ -9143,13 +9143,10 @@ class Pages:
                 "timestamp": time.time(),
                 "parameters": self._im_param_summary(param_pairs),
                 "batch_count": batch_count,
-                # 添加批量获取相关的额外信息
-                "source_id": self._im_source_id(self._im_active_source),
-                "source_name": self._im_active_source.get("friendly_name", "未知源"),
-                "results": all_images,
-                "fetch_count": len(all_images),
-                "requested_count": batch_count,
             }
+            self._emit_im_source_event("resource.im_source.executed", event_payload)
+            
+            # 发送执行完成事件（用于插件监听获取完成状态）
             self._emit_im_source_event("resource.im_source.executed", event_payload)
 
         except Exception as exc:  # pragma: no cover - network errors
