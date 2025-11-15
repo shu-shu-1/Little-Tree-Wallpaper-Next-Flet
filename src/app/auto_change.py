@@ -1167,6 +1167,8 @@ class _IntelliMarketsExecutor:
             )
             return [path]
         values = _extract_path_values(payload, image_cfg.get("path"))
+        if image_cfg.get("is_list"):
+            values = _flatten_sequence_values(values)
         results: List[Path] = []
         for idx, raw in enumerate(values):
             if raw in (None, ""):
@@ -1282,6 +1284,16 @@ def _extract_path_values(payload: Any, path: str | None) -> List[Any]:
 
     traverse(payload, 0)
     return results
+
+
+def _flatten_sequence_values(values: Sequence[Any]) -> List[Any]:
+    flattened: List[Any] = []
+    for value in values:
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            flattened.extend(_flatten_sequence_values(list(value)))
+        else:
+            flattened.append(value)
+    return flattened
 
 
 def _parse_path_tokens(path: str) -> List[tuple[str, Any]]:

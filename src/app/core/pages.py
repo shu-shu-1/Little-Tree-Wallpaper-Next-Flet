@@ -9233,11 +9233,11 @@ class Pages:
 
         header = ft.Row(
             [
-                ft.IconButton(
-                    icon=ft.Icons.ARROW_BACK,
-                    tooltip="返回",
-                    on_click=lambda _: self._close_im_detail_page(),
-                ),
+                # ft.IconButton(
+                #     icon=ft.Icons.ARROW_BACK,
+                #     tooltip="返回",
+                #     on_click=lambda _: self._close_im_detail_page(),
+                # ),
                 ft.Column(
                     [
                         ft.Text(friendly_name, size=24, weight=ft.FontWeight.BOLD),
@@ -9262,9 +9262,9 @@ class Pages:
         self._im_param_controls = parameter_controls
 
         self._im_batch_count_field = ft.Dropdown(
-            label="获取数量",
+            label="获取次数",
             options=[
-                ft.DropdownOption(key=str(i), text=f"{i}张") for i in range(1, 11)
+                ft.DropdownOption(key=str(i), text=f"{i}次") for i in range(1, 11)
             ],
             value="1",
             width=120,
@@ -9781,7 +9781,7 @@ class Pages:
         return json.dumps(value, ensure_ascii=False)
 
     async def _execute_im_source_batch(self) -> None:
-        """批量执行IM壁纸源获取，支持获取1-10张图片"""
+        """批量执行 IM 壁纸源获取，支持执行 1-10 次请求"""
         if self._im_active_source is None:
             self._show_snackbar("请先选择图片源。", error=True)
             return
@@ -9808,7 +9808,7 @@ class Pages:
             if self._im_result_spinner.page is not None:
                 self._im_result_spinner.update()
 
-        self._set_im_status(f"正在获取 {batch_count} 张壁纸...")
+        self._set_im_status(f"准备执行 {batch_count} 次请求...")
 
         try:
             param_pairs = self._collect_im_parameters()
@@ -9826,25 +9826,29 @@ class Pages:
             return
 
         try:
-            all_images = []
-            # 统一进行多次获取以确保批量数量
+            all_images: list[Dict[str, Any]] = []
+            # 统一进行多次获取以确保批量次数
             for i in range(batch_count):
-                self._set_im_status(f"正在获取第 {i + 1}/{batch_count} 张壁纸...")
+                self._set_im_status(f"正在执行第 {i + 1}/{batch_count} 次请求...")
                 result_payload = await self._fetch_im_source_result(
                     self._im_active_source, request_info, param_pairs
                 )
-                images = result_payload.get("images", [])
+                images = result_payload.get("images", []) or []
                 if images:
-                    # 如果返回多张图片，取第一张；如果只返回一张，也取这张
-                    all_images.append(images[0])
+                    all_images.extend(images)
                 await asyncio.sleep(0.8)  # 增加间隔时间，避免请求过于频繁
 
             self._im_last_results = all_images
-            count = len(all_images)
-            if count:
-                self._set_im_status(f"获取成功！共获取到 {count} 张壁纸。")
+            total_images = len(all_images)
+            if total_images:
+                self._set_im_status(
+                    f"获取成功！共执行 {batch_count} 次请求，累计 {total_images} 张壁纸。"
+                )
             else:
-                self._set_im_status("获取成功，但未返回任何图片。", error=True)
+                self._set_im_status(
+                    f"已完成 {batch_count} 次请求，但未返回任何图片。",
+                    error=True,
+                )
 
             # 更新结果视图
             await self._update_im_batch_results_view(all_images)
@@ -9858,6 +9862,7 @@ class Pages:
                 "timestamp": time.time(),
                 "parameters": self._im_param_summary(param_pairs),
                 "batch_count": batch_count,
+                "image_count": total_images,
             }
             self._emit_im_source_event("resource.im_source.executed", event_payload)
             
@@ -10017,6 +10022,8 @@ class Pages:
             if payload is None:
                 raise RuntimeError("接口未返回 JSON 数据")
             image_values = self._extract_im_path_values(payload, image_cfg.get("path"))
+            if image_cfg.get("is_list"):
+                image_values = self._im_flatten_image_values(image_values)
             if not image_values:
                 raise RuntimeError("未在响应中找到图片链接")
 
@@ -10252,6 +10259,17 @@ class Pages:
 
         traverse(payload, 0)
         return results
+
+    def _im_flatten_image_values(self, values: Sequence[Any]) -> list[Any]:
+        flattened: list[Any] = []
+        for value in values:
+            if isinstance(value, Sequence) and not isinstance(
+                value, (str, bytes, bytearray)
+            ):
+                flattened.extend(self._im_flatten_image_values(value))
+            else:
+                flattened.append(value)
+        return flattened
 
     def _im_format_value(self, value: Any) -> str:
         if value is None:
