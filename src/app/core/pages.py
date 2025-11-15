@@ -89,6 +89,8 @@ from app.auto_change import (
     AutoChangeListStore,
     AutoChangeService,
 )
+from app.download_manager import download_manager, DownloadLocationType
+from app.image_optimizer import image_optimizer
 
 app_config = SettingsStore()
 
@@ -195,6 +197,8 @@ class Pages:
         self._refresh_settings_registry()
         self._global_data = global_data
         self._bing_data_id: str | None = None
+        self._bing_save_picker: ft.FilePicker | None = None
+        self._spotlight_save_picker: ft.FilePicker | None = None
         self._spotlight_data_id: str | None = None
         self._settings_tabs = None
         self._settings_tab_indices: dict[str, int] = {}
@@ -5289,6 +5293,643 @@ class Pages:
             tight=True,
         )
 
+    def _build_download_settings_section(self) -> ft.Control:
+        """构建下载设置页面"""
+        
+        # 获取当前下载位置配置
+        current_location = download_manager.get_current_location(app_config)
+        
+        # 下载位置选择
+        location_options = []
+        available_locations = download_manager.get_available_locations(app_config)
+        for loc in available_locations:
+            location_options.append(
+                ft.DropdownOption(key=loc.type, text=f"{loc.display_name} ({loc.path})")
+            )
+        
+        self._download_location_dropdown = ft.Dropdown(
+            label="下载位置",
+            value=current_location.type,
+            options=location_options,
+            on_change=self._handle_download_location_change,
+            width=400,
+        )
+        
+        # 自定义路径输入（仅在选择自定义位置时显示）
+        custom_path_value = app_config.get("download.custom_path", "")
+        self._download_custom_path_field = ft.TextField(
+            label="自定义路径",
+            value=custom_path_value,
+            hint_text="请输入绝对路径，如 C:\\Users\\YourName\\Downloads\\Wallpapers",
+            on_change=self._handle_download_custom_path_change,
+            visible=current_location.type == "custom",
+            width=400,
+        )
+        
+        # 路径验证状态
+        self._download_path_status = ft.Text(
+            "",
+            size=12,
+            color=ft.Colors.GREY,
+            visible=False
+        )
+        
+        # 下载统计信息
+        stats = download_manager.get_download_stats(app_config)
+        used_space_text = download_manager.format_file_size(stats.total_size)
+        file_count_text = f"{stats.total_files} 个文件"
+        last_download_text = "从未下载" if not stats.last_download_time else \
+            f"最后下载: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stats.last_download_time))}"
+        
+        self._download_stats_text = ft.Text(
+            f"已用空间: {used_space_text} | {file_count_text} | {last_download_text}",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+        
+        # 按钮组
+        open_folder_button = ft.FilledTonalButton(
+            "打开文件夹",
+            icon=ft.Icons.FOLDER_OPEN,
+            on_click=self._handle_open_download_folder,
+        )
+        
+        refresh_stats_button = ft.FilledTonalButton(
+            "刷新统计",
+            icon=ft.Icons.REFRESH,
+            on_click=self._handle_refresh_download_stats,
+        )
+        
+        clear_folder_button = ft.FilledTonalButton(
+            "清空文件夹",
+            icon=ft.Icons.DELETE_SWEEP,
+            on_click=self._handle_clear_download_folder,
+        )
+        
+        optimize_button = ft.FilledTonalButton(
+            "优化图片",
+            icon=ft.Icons.IMAGE,
+            on_click=self._handle_optimize_images,
+        )
+        
+        # 当前路径显示
+        current_path_text = f"当前路径: {current_location.path}"
+        self._current_path_display = ft.Text(
+            current_path_text,
+            size=12,
+            color=ft.Colors.GREY_600,
+        )
+        
+        return ft.Column(
+            controls=[
+                ft.Text("下载设置", size=18, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    "配置壁纸下载位置，查看下载统计，管理下载文件夹。",
+                    size=12,
+                    color=ft.Colors.GREY,
+                ),
+                ft.Divider(),
+                
+                # 下载位置配置
+                ft.Text("下载位置", size=16, weight=ft.FontWeight.BOLD),
+                self._download_location_dropdown,
+                self._download_custom_path_field,
+                self._download_path_status,
+                ft.Divider(),
+                
+                # 统计信息
+                ft.Text("下载统计", size=16, weight=ft.FontWeight.BOLD),
+                self._current_path_display,
+                self._download_stats_text,
+                ft.Row(
+                    [open_folder_button, refresh_stats_button, clear_folder_button, optimize_button],
+                    spacing=12,
+                    run_spacing=12,
+                    wrap=True,
+                ),
+                
+                # 优化进度显示区域
+                ft.Column(
+                    controls=[
+                        ft.Divider(),
+                        ft.Text("图片优化进度", size=16, weight=ft.FontWeight.BOLD),
+                        ft.Container(
+                            content=ft.Column([
+                                ft.ProgressBar(
+                                    width=400,
+                                    height=20,
+                                    bgcolor=ft.Colors.GREY_300,
+                                    color=ft.Colors.PRIMARY,
+                                    visible=False,
+                                    key="optimize_progress_bar",
+                                ),
+                                ft.Text(
+                                    "",
+                                    size=12,
+                                    color=ft.Colors.GREY_600,
+                                    key="optimize_status_text",
+                                ),
+                                ft.Text(
+                                    "",
+                                    size=11,
+                                    color=ft.Colors.GREY_500,
+                                    key="optimize_stats_text",
+                                ),
+                            ]),
+                            key="optimize_progress_container",
+                            visible=False,
+                        ),
+                    ],
+                    spacing=8,
+                    key="optimize_progress_section",
+                    visible=False,
+                ),
+            ],
+            spacing=16,
+            tight=True,
+        )
+    
+    # 下载设置事件处理方法
+    def _handle_download_location_change(self, e: ft.ControlEvent):
+        """处理下载位置改变"""
+        new_location_type = e.control.value
+        custom_path = (app_config.get("download.custom_path", "") or "").strip()
+
+        # 切换自定义路径输入框可见性
+        if hasattr(self, "_download_custom_path_field"):
+            self._download_custom_path_field.visible = (
+                new_location_type == DownloadLocationType.CUSTOM
+            )
+            self._download_custom_path_field.update()
+
+        # 切换时重置状态提示
+        if hasattr(self, "_download_path_status"):
+            self._download_path_status.visible = False
+            self._download_path_status.value = ""
+            self._download_path_status.update()
+
+        # 自定义路径需要额外校验
+        if new_location_type == DownloadLocationType.CUSTOM:
+            if not custom_path:
+                if hasattr(self, "_download_path_status"):
+                    self._download_path_status.value = "请输入有效的自定义路径"
+                    self._download_path_status.color = ft.Colors.RED_400
+                    self._download_path_status.visible = True
+                    self._download_path_status.update()
+                self._show_snackbar("请选择或输入自定义路径", error=True)
+                return
+
+            is_valid, message = download_manager.validate_custom_path(custom_path)
+            if hasattr(self, "_download_path_status"):
+                self._download_path_status.value = message
+                self._download_path_status.color = (
+                    ft.Colors.GREEN if is_valid else ft.Colors.RED_400
+                )
+                self._download_path_status.visible = True
+                self._download_path_status.update()
+
+            if not is_valid:
+                self._show_snackbar(message or "自定义路径无效", error=True)
+                return
+
+        # 设置下载位置
+        success = download_manager.set_download_location(
+            app_config, new_location_type, custom_path
+        )
+
+        if success:
+            self._refresh_download_path_display()
+            self._show_snackbar("下载位置已更新")
+        else:
+            self._show_snackbar("设置下载位置失败", error=True)
+    
+    def _handle_download_custom_path_change(self, e: ft.ControlEvent):
+        """处理自定义路径改变"""
+        new_path = e.control.value or ""
+        if new_path:
+            is_valid, message = download_manager.validate_custom_path(new_path)
+            if hasattr(self, '_download_path_status'):
+                self._download_path_status.value = message
+                self._download_path_status.color = ft.Colors.GREEN if is_valid else ft.Colors.RED_400
+                self._download_path_status.visible = True
+                self._download_path_status.update()
+            
+            if is_valid:
+                app_config.set("download.custom_path", new_path)
+                # 如果当前选择的是自定义位置，则更新下载位置
+                selected_type = (
+                    getattr(self, "_download_location_dropdown", None).value
+                    if getattr(self, "_download_location_dropdown", None)
+                    else app_config.get(
+                        "download.location_type", DownloadLocationType.SYSTEM_DOWNLOAD
+                    )
+                )
+                if selected_type == DownloadLocationType.CUSTOM:
+                    success = download_manager.set_download_location(
+                        app_config, DownloadLocationType.CUSTOM, new_path
+                    )
+                    if success:
+                        self._refresh_download_path_display()
+                        self._show_snackbar("下载位置已更新")
+                    else:
+                        self._show_snackbar("保存自定义路径失败", error=True)
+    
+    def _refresh_download_path_display(self):
+        """刷新当前路径显示"""
+        current_location = download_manager.get_current_location(app_config)
+        current_path_text = f"当前路径: {current_location.path}"
+        if hasattr(self, '_current_path_display'):
+            self._current_path_display.value = current_path_text
+            self._current_path_display.update()
+    
+    def _handle_open_download_folder(self, e: ft.ControlEvent):
+        """处理打开下载文件夹"""
+        success = download_manager.open_download_folder(app_config)
+        if success:
+            self._show_snackbar("已打开下载文件夹")
+        else:
+            self._show_snackbar("打开下载文件夹失败", error=True)
+    
+    def _handle_refresh_download_stats(self, e: ft.ControlEvent):
+        """处理刷新下载统计"""
+        stats = download_manager.get_download_stats(app_config)
+        used_space_text = download_manager.format_file_size(stats.total_size)
+        file_count_text = f"{stats.total_files} 个文件"
+        last_download_text = "从未下载" if not stats.last_download_time else \
+            f"最后下载: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stats.last_download_time))}"
+        
+        if hasattr(self, '_download_stats_text'):
+            self._download_stats_text.value = f"已用空间: {used_space_text} | {file_count_text} | {last_download_text}"
+            self._download_stats_text.update()
+        
+        self._show_snackbar("统计信息已刷新")
+    
+    def _handle_clear_download_folder(self, e: ft.ControlEvent):
+        """处理清空下载文件夹"""
+        # 显示确认对话框
+        confirm_dialog = ft.AlertDialog(
+            title=ft.Text("确认清空"),
+            content=ft.Text("确定要清空下载文件夹吗？此操作不可撤销。"),
+            actions=[
+                ft.TextButton(
+                    "取消",
+                    on_click=lambda _: self._close_clear_download_dialog(),
+                ),
+                ft.ElevatedButton(
+                    "确认清空",
+                    bgcolor=ft.Colors.RED_400,
+                    color=ft.Colors.WHITE,
+                    on_click=lambda _: self._confirm_clear_download_folder(),
+                ),
+            ],
+        )
+        
+        self._download_clear_dialog = confirm_dialog
+        self.page.dialog = confirm_dialog
+        confirm_dialog.open = True
+        self.page.open(confirm_dialog)
+        self.page.update()
+    
+    def _confirm_clear_download_folder(self):
+        """确认清空下载文件夹"""
+        success, message = download_manager.clear_download_folder(app_config)
+
+        # 关闭下载清空确认对话框
+        self._close_clear_download_dialog()
+        
+        # 显示结果
+        if success:
+            self._show_snackbar(message)
+            # 刷新统计信息
+            self._handle_refresh_download_stats(None)
+        else:
+            self._show_snackbar(f"清空失败: {message}", error=True)
+
+    def _close_clear_download_dialog(self) -> None:
+        """关闭下载清空确认对话框，不影响全局对话框关闭逻辑"""
+        if hasattr(self, "_download_clear_dialog") and self._download_clear_dialog:
+            self._download_clear_dialog.open = False
+            try:
+                # 如果当前页面的对话框正好是这个，也一起关闭
+                if self.page.dialog is self._download_clear_dialog:
+                    self.page.close(self.page.dialog)
+                else:
+                    self.page.close(self._download_clear_dialog)
+            except Exception:
+                # 兼容性处理：如果 close 过程中出错，不影响后续 UI 更新
+                pass
+            self.page.update()
+    
+    def _show_snackbar(self, message: str, error: bool = False):
+        """显示提示消息"""
+        if hasattr(self, 'page') and self.page:
+            snack = ft.SnackBar(
+                content=ft.Text(message),
+                bgcolor=ft.Colors.RED_400 if error else ft.Colors.ON_SURFACE,
+            )
+            self.page.snack_bar = snack
+            snack.open = True
+            self.page.open(snack)
+            self.page.update()
+    
+    # 图片优化相关方法
+    def _handle_optimize_images(self, e: ft.ControlEvent):
+        """处理优化图片按钮点击"""
+        # 检查是否已在优化中
+        if hasattr(self, '_is_optimizing') and self._is_optimizing:
+            self._show_snackbar("图片优化正在进行中，请等待完成", error=True)
+            return
+        
+        folder_path = download_manager.get_download_folder_path(app_config)
+        if not folder_path or not folder_path.exists():
+            self._show_snackbar("下载文件夹不存在，无法优化", error=True)
+            return
+        
+        # 检查是否有图片文件
+        image_files = image_optimizer.get_image_files(folder_path)
+        if not image_files:
+            self._show_snackbar("没有找到可优化的图片文件", error=True)
+            return
+        
+        # 显示优化对话框
+        self._show_optimize_dialog(len(image_files))
+    
+    def _show_optimize_dialog(self, image_count: int):
+        """显示图片优化对话框"""
+        # 质量选择滑块
+        quality_slider = ft.Slider(
+            min=50,
+            max=100,
+            divisions=10,
+            value=85,
+            label="{value}%",
+        )
+        
+        # 进度条
+        progress_bar = ft.ProgressBar(
+            width=300,
+            height=20,
+            bgcolor=ft.Colors.GREY_300,
+            color=ft.Colors.PRIMARY,
+            visible=False,
+        )
+        
+        # 状态文本
+        status_text = ft.Text(
+            f"准备优化 {image_count} 张图片...",
+            size=14,
+            visible=True,
+        )
+        
+        # 统计信息文本
+        stats_text = ft.Text(
+            "",
+            size=12,
+            color=ft.Colors.GREY_600,
+            visible=True,
+        )
+        
+        def on_start_optimize(e):
+            """开始优化"""
+            quality = int(quality_slider.value)
+            
+            # 设置优化状态
+            self._is_optimizing = True
+            
+            # 禁用下载设置页面的按钮和控件
+            self._disable_download_controls()
+            
+            # 显示进度显示区域
+            self._show_optimize_progress_ui()
+            
+            # 禁用对话框控件
+            start_button.disabled = True
+            cancel_button.disabled = False
+            quality_slider.disabled = True
+            
+            # 显示进度条
+            progress_bar.visible = True
+            progress_bar.value = 0
+            status_text.value = "正在优化..."
+            stats_text.visible = True
+            stats_text.value = "准备开始..."
+            
+            self.page.update()
+            
+            # 开始异步优化
+            self.page.run_task(self._start_image_optimization, quality, progress_bar, status_text, stats_text)
+        
+        def on_cancel_optimize(e):
+            """取消优化"""
+            self._close_optimize_dialog()
+        
+        start_button = ft.ElevatedButton(
+            "开始优化",
+            icon=ft.Icons.PLAY_ARROW,
+            on_click=on_start_optimize,
+        )
+        
+        cancel_button = ft.TextButton(
+            "取消",
+            icon=ft.Icons.CANCEL,
+            on_click=on_cancel_optimize,
+            disabled=True,
+        )
+        
+        optimize_dialog = ft.AlertDialog(
+            title=ft.Text("图片优化", size=18, weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(f"将把 {image_count} 张图片转换为AVIF格式"),
+                    ft.Text("AVIF格式提供更好的压缩比和质量"),
+                    ft.Divider(),
+                    ft.Text("选择压缩质量:"),
+                    quality_slider,
+                    ft.Divider(),
+                    status_text,
+                    progress_bar,
+                    stats_text,
+                ],scroll=ft.ScrollMode.AUTO),
+                width=350,
+                height=250,
+            ),
+            actions=[
+                cancel_button,
+                start_button,
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        self._optimize_dialog = optimize_dialog
+        self.page.dialog = optimize_dialog
+        optimize_dialog.open = True
+        self.page.open(optimize_dialog)
+        self.page.update()
+    
+    async def _start_image_optimization(self, quality: int, progress_bar: ft.ProgressBar, status_text: ft.Text, stats_text: ft.Text):
+        """开始图片优化过程"""
+        try:
+            folder_path = download_manager.get_download_folder_path(app_config)
+            if not folder_path:
+                return
+            
+            # 进度回调函数
+            def progress_callback(progress):
+                if hasattr(self, '_optimize_dialog') and self._optimize_dialog.open:
+                    # 更新进度条
+                    progress_bar.value = progress.percentage / 100
+                    
+                    # 更新状态文本
+                    status_text.value = f"正在处理: {progress.current_file}"
+                    
+                    # 更新统计信息
+                    original_size_text = image_optimizer.format_file_size(progress.current_size)
+                    optimized_size_text = image_optimizer.format_file_size(progress.optimized_size)
+                    
+                    if progress.optimized_size > 0:
+                        compression_ratio = image_optimizer.calculate_compression_ratio(progress.current_size, progress.optimized_size)
+                        stats_text.value = f"已处理 {progress.processed_count}/{progress.total_count} | 原始: {original_size_text} → 优化: {optimized_size_text} | 压缩比: {compression_ratio:.1f}%"
+                    else:
+                        stats_text.value = f"已处理 {progress.processed_count}/{progress.total_count} | 原始: {original_size_text}"
+                    
+                    # 更新UI
+                    self.page.update()
+            
+            # 执行优化
+            result = await image_optimizer.optimize_folder_to_avif(
+                folder_path,
+                quality=quality,
+                progress_callback=progress_callback
+            )
+            
+            # 更新最终状态
+            if hasattr(self, '_optimize_dialog') and self._optimize_dialog.open:
+                if result.success:
+                    status_text.value = "优化完成！"
+                    compression_ratio = image_optimizer.calculate_compression_ratio(result.original_size, result.optimized_size)
+                    stats_text.value = f"成功处理 {result.processed_files} 张图片 | 压缩比: {compression_ratio:.1f}% | 耗时: {result.time_elapsed:.1f}秒"
+                    self._show_snackbar(f"图片优化完成！节省空间 {compression_ratio:.1f}%")
+                else:
+                    status_text.value = "优化完成（有错误）"
+                    stats_text.value = f"成功: {result.processed_files}, 失败: {result.failed_files}"
+                    self._show_snackbar(f"优化完成，但有 {result.failed_files} 个文件处理失败", error=True)
+                
+                # 更新按钮状态
+                cancel_button = next((action for action in self._optimize_dialog.actions if isinstance(action, ft.TextButton)), None)
+                if cancel_button:
+                    cancel_button.text = "关闭"
+                    cancel_button.on_click = lambda e: self._close_optimize_dialog()
+                
+                self.page.update()
+                
+                # 刷新下载统计
+                self._handle_refresh_download_stats(None)
+        
+        except Exception as e:
+            logger.error(f"图片优化过程出错: {e}")
+            if hasattr(self, '_optimize_dialog') and self._optimize_dialog.open:
+                status_text.value = "优化失败"
+                stats_text.value = f"错误: {str(e)}"
+                self.page.update()
+            
+            # 重置优化状态
+            self._is_optimizing = False
+            self._enable_download_controls()
+            self._hide_optimize_progress_ui()
+            
+            self._show_snackbar(f"优化失败: {str(e)}", error=True)
+    
+    def _disable_download_controls(self):
+        """禁用下载设置页面的控件"""
+        try:
+            # 禁用按钮
+            if hasattr(self, 'open_folder_button') and self.open_folder_button:
+                self.open_folder_button.disabled = True
+            if hasattr(self, 'refresh_stats_button') and self.refresh_stats_button:
+                self.refresh_stats_button.disabled = True
+            if hasattr(self, 'clear_folder_button') and self.clear_folder_button:
+                self.clear_folder_button.disabled = True
+            if hasattr(self, 'optimize_button') and self.optimize_button:
+                self.optimize_button.disabled = True
+            
+            # 禁用下拉框和输入框
+            if hasattr(self, '_download_location_dropdown') and self._download_location_dropdown:
+                self._download_location_dropdown.disabled = True
+            if hasattr(self, '_download_custom_path_field') and self._download_custom_path_field:
+                self._download_custom_path_field.disabled = True
+            
+            # 刷新UI
+            if hasattr(self, 'page') and self.page:
+                self.page.update()
+        except Exception as e:
+            logger.error(f"禁用控件时出错: {e}")
+    
+    def _enable_download_controls(self):
+        """启用下载设置页面的控件"""
+        try:
+            # 启用按钮
+            if hasattr(self, 'open_folder_button') and self.open_folder_button:
+                self.open_folder_button.disabled = False
+            if hasattr(self, 'refresh_stats_button') and self.refresh_stats_button:
+                self.refresh_stats_button.disabled = False
+            if hasattr(self, 'clear_folder_button') and self.clear_folder_button:
+                self.clear_folder_button.disabled = False
+            if hasattr(self, 'optimize_button') and self.optimize_button:
+                self.optimize_button.disabled = False
+            
+            # 启用下拉框和输入框
+            if hasattr(self, '_download_location_dropdown') and self._download_location_dropdown:
+                self._download_location_dropdown.disabled = False
+            if hasattr(self, '_download_custom_path_field') and self._download_custom_path_field:
+                self._download_custom_path_field.disabled = False
+            
+            # 刷新UI
+            if hasattr(self, 'page') and self.page:
+                self.page.update()
+        except Exception as e:
+            logger.error(f"启用控件时出错: {e}")
+    
+    def _show_optimize_progress_ui(self):
+        """显示优化进度UI"""
+        try:
+            if hasattr(self, "page") and self.page:
+                # 使用 Flet 的 query API 获取控件
+                query = self.page.query("#optimize_progress_section")
+                progress_container = query.first if query else None
+                if progress_container is not None:
+                    progress_container.visible = True
+                    progress_container.update()
+        except Exception as e:
+            logger.error(f"显示进度UI时出错: {e}")
+    
+    def _hide_optimize_progress_ui(self):
+        """隐藏优化进度UI"""
+        try:
+            if hasattr(self, "page") and self.page:
+                # 使用 Flet 的 query API 获取控件
+                query = self.page.query("#optimize_progress_section")
+                progress_container = query.first if query else None
+                if progress_container is not None:
+                    progress_container.visible = False
+                    progress_container.update()
+        except Exception as e:
+            logger.error(f"隐藏进度UI时出错: {e}")
+    
+    def _close_optimize_dialog(self):
+        """关闭优化对话框并恢复UI状态"""
+        # 重置优化状态
+        self._is_optimizing = False
+        
+        # 恢复下载设置页面的控件
+        self._enable_download_controls()
+        self._hide_optimize_progress_ui()
+        
+        # 关闭对话框
+        if hasattr(self, '_optimize_dialog') and self._optimize_dialog:
+            self._optimize_dialog.open = False
+            self.page.close(self._optimize_dialog)
+            self.page.update()
+
     def _build_resource(self):
         self.resource_tabs = ft.Tabs(
             tabs=[
@@ -5684,14 +6325,22 @@ class Pages:
             self._show_snackbar("当前没有可用的生成图片。", error=True)
             self._generate_update_actions()
             return
-        download_dir = str(app_config.get("storage.download_directory", "")).strip()
-        if not download_dir:
+        # 使用下载管理器获取配置的位置
+        download_folder_path = download_manager.get_download_folder_path(app_config)
+        if not download_folder_path:
             self._show_snackbar("尚未配置下载目录。", error=True)
             return
-        target_dir = Path(download_dir).expanduser()
+        
+        # 确保下载文件夹存在
+        try:
+            download_folder_path.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            logger.error(f"创建下载目录失败: {exc}")
+            self._show_snackbar("创建下载目录失败。", error=True)
+            return
 
         def _copy() -> Path:
-            target = self._generate_resolve_target_path(target_dir, path.name)
+            target = self._generate_resolve_target_path(download_folder_path, path.name)
             shutil.copy2(path, target)
             return target
 
@@ -8521,12 +9170,67 @@ class Pages:
     def _open_im_source_detail_page(self, source: Dict[str, Any]) -> None:
         self._im_active_source = source
         self._im_last_results = []
+        if self.page is not None:
+            self.page.go("/resource/im-source")
+
+    def build_im_source_execution_view(self) -> ft.View:
+        route = "/resource/im-source"
+        source = self._im_active_source
+
+        if source is None:
+            self._im_param_controls = []
+            self._im_batch_count_field = None
+            self._im_run_button = None
+            self._im_result_container = None
+            self._im_result_status_text = None
+            self._im_result_spinner = None
+
+            placeholder = ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Icon(ft.Icons.IMAGE_SEARCH, size=72, color=ft.Colors.OUTLINE),
+                        ft.Text("尚未选择图片源，请返回资源页面重新选择。", size=14),
+                        ft.FilledButton(
+                            "返回资源页面",
+                            icon=ft.Icons.ARROW_BACK,
+                            on_click=lambda _: self.page.go("/"),
+                        ),
+                    ],
+                    spacing=16,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                expand=True,
+                padding=32,
+            )
+
+            body = (
+                ft.Stack([placeholder, build_watermark()], expand=True)
+                if SHOW_WATERMARK
+                else placeholder
+            )
+
+            return ft.View(
+                route,
+                [
+                    ft.AppBar(
+                        title=ft.Text("IntelliMarkets 图片源"),
+                        leading=ft.IconButton(
+                            ft.Icons.ARROW_BACK,
+                            tooltip="返回",
+                            on_click=lambda _: self.page.go("/"),
+                        ),
+                        bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                    ),
+                    body,
+                ],
+            )
+
         friendly_name = (
             source.get("friendly_name") or source.get("file_name") or "未命名图片源"
         )
         intro = source.get("intro") or ""
 
-        # 创建页面头部
         header = ft.Row(
             [
                 ft.IconButton(
@@ -8545,12 +9249,9 @@ class Pages:
             alignment=ft.MainAxisAlignment.START,
         )
 
-        # 构建参数控件
         parameter_controls = self._build_im_parameter_controls(source)
         if not parameter_controls:
-            params_section = ft.Text(
-                "此图片源无需额外参数。", size=12, color=ft.Colors.GREY
-            )
+            params_section = ft.Text("此图片源无需额外参数。", size=12, color=ft.Colors.GREY)
         else:
             params_section = ft.Column(
                 [control.display for control in parameter_controls],
@@ -8560,7 +9261,6 @@ class Pages:
 
         self._im_param_controls = parameter_controls
 
-        # 批量获取设置
         self._im_batch_count_field = ft.Dropdown(
             label="获取数量",
             options=[
@@ -8582,7 +9282,6 @@ class Pages:
             spacing=12, expand=True, scroll=ft.ScrollMode.AUTO
         )
 
-        # 主要内容区域
         main_content = ft.Column(
             [
                 ft.Container(
@@ -8633,8 +9332,7 @@ class Pages:
             expand=True,
         )
 
-        # 创建页面
-        detail_page = ft.Container(
+        detail_body = ft.Container(
             content=ft.Column(
                 [
                     header,
@@ -8647,15 +9345,32 @@ class Pages:
             padding=16,
         )
 
-        # 导航到新页面
-        self.page.views.append(detail_page)
-        self.page.update()
+        body = (
+            ft.Stack([detail_body, build_watermark()], expand=True)
+            if SHOW_WATERMARK
+            else detail_body
+        )
+
+        return ft.View(
+            route,
+            [
+                ft.AppBar(
+                    title=ft.Text(friendly_name),
+                    leading=ft.IconButton(
+                        ft.Icons.ARROW_BACK,
+                        tooltip="返回",
+                        on_click=lambda _: self._close_im_detail_page(),
+                    ),
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                ),
+                body,
+            ],
+        )
 
     def _close_im_detail_page(self) -> None:
         """关闭IM壁纸源详情页面"""
-        if len(self.page.views) > 1:
-            self.page.views.pop()
-            self.page.update()
+        if self.page is not None:
+            self.page.go("/")
 
     def _set_im_status(self, message: str, *, error: bool = False) -> None:
         if self._im_result_status_text is None:
@@ -9907,16 +10622,22 @@ class Pages:
 
     def _download_file(self, file_path: str, file_name: str) -> None:
         """下载文件到配置文件指定的目录"""
-        # 获取配置文件中的下载目录
-        download_dir = str(app_config.get("storage.download_directory", "")).strip()
-        if not download_dir:
+        # 使用下载管理器获取配置的位置
+        download_folder_path = download_manager.get_download_folder_path(app_config)
+        if not download_folder_path:
             self._show_snackbar("尚未配置下载目录。", error=True)
             return
         
-        target_dir = Path(download_dir).expanduser()
+        # 确保下载文件夹存在
+        try:
+            download_folder_path.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            logger.error(f"创建下载目录失败: {exc}")
+            self._show_snackbar("创建下载目录失败。", error=True)
+            return
         
         def _copy() -> Path:
-            target = self._generate_resolve_target_path(target_dir, file_name)
+            target = self._generate_resolve_target_path(download_folder_path, file_name)
             shutil.copy2(file_path, target)
             return target
         
@@ -12008,7 +12729,8 @@ class Pages:
 
             set_button.disabled = True
             favorite_button.disabled = True
-            download_button.disabled = True
+            download_to_config_button.disabled = True
+            save_as_button.disabled = True
 
             _disable_copy_button()
 
@@ -12056,7 +12778,8 @@ class Pages:
             bing_pb.visible = False
             set_button.disabled = False
             favorite_button.disabled = False
-            download_button.disabled = False
+            download_to_config_button.disabled = False
+            save_as_button.disabled = False
             _enable_copy_button()
 
             self.resource_tabs.disabled = False
@@ -12088,12 +12811,129 @@ class Pages:
             )
             self._emit_bing_action("copy_link", True)
 
+        def _handle_bing_download(action: str):
+            """处理Bing壁纸下载功能"""
+            nonlocal bing_loading_info, bing_pb
+            nonlocal \
+                set_button, \
+                favorite_button, \
+                download_to_config_button, \
+                save_as_button, \
+                copy_button, \
+                copy_menu
+
+            if not self.bing_wallpaper_url:
+                self.page.open(
+                    ft.SnackBar(
+                        ft.Text("当前没有可用的壁纸资源~"),
+                        bgcolor=ft.Colors.ON_ERROR,
+                    )
+                )
+                return
+
+            def progress_callback(value, total):
+                if total:
+                    bing_pb.value = value / total
+                    self.page.update()
+
+            bing_loading_info.value = "正在下载壁纸…"
+            bing_loading_info.visible = True
+            bing_pb.visible = True
+
+            set_button.disabled = True
+            favorite_button.disabled = True
+            download_to_config_button.disabled = True
+            save_as_button.disabled = True
+            _disable_copy_button()
+            if copy_menu:
+                copy_menu.disabled = True
+            self.resource_tabs.disabled = True
+
+            self.page.update()
+
+            if action == "save_as":
+                # 另存为功能，打开文件选择器
+                self._ensure_bing_save_picker()
+                filename = _sanitize_filename(title, "Bing-Wallpaper") + ".jpg"
+                self._bing_save_picker.save_file(file_name=filename)
+            elif action == "download":
+                # 使用下载管理器获取配置的位置
+                download_folder_path = download_manager.get_download_folder_path(app_config)
+                if not download_folder_path:
+                    self.page.open(
+                        ft.SnackBar(
+                            ft.Text("尚未配置下载目录，请在设置中配置。"),
+                            bgcolor=ft.Colors.ON_ERROR,
+                        )
+                    )
+                    _reset_bing_ui()
+                    return
+                
+                # 确保下载文件夹存在
+                try:
+                    download_folder_path.mkdir(parents=True, exist_ok=True)
+                except Exception as exc:
+                    logger.error(f"创建下载目录失败: {exc}")
+                    self.page.open(
+                        ft.SnackBar(
+                            ft.Text("创建下载目录失败，请检查设置。"),
+                            bgcolor=ft.Colors.ON_ERROR,
+                        )
+                    )
+                    _reset_bing_ui()
+                    return
+
+                filename = _sanitize_filename(title, "Bing-Wallpaper") + ".jpg"
+                
+                try:
+                    final_path = ltwapi.download_file(
+                        self.bing_wallpaper_url,
+                        download_folder_path,
+                        filename,
+                        progress_callback=progress_callback,
+                    )
+                    
+                    if final_path:
+                        self._emit_download_completed("bing", "download", final_path)
+                        self.page.open(
+                            ft.SnackBar(
+                                ft.Text(f"已下载到 {final_path}"),
+                            )
+                        )
+                    else:
+                        raise Exception("下载失败")
+                        
+                except Exception as exc:
+                    logger.error("Bing 壁纸下载失败: {error}", error=str(exc))
+                    self.page.open(
+                        ft.SnackBar(
+                            ft.Text("下载失败，请稍后再试~"),
+                            bgcolor=ft.Colors.ON_ERROR,
+                        )
+                    )
+
+            _reset_bing_ui()
+
+        def _reset_bing_ui():
+            """重置Bing UI状态"""
+            bing_pb.value = 0
+            bing_loading_info.visible = False
+            bing_pb.visible = False
+            set_button.disabled = False
+            favorite_button.disabled = False
+            download_to_config_button.disabled = False
+            save_as_button.disabled = False
+            _enable_copy_button()
+            self.resource_tabs.disabled = False
+            self.page.update()
+
         def _handle_copy(action: str):
             nonlocal bing_loading_info, bing_pb
             nonlocal \
                 set_button, \
                 favorite_button, \
-                download_button, \
+                download_to_config_button, \
+                save_as_button, \
                 copy_button, \
                 copy_menu
 
@@ -12124,7 +12964,8 @@ class Pages:
 
             set_button.disabled = True
             favorite_button.disabled = True
-            download_button.disabled = True
+            download_to_config_button.disabled = True
+            save_as_button.disabled = True
             _disable_copy_button()
             if copy_menu:
                 copy_menu.disabled = True
@@ -12189,7 +13030,8 @@ class Pages:
             bing_pb.visible = False
             set_button.disabled = False
             favorite_button.disabled = False
-            download_button.disabled = False
+            download_to_config_button.disabled = False
+            save_as_button.disabled = False
             _enable_copy_button()
             self.resource_tabs.disabled = False
 
@@ -12233,7 +13075,34 @@ class Pages:
                 self._make_bing_favorite_payload()
             ),
         )
-        download_button = ft.FilledTonalButton("下载", icon=ft.Icons.DOWNLOAD)
+        # 下载按钮 - 两个独立按钮
+        download_to_config_button = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.DOWNLOAD, ft.Colors.ON_SECONDARY_CONTAINER, size=17),
+                    ft.Text("下载", color=ft.Colors.ON_SECONDARY_CONTAINER),
+                ],
+                spacing=7,
+            ),
+            padding=7.5,
+            bgcolor=ft.Colors.SECONDARY_CONTAINER,
+            border_radius=50,
+            on_click=lambda _: _handle_bing_download("download"),
+        )
+        
+        save_as_button = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.SAVE_AS, ft.Colors.ON_SECONDARY_CONTAINER, size=17),
+                    ft.Text("另存为", color=ft.Colors.ON_SECONDARY_CONTAINER),
+                ],
+                spacing=7,
+            ),
+            padding=7.5,
+            bgcolor=ft.Colors.SECONDARY_CONTAINER,
+            border_radius=50,
+            on_click=lambda _: _handle_bing_download("save_as"),
+        )
         copy_button_content = ft.Row(
             controls=[
                 ft.Icon(ft.Icons.COPY, ft.Colors.ON_SECONDARY_CONTAINER, size=17),
@@ -12275,7 +13144,8 @@ class Pages:
                 *[
                     set_button,
                     favorite_button,
-                    download_button,
+                    download_to_config_button,
+                    save_as_button,
                     copy_menu,
                 ],
                 *extra_actions,
@@ -12386,7 +13256,7 @@ class Pages:
 
         def _handle_download(action: str):
             nonlocal spotlight_loading_info, spotlight_pb
-            nonlocal set_button, favorite_button, download_button, copy_button
+            nonlocal set_button, favorite_button, spotlight_download_to_config_button, spotlight_save_as_button, copy_button
             nonlocal segmented_button, copy_menu
 
             normalized_action = "set_wallpaper" if action == "set" else action
@@ -12420,7 +13290,8 @@ class Pages:
 
             set_button.disabled = True
             favorite_button.disabled = True
-            download_button.disabled = True
+            spotlight_download_to_config_button.disabled = True
+            spotlight_save_as_button.disabled = True
             _disable_copy_button()
             segmented_button.disabled = True
             self.resource_tabs.disabled = True
@@ -12463,17 +13334,62 @@ class Pages:
                     {"file_path": str(wallpaper_path) if wallpaper_path else None},
                 )
             elif success and action == "download":
-                self.page.open(
-                    ft.SnackBar(
-                        ft.Text("壁纸下载完成，快去看看吧~"),
+                # 使用下载管理器获取配置的位置
+                download_folder_path = download_manager.get_download_folder_path(app_config)
+                if download_folder_path:
+                    try:
+                        # 确保下载文件夹存在
+                        download_folder_path.mkdir(parents=True, exist_ok=True)
+                        
+                        # 复制文件到配置的下载位置
+                        import shutil
+                        final_path = download_folder_path / filename
+                        shutil.copy2(wallpaper_path, final_path)
+                        
+                        # 删除缓存文件
+                        wallpaper_path.unlink()
+                        
+                        self.page.open(
+                            ft.SnackBar(
+                                ft.Text(f"壁纸下载完成，已保存到 {final_path}"),
+                            )
+                        )
+                        
+                        self._emit_download_completed("spotlight", "download", final_path)
+                    except Exception as exc:
+                        logger.error(f"复制文件到下载目录失败: {exc}")
+                        self.page.open(
+                            ft.SnackBar(
+                                ft.Text("下载完成，但保存到配置目录失败"),
+                                bgcolor=ft.Colors.ON_ERROR,
+                            )
+                        )
+                        # 如果复制失败，仍然使用缓存文件路径
+                        final_path = wallpaper_path
+                else:
+                    # 如果没有配置下载位置，使用缓存文件
+                    final_path = wallpaper_path
+                    self.page.open(
+                        ft.SnackBar(
+                            ft.Text("壁纸下载完成，但未配置下载位置"),
+                        )
                     )
-                )
+                
                 handled = True
                 self._emit_spotlight_action(
                     normalized_action,
                     success,
-                    {"file_path": str(wallpaper_path) if wallpaper_path else None},
+                    {"file_path": str(final_path) if final_path else None},
                 )
+            elif success and action == "save_as":
+                # 另存为功能，打开文件选择器
+                self._ensure_spotlight_save_picker()
+                filename = _sanitize_filename(
+                    spotlight.get("title"),
+                    f"Windows-Spotlight-{self.spotlight_current_index + 1}"
+                ) + ".jpg"
+                self._spotlight_save_picker.save_file(file_name=filename)
+                handled = True
             elif success and action == "copy_image":
                 handled = True
                 if copy_image_to_clipboard(wallpaper_path):
@@ -12527,7 +13443,8 @@ class Pages:
 
             set_button.disabled = False
             favorite_button.disabled = False
-            download_button.disabled = False
+            spotlight_download_to_config_button.disabled = False
+            spotlight_save_as_button.disabled = False
             _enable_copy_button()
             segmented_button.disabled = False
             self.resource_tabs.disabled = False
@@ -12590,10 +13507,33 @@ class Pages:
                 self._make_spotlight_favorite_payload()
             ),
         )
-        download_button = ft.FilledTonalButton(
-            "下载",
-            icon=ft.Icons.DOWNLOAD,
+        # Windows聚焦下载按钮 - 两个独立按钮
+        spotlight_download_to_config_button = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.DOWNLOAD, ft.Colors.ON_SECONDARY_CONTAINER, size=17),
+                    ft.Text("下载", color=ft.Colors.ON_SECONDARY_CONTAINER),
+                ],
+                spacing=7,
+            ),
+            padding=7.5,
+            bgcolor=ft.Colors.SECONDARY_CONTAINER,
+            border_radius=50,
             on_click=lambda e: _handle_download("download"),
+        )
+        
+        spotlight_save_as_button = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.SAVE_AS, ft.Colors.ON_SECONDARY_CONTAINER, size=17),
+                    ft.Text("另存为", color=ft.Colors.ON_SECONDARY_CONTAINER),
+                ],
+                spacing=7,
+            ),
+            padding=7.5,
+            bgcolor=ft.Colors.SECONDARY_CONTAINER,
+            border_radius=50,
+            on_click=lambda e: _handle_download("save_as"),
         )
         copy_icon = ft.Icon(
             ft.Icons.COPY, color=ft.Colors.ON_SECONDARY_CONTAINER, size=17
@@ -12658,7 +13598,8 @@ class Pages:
                 *[
                     set_button,
                     favorite_button,
-                    download_button,
+                    spotlight_download_to_config_button,
+                    spotlight_save_as_button,
                     copy_menu,
                 ],
                 *extra_spotlight_actions,
@@ -13345,11 +14286,12 @@ class Pages:
         if not images:
             self._show_snackbar("请先选择图片。", error=True)
             return
-        download_dir = app_config.get("storage.download_directory")
-        if not download_dir:
+        # 使用下载管理器获取配置的位置
+        download_folder_path = download_manager.get_download_folder_path(app_config)
+        if not download_folder_path:
             self._show_snackbar("尚未配置下载目录。", error=True)
             return
-        base_dir = Path(download_dir).expanduser()
+        base_dir = download_folder_path
         if len(images) > 1:
             folder_name = time.strftime("sniff-%Y%m%d-%H%M%S")
             target_dir = base_dir / folder_name
@@ -14412,7 +15354,7 @@ class Pages:
             open=False,
         )
         general = tab_content("通用", self._build_home_settings_section())
-        download = tab_content("下载")
+        download = tab_content("下载", self._build_download_settings_section())
         resource = tab_content(
             "内容",
             ft.Text("是否允许 NSFW 内容？"),
@@ -14904,3 +15846,116 @@ class Pages:
             self.page.theme_mode = ft.ThemeMode.SYSTEM
             app_config.set("ui.theme", "auto")
         self.page.update()
+
+    def _ensure_bing_save_picker(self) -> None:
+        """确保Bing保存文件选择器已初始化"""
+        if self._bing_save_picker is None:
+            self._bing_save_picker = ft.FilePicker(
+                on_result=self._handle_bing_save_result
+            )
+            if self._bing_save_picker not in self.page.overlay:
+                self.page.overlay.append(self._bing_save_picker)
+
+    def _handle_bing_save_result(self, event: ft.FilePickerResultEvent) -> None:
+        """处理Bing另存为结果"""
+        if not event.files:
+            return
+        
+        file_path = event.files[0].path
+        if not file_path:
+            return
+
+        try:
+            def progress_callback(value, total):
+                if total:
+                    # 这里需要从外部获取bing_pb和bing_loading_info，但目前作用域有问题
+                    pass
+
+            # 直接下载到用户选择的路径
+            filename = Path(file_path).name
+            final_path = ltwapi.download_file(
+                self.bing_wallpaper_url,
+                Path(file_path).parent,
+                filename,
+                progress_callback=progress_callback,
+            )
+            
+            if final_path:
+                self._emit_download_completed("bing", "save_as", final_path)
+                self.page.open(
+                    ft.SnackBar(
+                        ft.Text(f"已保存到 {final_path}"),
+                    )
+                )
+            else:
+                raise Exception("下载失败")
+                
+        except Exception as exc:
+            logger.error("Bing 壁纸另存为失败: {error}", error=str(exc))
+            self.page.open(
+                ft.SnackBar(
+                    ft.Text("另存为失败，请稍后再试~"),
+                    bgcolor=ft.Colors.ON_ERROR,
+                )
+            )
+
+    def _ensure_spotlight_save_picker(self) -> None:
+        """确保Windows聚焦保存文件选择器已初始化"""
+        if self._spotlight_save_picker is None:
+            self._spotlight_save_picker = ft.FilePicker(
+                on_result=self._handle_spotlight_save_result
+            )
+            if self._spotlight_save_picker not in self.page.overlay:
+                self.page.overlay.append(self._spotlight_save_picker)
+
+    def _handle_spotlight_save_result(self, event: ft.FilePickerResultEvent) -> None:
+        """处理Windows聚焦另存为结果"""
+        if not event.files:
+            return
+        
+        file_path = event.files[0].path
+        if not file_path:
+            return
+
+        try:
+            # 获取当前聚焦壁纸信息
+            spotlight = (
+                self.spotlight_wallpaper[self.spotlight_current_index]
+                if self.spotlight_wallpaper
+                else {}
+            )
+            url = spotlight.get("url")
+            
+            if not url:
+                raise Exception("未找到壁纸地址")
+
+            def progress_callback(value, total):
+                pass  # 另存为不显示进度
+
+            # 直接下载到用户选择的路径
+            filename = Path(file_path).name
+            final_path = ltwapi.download_file(
+                url,
+                Path(file_path).parent,
+                filename,
+                progress_callback=progress_callback,
+            )
+            
+            if final_path:
+                self._emit_download_completed("spotlight", "save_as", final_path)
+                self.page.open(
+                    ft.SnackBar(
+                        ft.Text(f"已保存到 {final_path}"),
+                    )
+                )
+            else:
+                raise Exception("下载失败")
+                
+        except Exception as exc:
+            logger.error("Windows 聚焦壁纸另存为失败: {error}", error=str(exc))
+            self.page.open(
+                ft.SnackBar(
+                    ft.Text("另存为失败，请稍后再试~"),
+                    bgcolor=ft.Colors.ON_ERROR,
+                )
+            )

@@ -1,6 +1,5 @@
 # Test files
 .vscode
-run.bat
 build_nuitka.ps1
 
 # Byte-compiled / optimized / DLL files
@@ -172,3 +171,6 @@ storage/
 docs/build_nuitka.md
 .VSCodeCounter/
 
+run.bat
+.gitignore
+sync_env.bat

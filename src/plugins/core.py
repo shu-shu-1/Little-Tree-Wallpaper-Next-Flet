@@ -180,6 +180,12 @@ class CorePlugin(Plugin):
             )
         )
         context.add_route_view(
+            AppRouteView(
+                route="/resource/im-source",
+                builder=pages.build_im_source_execution_view,
+            )
+        )
+        context.add_route_view(
             AppRouteView(route="/first-run", builder=pages.build_first_run_page)
         )
         context.add_route_view(
