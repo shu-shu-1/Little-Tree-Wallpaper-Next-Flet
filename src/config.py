@@ -63,6 +63,10 @@ DEFAULT_CONFIG = {
         "script": {"enabled": False, "path": ""},
         "wallpaper_change": {
             "enabled": False,
+            "list_ids": [],
+            "fixed_image": None,
+            "order": "random",
+            "delay_seconds": 0,
             "source": "bing",
             "auto_rotation": False,
         },

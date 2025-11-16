@@ -88,6 +88,9 @@ from app.auto_change import (
     AutoChangeListEntry,
     AutoChangeListStore,
     AutoChangeService,
+    ORDER_RANDOM,
+    ORDER_RANDOM_NO_REPEAT,
+    ORDER_SEQUENTIAL,
 )
 from app.download_manager import download_manager, DownloadLocationType
 from app.image_optimizer import image_optimizer
@@ -424,6 +427,15 @@ class Pages:
         self._auto_entry_dialog_state: dict[str, Any] = {}
         self._auto_fixed_image_target: tuple[str, Any] | None = None
         self._auto_updating_auto_ui: bool = False
+        self._startup_auto_switch: ft.Switch | None = None
+        self._startup_auto_status_text: ft.Text | None = None
+        self._startup_wallpaper_switch: ft.Switch | None = None
+        self._startup_wallpaper_lists_column: ft.Column | None = None
+        self._startup_wallpaper_list_checks: dict[str, ft.Checkbox] = {}
+        self._startup_wallpaper_order_dropdown: ft.Dropdown | None = None
+        self._startup_wallpaper_delay_field: ft.TextField | None = None
+        self._startup_wallpaper_fixed_image_display: ft.Text | None = None
+        self._startup_wallpaper_clear_button: ft.TextButton | None = None
 
         self.page.run_task(self._auto_change_service.ensure_running)
         self._load_auto_change_config()
@@ -1893,6 +1905,10 @@ class Pages:
             self._auto_set_interval_fixed_image(path)
         elif target_name == "schedule":
             self._auto_update_schedule_entry_fixed_image(target_index, path)
+        elif target_name == "startup":
+            self._startup_set_fixed_image(path)
+        elif target_name == "schedule_dialog":
+            self._auto_schedule_dialog_set_fixed_image(path)
         elif target_name == "schedule_dialog":
             self._auto_schedule_dialog_set_fixed_image(path)
 
@@ -1966,6 +1982,7 @@ class Pages:
                 )
         if self._auto_lists_column.page is not None:
             self._auto_lists_column.update()
+        self._rebuild_startup_wallpaper_list_checks()
 
     def _auto_build_list_card(self, auto_list: AutoChangeList) -> ft.Control:
         entry_count = len(auto_list.entries)
@@ -5288,6 +5305,373 @@ class Pages:
                 self._home_hitokoto_section,
                 self._home_zhaoyu_section,
                 self._home_custom_section,
+            ],
+            spacing=16,
+            tight=True,
+        )
+
+    # ------------------------------------------------------------------
+    # startup helpers
+    # ------------------------------------------------------------------
+
+    def _normalize_startup_order(self, value: str | None) -> str:
+        raw = str(value or "").lower()
+        if raw == "shuffle":
+            return ORDER_RANDOM
+        if raw in {ORDER_RANDOM, ORDER_RANDOM_NO_REPEAT, ORDER_SEQUENTIAL}:
+            return raw
+        return ORDER_RANDOM
+
+    def _startup_wallpaper_config(self) -> dict[str, Any]:
+        data = app_config.get("startup.wallpaper_change", {}) or {}
+        if not isinstance(data, dict):
+            data = {}
+        list_ids = [str(entry) for entry in data.get("list_ids", []) if entry]
+        order = self._normalize_startup_order(data.get("order"))
+        delay_raw = data.get("delay_seconds", 0)
+        try:
+            delay_seconds = max(0, int(delay_raw))
+        except (TypeError, ValueError):
+            delay_seconds = 0
+        fixed_image = data.get("fixed_image") or None
+        return {
+            "enabled": bool(data.get("enabled", False)),
+            "list_ids": list_ids,
+            "fixed_image": fixed_image,
+            "order": order,
+            "delay_seconds": delay_seconds,
+        }
+
+    def _save_startup_wallpaper_config(self, config: dict[str, Any]) -> None:
+        base = app_config.get("startup.wallpaper_change", {}) or {}
+        if not isinstance(base, dict):
+            base = {}
+        base.update(
+            {
+                "enabled": bool(config.get("enabled", False)),
+                "list_ids": [str(item) for item in config.get("list_ids", []) if item],
+                "fixed_image": config.get("fixed_image") or None,
+                "order": self._normalize_startup_order(config.get("order")),
+                "delay_seconds": max(0, int(config.get("delay_seconds", 0) or 0)),
+            }
+        )
+        app_config.set("startup.wallpaper_change", base)
+        self._refresh_startup_wallpaper_controls()
+
+    def _refresh_startup_wallpaper_controls(self) -> None:
+        config = self._startup_wallpaper_config()
+        if self._startup_wallpaper_switch is not None:
+            self._startup_wallpaper_switch.value = config["enabled"]
+            if self._startup_wallpaper_switch.page is not None:
+                self._startup_wallpaper_switch.update()
+        if self._startup_wallpaper_order_dropdown is not None:
+            self._startup_wallpaper_order_dropdown.value = config["order"]
+            if self._startup_wallpaper_order_dropdown.page is not None:
+                self._startup_wallpaper_order_dropdown.update()
+        if self._startup_wallpaper_delay_field is not None:
+            self._startup_wallpaper_delay_field.value = str(config["delay_seconds"])
+            self._startup_wallpaper_delay_field.error_text = None
+            if self._startup_wallpaper_delay_field.page is not None:
+                self._startup_wallpaper_delay_field.update()
+        self._update_startup_fixed_image_display(config.get("fixed_image"))
+        self._rebuild_startup_wallpaper_list_checks()
+
+    def _rebuild_startup_wallpaper_list_checks(self) -> None:
+        column = self._startup_wallpaper_lists_column
+        if column is None:
+            return
+        config = self._startup_wallpaper_config()
+        selected = set(config.get("list_ids", []))
+        column.controls.clear()
+        self._startup_wallpaper_list_checks = {}
+        lists = self._auto_list_store.all()
+        if not lists:
+            column.controls.append(
+                ft.Text(
+                    "暂无可用自动更换列表，请先在“壁纸”页创建。",
+                    size=12,
+                    color=ft.Colors.GREY,
+                )
+            )
+        else:
+            for auto_list in lists:
+                checkbox = ft.Checkbox(
+                    label=f"{auto_list.name} ({len(auto_list.entries)} 条)",
+                    value=auto_list.id in selected,
+                    on_change=lambda e, list_id=auto_list.id: self._handle_startup_wallpaper_list_toggle(
+                        list_id,
+                        bool(getattr(e.control, "value", False)),
+                    ),
+                )
+                checkbox.disabled = False
+                self._startup_wallpaper_list_checks[auto_list.id] = checkbox
+                column.controls.append(checkbox)
+        if column.page is not None:
+            column.update()
+
+    def _handle_startup_auto_switch(self, event: ft.ControlEvent) -> None:
+        desired = bool(getattr(event.control, "value", False))
+        app_config.set("startup.auto_start", desired)
+        try:
+            manager = StartupManager()
+            if desired:
+                manager.enable_startup()
+                self._show_snackbar("已尝试添加至开机自启。")
+            else:
+                manager.disable_startup()
+                self._show_snackbar("已尝试移除开机自启。")
+        except Exception as exc:  # pragma: no cover - platform specific
+            logger.error(f"更新开机启动状态失败: {exc}")
+            event.control.value = not desired
+            if event.control.page is not None:
+                event.control.update()
+            self._show_snackbar("无法修改开机启动状态，请查看日志。", error=True)
+        finally:
+            self._refresh_startup_auto_status()
+
+    def _refresh_startup_auto_status(self) -> None:
+        if self._startup_auto_status_text is None:
+            return
+        try:
+            enabled = StartupManager().is_startup_enabled()
+            text = "当前状态：已添加到开机启动" if enabled else "当前状态：未添加到开机启动"
+            color = ft.Colors.GREEN if enabled else ft.Colors.GREY
+        except Exception as exc:  # pragma: no cover - Windows-only
+            logger.error(f"检查开机启动状态失败: {exc}")
+            text = "当前状态：无法读取（仅支持 Windows）"
+            color = ft.Colors.ERROR
+        self._startup_auto_status_text.value = text
+        self._startup_auto_status_text.color = color
+        if self._startup_auto_status_text.page is not None:
+            self._startup_auto_status_text.update()
+
+    def _handle_startup_wallpaper_toggle(self, event: ft.ControlEvent) -> None:
+        config = self._startup_wallpaper_config()
+        config["enabled"] = bool(getattr(event.control, "value", False))
+        self._save_startup_wallpaper_config(config)
+
+    def _handle_startup_wallpaper_list_toggle(self, list_id: str, enabled: bool) -> None:
+        config = self._startup_wallpaper_config()
+        ids = [item for item in config.get("list_ids", []) if item]
+        if enabled and list_id not in ids:
+            ids.append(list_id)
+        if not enabled:
+            ids = [item for item in ids if item != list_id]
+        config["list_ids"] = ids
+        self._save_startup_wallpaper_config(config)
+
+    def _handle_startup_wallpaper_order_change(self, event: ft.ControlEvent) -> None:
+        config = self._startup_wallpaper_config()
+        config["order"] = self._normalize_startup_order(getattr(event.control, "value", None))
+        self._save_startup_wallpaper_config(config)
+
+    def _handle_startup_wallpaper_delay_change(self, event: ft.ControlEvent) -> None:
+        raw_value = str(getattr(event.control, "value", "") or "").strip()
+        try:
+            delay = max(0, int(raw_value))
+        except ValueError:
+            event.control.error_text = "请输入非负整数"
+            if event.control.page is not None:
+                event.control.update()
+            return
+        event.control.error_text = None
+        if event.control.page is not None:
+            event.control.update()
+        config = self._startup_wallpaper_config()
+        config["delay_seconds"] = delay
+        self._save_startup_wallpaper_config(config)
+
+    def _startup_open_fixed_image_picker(self) -> None:
+        self._auto_open_fixed_image_picker("startup")
+
+    def _startup_set_fixed_image(self, path: str | None) -> None:
+        config = self._startup_wallpaper_config()
+        config["fixed_image"] = path or None
+        self._save_startup_wallpaper_config(config)
+
+    def _startup_clear_fixed_image(self) -> None:
+        self._startup_set_fixed_image(None)
+
+    def _update_startup_fixed_image_display(self, path: str | None) -> None:
+        if self._startup_wallpaper_fixed_image_display is not None:
+            self._startup_wallpaper_fixed_image_display.value = path or "未选择"
+            self._startup_wallpaper_fixed_image_display.color = (
+                ft.Colors.ON_SURFACE if path else ft.Colors.GREY
+            )
+            if self._startup_wallpaper_fixed_image_display.page is not None:
+                self._startup_wallpaper_fixed_image_display.update()
+        if self._startup_wallpaper_clear_button is not None:
+            self._startup_wallpaper_clear_button.disabled = not bool(path)
+            if self._startup_wallpaper_clear_button.page is not None:
+                self._startup_wallpaper_clear_button.update()
+
+    def _handle_startup_wallpaper_run_now(self, _: ft.ControlEvent | None = None) -> None:
+        config = self._startup_wallpaper_config()
+        if not config.get("list_ids") and not config.get("fixed_image"):
+            self._show_snackbar("请先选择自动更换列表或固定图片。", error=True)
+            return
+        self._schedule_startup_wallpaper_task(config, initiated_by_user=True)
+
+    def _schedule_startup_wallpaper_task(
+        self,
+        config: dict[str, Any],
+        *,
+        initiated_by_user: bool,
+    ) -> None:
+        page = self.page
+        if page is None:
+            return
+        list_ids = config.get("list_ids") or []
+        fixed_image = config.get("fixed_image")
+        if not list_ids and not fixed_image:
+            if initiated_by_user:
+                self._show_snackbar("缺少可用的列表或固定图片。", error=True)
+            logger.info("开机壁纸任务跳过：未配置列表或固定图片。")
+            return
+
+        async def _runner() -> None:
+            delay = 0 if initiated_by_user else int(config.get("delay_seconds", 0))
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                await self._auto_change_service.ensure_running()
+                success = await self._auto_change_service.perform_custom_change(
+                    list_ids,
+                    fixed_image,
+                    order=config.get("order"),
+                )
+                if initiated_by_user:
+                    if success:
+                        self._show_snackbar("已完成一次壁纸更换。")
+                    else:
+                        self._show_snackbar("未找到可用壁纸，请检查列表内容。", error=True)
+            except Exception as exc:  # pragma: no cover - runtime safety
+                logger.error(f"执行开机壁纸任务失败: {exc}")
+                if initiated_by_user:
+                    self._show_snackbar("执行失败，请查看日志。", error=True)
+
+        page.run_task(_runner())
+
+    def run_startup_wallpaper_change(self) -> None:
+        config = self._startup_wallpaper_config()
+        if not config.get("enabled"):
+            return
+        self._schedule_startup_wallpaper_task(config, initiated_by_user=False)
+
+    def _build_startup_settings_section(self) -> ft.Control:
+        auto_start_enabled = bool(app_config.get("startup.auto_start", False))
+        self._startup_auto_switch = ft.Switch(
+            label="开机自启动（Windows）",
+            value=auto_start_enabled,
+            on_change=self._handle_startup_auto_switch,
+        )
+        self._startup_auto_status_text = ft.Text("状态读取中…", size=12, color=ft.Colors.GREY)
+        self._refresh_startup_auto_status()
+
+        startup_wallpaper_config = self._startup_wallpaper_config()
+        self._startup_wallpaper_switch = ft.Switch(
+            label="开机后自动执行一次壁纸更换",
+            value=startup_wallpaper_config["enabled"],
+            on_change=self._handle_startup_wallpaper_toggle,
+        )
+
+        self._startup_wallpaper_lists_column = ft.Column(spacing=4, tight=True)
+        self._rebuild_startup_wallpaper_list_checks()
+
+        self._startup_wallpaper_order_dropdown = ft.Dropdown(
+            label="列表顺序",
+            value=startup_wallpaper_config["order"],
+            options=[
+                ft.DropdownOption(key=ORDER_RANDOM, text="随机"),
+                ft.DropdownOption(key=ORDER_RANDOM_NO_REPEAT, text="随机（不重复）"),
+                ft.DropdownOption(key=ORDER_SEQUENTIAL, text="顺序"),
+            ],
+            on_change=self._handle_startup_wallpaper_order_change,
+            width=220,
+        )
+        self._startup_wallpaper_delay_field = ft.TextField(
+            label="启动后延迟（秒）",
+            value=str(startup_wallpaper_config["delay_seconds"]),
+            width=180,
+            on_change=self._handle_startup_wallpaper_delay_change,
+        )
+
+        self._startup_wallpaper_fixed_image_display = ft.Text(
+            startup_wallpaper_config.get("fixed_image") or "未选择",
+            size=12,
+            color=(
+                ft.Colors.ON_SURFACE
+                if startup_wallpaper_config.get("fixed_image")
+                else ft.Colors.GREY
+            ),
+        )
+        self._startup_wallpaper_clear_button = ft.TextButton(
+            "清除",
+            icon=ft.Icons.CLEAR,
+            on_click=lambda _: self._startup_clear_fixed_image(),
+            disabled=not bool(startup_wallpaper_config.get("fixed_image")),
+        )
+
+        fixed_image_row = ft.Row(
+            [
+                ft.TextButton(
+                    "选择固定图片",
+                    icon=ft.Icons.IMAGE,
+                    on_click=lambda _: self._startup_open_fixed_image_picker(),
+                ),
+                self._startup_wallpaper_clear_button,
+                self._startup_wallpaper_fixed_image_display,
+            ],
+            spacing=8,
+            wrap=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+        order_delay_row = ft.Row(
+            [
+                self._startup_wallpaper_order_dropdown,
+                self._startup_wallpaper_delay_field,
+            ],
+            spacing=16,
+            wrap=True,
+        )
+
+        actions_row = ft.Row(
+            [
+                ft.FilledTonalButton(
+                    "立即执行一次",
+                    icon=ft.Icons.PLAY_ARROW,
+                    on_click=self._handle_startup_wallpaper_run_now,
+                ),
+            ],
+            spacing=12,
+        )
+
+        return ft.Column(
+            controls=[
+                ft.Text("开机与后台", size=18, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    "配置应用在 Windows 中的开机启动行为，并在启动后立刻执行一次壁纸更换。",
+                    size=12,
+                    color=ft.Colors.GREY,
+                ),
+                ft.Row([
+                    self._startup_auto_switch,
+                    self._startup_auto_status_text,
+                ], spacing=16, wrap=True),
+                ft.Divider(),
+                self._startup_wallpaper_switch,
+                ft.Text(
+                    "使用自动更换列表决定开机后的第一张壁纸，可选固定图片或延迟执行。",
+                    size=12,
+                    color=ft.Colors.GREY,
+                ),
+                ft.Text("参与的自动更换列表", size=14, weight=ft.FontWeight.BOLD),
+                self._startup_wallpaper_lists_column,
+                order_delay_row,
+                ft.Text("固定图片（可选）", size=14, weight=ft.FontWeight.BOLD),
+                fixed_image_row,
+                actions_row,
             ],
             spacing=16,
             tight=True,
@@ -15371,7 +15755,11 @@ class Pages:
             ),
             open=False,
         )
-        general = tab_content("通用", self._build_home_settings_section())
+        general = tab_content(
+            "通用",
+            self._build_home_settings_section(),
+            self._build_startup_settings_section(),
+        )
         download = tab_content("下载", self._build_download_settings_section())
         resource = tab_content(
             "内容",

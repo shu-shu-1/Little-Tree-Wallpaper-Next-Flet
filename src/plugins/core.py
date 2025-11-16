@@ -199,6 +199,7 @@ class CorePlugin(Plugin):
         context.set_initial_route(initial_route or "/")
 
         context.add_startup_hook(lambda: pages.refresh_home_quote())
+        context.add_startup_hook(lambda: pages.run_startup_wallpaper_change())
 
 
 PLUGIN = CorePlugin()

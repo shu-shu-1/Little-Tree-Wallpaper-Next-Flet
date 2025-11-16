@@ -499,6 +499,17 @@ class AutoChangeService:
         logger.info("已触发立即更换请求。")
         return True
 
+    async def perform_custom_change(
+        self,
+        list_ids: Sequence[str],
+        fixed_image: str | None = None,
+        *,
+        order: str | None = ORDER_RANDOM,
+    ) -> bool:
+        """Execute a one-off wallpaper change using the provided lists."""
+
+        return await self._perform_change(list_ids, fixed_image, order=order)
+
     async def _run(self) -> None:
         while not self._stopped:
             try:

@@ -37,6 +37,20 @@
 
 这只是一个示例；更多字段可以按相同方式添加并在保存时写回文件。
 
+## 开机启动与自动执行
+
+`startup` 节点现在包含更丰富的开机控制：
+
+- `startup.auto_start`：布尔值，配合 `StartupManager` 在 Windows 注册表中添加/移除启动项。
+- `startup.wallpaper_change`：描述开机后立即执行一次壁纸更换的行为，字段包括：
+  - `enabled`：是否启用。
+  - `list_ids`：参与的自动更换列表 ID（与自动换壁纸列表共用存储）。
+  - `fixed_image`：可选的固定壁纸路径。
+  - `order`：`random`、`random_no_repeat` 或 `sequential`。
+  - `delay_seconds`：应用启动后的延迟执行秒数。
+
+UI 中的“通用 → 开机与后台”板块允许用户直接操作这些设置，并提供“立即执行一次”按钮用于即时验证配置。
+
 ## 开发/测试 注意事项
 
 - 项目使用 `orjson`（在 `src/config.py` 中用于快速 JSON 序列化/反序列化）。在本地运行或测试之前，请确保在项目 Python 环境中安装了 `orjson`。例如：
