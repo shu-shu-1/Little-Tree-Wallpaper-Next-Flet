@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import flet as ft
 
-from app.constants import MODE, FIRST_RUN_MARKER_VERSION
+from app.constants import FIRST_RUN_MARKER_VERSION, MODE
 from app.core.pages import Pages
 from app.plugins import (
     AppNavigationView,
@@ -149,14 +149,14 @@ class CorePlugin(Plugin):
                     icon=ft.Icons.SCIENCE_OUTLINED,
                     selected_icon=ft.Icons.SCIENCE,
                     content=pages.test,
-                )
+                ),
             )
 
         for view in navigation_views:
             context.add_navigation_view(view)
 
         context.add_route_view(
-            AppRouteView(route="/settings", builder=pages.build_settings_view)
+            AppRouteView(route="/settings", builder=pages.build_settings_view),
         )
         from app.plugins.base import PluginSettingsPage
 
@@ -171,28 +171,28 @@ class CorePlugin(Plugin):
         for entry in pages.iter_plugin_settings_pages():
             context.add_route_view(_make_settings_route(entry))
         context.add_route_view(
-            AppRouteView(route="/test-warning", builder=pages.build_test_warning_page)
+            AppRouteView(route="/test-warning", builder=pages.build_test_warning_page),
         )
         context.add_route_view(
             AppRouteView(
                 route="/resource/wallpaper-preview",
                 builder=pages.build_wallpaper_preview_view,
-            )
+            ),
         )
         context.add_route_view(
             AppRouteView(
                 route="/resource/im-source",
                 builder=pages.build_im_source_execution_view,
-            )
+            ),
         )
         context.add_route_view(
-            AppRouteView(route="/first-run", builder=pages.build_first_run_page)
+            AppRouteView(route="/first-run", builder=pages.build_first_run_page),
         )
         context.add_route_view(
             AppRouteView(
                 route="/conflict-warning",
                 builder=pages.build_conflict_warning_page,
-            )
+            ),
         )
 
         initial_route = startup_sequence[0] if startup_sequence else "/"

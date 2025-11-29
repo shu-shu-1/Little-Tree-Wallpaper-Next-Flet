@@ -8,14 +8,16 @@ import json
 import mimetypes
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Sequence
+from typing import Any, Literal
 
 import aiohttp
 import rtoml
-import ltwapi
 from loguru import logger
+
+import ltwapi
 
 from .paths import BASE_DIR, CACHE_DIR, CONFIG_DIR, DATA_DIR
 from .source_parser import (
@@ -26,6 +28,7 @@ from .source_parser import (
     parse_source_file,
     parse_source_string,
 )
+
 
 class WallpaperSourceError(Exception):
     """Base class for wallpaper source issues."""
@@ -123,7 +126,7 @@ def _json_pointer(data: Any, pointer: str) -> Any:
 def _dot_path(data: Any, path: str) -> Any:
     if not path:
         return data
-    tokens = path.split('.')
+    tokens = path.split(".")
     current = data
     for token in tokens:
         if isinstance(current, Sequence) and not isinstance(current, (str, bytes)) and token.isdigit():
@@ -184,7 +187,7 @@ class WallpaperItem:
     source_id: str
     api_name: str
     category_label: str
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 class WallpaperSourceManager:
@@ -193,8 +196,8 @@ class WallpaperSourceManager:
         self._user_dir = DATA_DIR / "wallpaper_sources"
         self._cache_dir = CACHE_DIR / "wallpaper_sources"
         self._state_path = CONFIG_DIR / "wallpaper_sources.json"
-        self._records: Dict[str, WallpaperSourceRecord] = {}
-        self._state: Dict[str, Any] = {}
+        self._records: dict[str, WallpaperSourceRecord] = {}
+        self._state: dict[str, Any] = {}
         _ensure_dir(self._user_dir)
         _ensure_dir(self._cache_dir)
         self.reload()
@@ -223,8 +226,8 @@ class WallpaperSourceManager:
     # ------------------------------------------------------------------
     def reload(self) -> None:
         self._load_state()
-        records: Dict[str, WallpaperSourceRecord] = {}
-        enabled_state: Dict[str, bool] = dict(self._state.get("enabled", {}))
+        records: dict[str, WallpaperSourceRecord] = {}
+        enabled_state: dict[str, bool] = dict(self._state.get("enabled", {}))
 
         def merge_source(path: Path, origin: Literal["builtin", "user"]) -> None:
             try:
@@ -268,7 +271,7 @@ class WallpaperSourceManager:
             enabled_state.pop(identifier, None)
         self._records = records
         self._state["enabled"] = enabled_state
-        order: List[str] = []
+        order: list[str] = []
         seen: set[str] = set()
         for identifier in self._state.get("order", []):
             if identifier in records and identifier not in seen:
@@ -283,8 +286,8 @@ class WallpaperSourceManager:
             self._state["active_source"] = self.first_enabled_identifier()
         self._save_state()
 
-    def list_records(self, *, include_disabled: bool = True) -> List[WallpaperSourceRecord]:
-        ordered: List[WallpaperSourceRecord] = []
+    def list_records(self, *, include_disabled: bool = True) -> list[WallpaperSourceRecord]:
+        ordered: list[WallpaperSourceRecord] = []
         for identifier in self._state.get("order", []):
             record = self._records.get(identifier)
             if not record:
@@ -293,7 +296,7 @@ class WallpaperSourceManager:
                 ordered.append(record)
         return ordered
 
-    def enabled_records(self) -> List[WallpaperSourceRecord]:
+    def enabled_records(self) -> list[WallpaperSourceRecord]:
         return [record for record in self.list_records(include_disabled=False) if record.enabled]
 
     def get_record(self, identifier: str) -> WallpaperSourceRecord | None:
@@ -381,13 +384,13 @@ class WallpaperSourceManager:
     # ------------------------------------------------------------------
     # category helpers
     # ------------------------------------------------------------------
-    def category_refs(self, identifier: str) -> List[WallpaperCategoryRef]:
+    def category_refs(self, identifier: str) -> list[WallpaperCategoryRef]:
         record = self._records.get(identifier)
         if record is None:
             return []
         if not record.enabled:
             return []
-        refs: List[WallpaperCategoryRef] = []
+        refs: list[WallpaperCategoryRef] = []
         spec = record.spec
         for api in spec.apis:
             categories = spec.api_categories.get(api.name, [])
@@ -425,7 +428,7 @@ class WallpaperSourceManager:
                         source_name=spec.name,
                         search_tokens=tuple(sorted(tokens)),
                         footer_text=spec.effective_footer_for_api(api),
-                    )
+                    ),
                 )
         return refs
 
@@ -442,8 +445,8 @@ class WallpaperSourceManager:
     async def fetch_category_items(
         self,
         category_id: str,
-        params: Dict[str, Any] | None = None,
-    ) -> List[WallpaperItem]:
+        params: dict[str, Any] | None = None,
+    ) -> list[WallpaperItem]:
         ref = self.find_category(category_id)
         if ref is None:
             raise WallpaperSourceFetchError("未找到该分类或分类已被禁用")
@@ -489,14 +492,14 @@ class WallpaperSourceManager:
         self,
         spec: SourceSpec,
         category: Category,
-        overrides: Dict[str, Any] | None = None,
-    ) -> Dict[str, Any]:
+        overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if not category.param_preset_id:
             return {}
         preset = spec.parameters.get(category.param_preset_id)
         if not preset:
             return {}
-        values: Dict[str, Any] = {}
+        values: dict[str, Any] = {}
         for option in preset.options:
             value = option.default
             if value is None:
@@ -514,11 +517,11 @@ class WallpaperSourceManager:
         self,
         ref: WallpaperCategoryRef,
         record: WallpaperSourceRecord,
-    ) -> List[WallpaperItem]:
+    ) -> list[WallpaperItem]:
         urls = ref.api.static_list.urls if ref.api.static_list else []
         if not urls:
             return []
-        items: List[WallpaperItem] = []
+        items: list[WallpaperItem] = []
         for index, url in enumerate(urls):
             try:
                 item = await self._prepare_item_from_url(
@@ -537,11 +540,11 @@ class WallpaperSourceManager:
         self,
         ref: WallpaperCategoryRef,
         record: WallpaperSourceRecord,
-    ) -> List[WallpaperItem]:
+    ) -> list[WallpaperItem]:
         entries = ref.api.static_dict.items if ref.api.static_dict else []
         if not entries:
             return []
-        items: List[WallpaperItem] = []
+        items: list[WallpaperItem] = []
         for index, entry in enumerate(entries):
             try:
                 item = await self._prepare_item_from_url(
@@ -563,8 +566,8 @@ class WallpaperSourceManager:
         ref: WallpaperCategoryRef,
         record: WallpaperSourceRecord,
         session: aiohttp.ClientSession,
-        overrides: Dict[str, Any] | None,
-    ) -> List[WallpaperItem]:
+        overrides: dict[str, Any] | None,
+    ) -> list[WallpaperItem]:
         if not ref.api.url:
             raise WallpaperSourceFetchError("该 API 未提供 URL")
         params = self._preset_values(record.spec, ref.category, overrides)
@@ -576,7 +579,7 @@ class WallpaperSourceManager:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         if not lines:
             raise WallpaperSourceFetchError("接口未返回有效的图片链接")
-        items: List[WallpaperItem] = []
+        items: list[WallpaperItem] = []
         for index, line in enumerate(lines):
             try:
                 items.append(
@@ -585,7 +588,7 @@ class WallpaperSourceManager:
                         record,
                         line,
                         f"remote-url-{index}",
-                    )
+                    ),
                 )
             except WallpaperSourceFetchError as exc:
                 logger.warning("下载图片失败: {error}", error=str(exc))
@@ -596,8 +599,8 @@ class WallpaperSourceManager:
         ref: WallpaperCategoryRef,
         record: WallpaperSourceRecord,
         session: aiohttp.ClientSession,
-        overrides: Dict[str, Any] | None,
-    ) -> List[WallpaperItem]:
+        overrides: dict[str, Any] | None,
+    ) -> list[WallpaperItem]:
         if not ref.api.url:
             raise WallpaperSourceFetchError("该 API 未提供 URL")
         params = self._preset_values(record.spec, ref.category, overrides)
@@ -635,13 +638,13 @@ class WallpaperSourceManager:
         ref: WallpaperCategoryRef,
         record: WallpaperSourceRecord,
         session: aiohttp.ClientSession,
-        overrides: Dict[str, Any] | None,
-    ) -> List[WallpaperItem]:
+        overrides: dict[str, Any] | None,
+    ) -> list[WallpaperItem]:
         if not ref.api.url:
             raise WallpaperSourceFetchError("该 API 未提供 URL")
         params = self._preset_values(record.spec, ref.category, overrides)
         method = ref.api.method.upper()
-        request_kwargs: Dict[str, Any] = {}
+        request_kwargs: dict[str, Any] = {}
         if method == "GET":
             request_kwargs["params"] = params or None
         else:
@@ -693,13 +696,13 @@ class WallpaperSourceManager:
         ref: WallpaperCategoryRef,
         record: WallpaperSourceRecord,
         session: aiohttp.ClientSession,
-        overrides: Dict[str, Any] | None,
-    ) -> List[WallpaperItem]:
+        overrides: dict[str, Any] | None,
+    ) -> list[WallpaperItem]:
         if not ref.api.url:
             raise WallpaperSourceFetchError("该 API 未提供 URL")
         params = self._preset_values(record.spec, ref.category, overrides)
         method = ref.api.method
-        request_kwargs: Dict[str, Any] = {}
+        request_kwargs: dict[str, Any] = {}
         if method.upper() == "GET":
             request_kwargs["params"] = params or None
         else:
@@ -715,7 +718,7 @@ class WallpaperSourceManager:
             raise WallpaperSourceFetchError(f"HTTP {status}")
         data = self._parse_structured_payload(ref.api.format, text, content_type)
         items_data = self._extract_items_data(ref, data)
-        items: List[WallpaperItem] = []
+        items: list[WallpaperItem] = []
         for index, item_data in enumerate(items_data):
             try:
                 items.append(
@@ -724,7 +727,7 @@ class WallpaperSourceManager:
                         record,
                         item_data,
                         index,
-                    )
+                    ),
                 )
             except WallpaperSourceFetchError as exc:
                 logger.warning("解析壁纸结果失败: {error}", error=str(exc))
@@ -751,7 +754,7 @@ class WallpaperSourceManager:
             except Exception as exc:
                 raise WallpaperSourceFetchError(f"解析响应失败: {exc}") from exc
 
-    def _extract_items_data(self, ref: WallpaperCategoryRef, payload: Any) -> List[Any]:
+    def _extract_items_data(self, ref: WallpaperCategoryRef, payload: Any) -> list[Any]:
         api = ref.api
         multi = api.multi
         if multi and multi.enabled:
@@ -945,11 +948,11 @@ class WallpaperSourceManager:
 
 
 __all__ = [
-    "WallpaperSourceManager",
-    "WallpaperSourceRecord",
     "WallpaperCategoryRef",
     "WallpaperItem",
     "WallpaperSourceError",
-    "WallpaperSourceImportError",
     "WallpaperSourceFetchError",
+    "WallpaperSourceImportError",
+    "WallpaperSourceManager",
+    "WallpaperSourceRecord",
 ]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict
+from typing import Any
 
 
 class PermissionState(str, Enum):
@@ -108,7 +108,7 @@ KNOWN_PERMISSIONS: dict[str, PluginPermission] = {
 }
 
 
-_STATE_ALIASES: Dict[str, PermissionState] = {
+_STATE_ALIASES: dict[str, PermissionState] = {
     PermissionState.GRANTED.value: PermissionState.GRANTED,
     PermissionState.DENIED.value: PermissionState.DENIED,
     PermissionState.PROMPT.value: PermissionState.PROMPT,
@@ -121,7 +121,6 @@ _STATE_ALIASES: Dict[str, PermissionState] = {
 
 def normalize_permission_state(value: Any) -> PermissionState:
     """Convert assorted persisted representations into a :class:`PermissionState`."""
-
     if isinstance(value, PermissionState):
         return value
     if isinstance(value, bool):
@@ -134,10 +133,9 @@ def normalize_permission_state(value: Any) -> PermissionState:
 
 
 def ensure_permission_states(
-    requested: tuple[str, ...], existing: dict[str, Any] | None = None
+    requested: tuple[str, ...], existing: dict[str, Any] | None = None,
 ) -> dict[str, PermissionState]:
     """Ensure all declared permissions have an explicit stored state."""
-
     result: dict[str, PermissionState] = {}
     if existing:
         for key, value in existing.items():
@@ -148,9 +146,9 @@ def ensure_permission_states(
 
 
 __all__ = [
-    "PluginPermission",
-    "PermissionState",
     "KNOWN_PERMISSIONS",
-    "normalize_permission_state",
+    "PermissionState",
+    "PluginPermission",
     "ensure_permission_states",
+    "normalize_permission_state",
 ]

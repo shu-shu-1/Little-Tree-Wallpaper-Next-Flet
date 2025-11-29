@@ -1,6 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-Little Tree Wallpaper Next - cx_Freeze 构建脚本
+"""Little Tree Wallpaper Next - cx_Freeze 构建脚本
 依赖：Python 3.8+，已安装 cx_Freeze
 用法：
   直接运行：python tools/build_cx.py
@@ -8,6 +6,7 @@ Little Tree Wallpaper Next - cx_Freeze 构建脚本
 """
 
 from __future__ import annotations
+
 import argparse
 import datetime as _dt
 import os
@@ -33,7 +32,9 @@ PRODUCT_PREFIX = "LittleTreeWallpaper-next"
 
 # 彩色输出
 try:
-    from colorama import init as _colorama_init, Fore as _F, Style as _S
+    from colorama import Fore as _F
+    from colorama import Style as _S
+    from colorama import init as _colorama_init
     _colorama_init()
     _RESET = _S.RESET_ALL
     _C_INFO = _F.CYAN
@@ -92,8 +93,7 @@ def _today_build_index(dist_dir: Path, date_str: str) -> str:
 
 
 def _update_build_constant(constants_path: Path, build_tag: str) -> None:
-    """
-    将 src/app/constants.py 中的 BUILD 变量更新为新的 build_tag。
+    """将 src/app/constants.py 中的 BUILD 变量更新为新的 build_tag。
     若未找到 BUILD 定义，则在文件末尾追加。
     """
     if not constants_path.exists():
@@ -113,8 +113,7 @@ def _update_build_constant(constants_path: Path, build_tag: str) -> None:
 
 
 def _update_mode_constant(constants_path: Path, mode_value: str) -> None:
-    """
-    将 src/app/constants.py 中的 MODE 变量更新为给定的 mode_value。
+    """将 src/app/constants.py 中的 MODE 变量更新为给定的 mode_value。
     若未找到 MODE 定义，则在文件末尾追加。
     """
     if not constants_path.exists():
@@ -143,8 +142,7 @@ def _copy_tree(src: Path, dst: Path) -> None:
 
 
 def build_with_cx_freeze(entry: Path, app_name: str, windowed: bool) -> Path:
-    """
-    使用 cx_Freeze 构建应用
+    """使用 cx_Freeze 构建应用
     """
     try:
         from cx_Freeze import Executable, setup
@@ -161,7 +159,7 @@ def build_with_cx_freeze(entry: Path, app_name: str, windowed: bool) -> Path:
     build_exe_options = {
         "build_exe": str(BUILD_DIR / "exe"),
         "include_files": [],
-        "packages": ["flet", "aiohttp", "requests", "filetype", "magic", "loguru", 
+        "packages": ["flet", "aiohttp", "requests", "filetype", "magic", "loguru",
                      "platformdirs", "pyperclip", "orjson", "rtoml", "pystray", "psutil"],
         "excludes": [],
     }
@@ -184,7 +182,7 @@ def build_with_cx_freeze(entry: Path, app_name: str, windowed: bool) -> Path:
         script=str(entry),
         target_name=app_name + (".exe" if sys.platform == "win32" else ""),
         base=base,
-        icon=icon_path
+        icon=icon_path,
     )
 
     # 复制资源到构建目录
@@ -195,7 +193,7 @@ def build_with_cx_freeze(entry: Path, app_name: str, windowed: bool) -> Path:
 
     # 运行构建
     _info("Running cx_Freeze build...")
-    
+
     # 模拟命令行参数调用 cx_Freeze
     sys.argv = [sys.argv[0], "build_exe"]
     try:
@@ -204,7 +202,7 @@ def build_with_cx_freeze(entry: Path, app_name: str, windowed: bool) -> Path:
             version="1.0",
             description="Little Tree Wallpaper Next",
             options={"build_exe": build_exe_options},
-            executables=[executable]
+            executables=[executable],
         )
     except SystemExit:
         pass  # cx_Freeze 会调用 sys.exit()，我们忽略它
@@ -213,11 +211,11 @@ def build_with_cx_freeze(entry: Path, app_name: str, windowed: bool) -> Path:
     build_output = BUILD_DIR / "exe"
     if not build_output.exists():
         raise FileNotFoundError(f"Build output folder not found: {build_output}")
-    
+
     out_dir = DIST_DIR / app_name
     if out_dir.exists():
         shutil.rmtree(out_dir, ignore_errors=True)
-    
+
     shutil.move(str(build_output), str(out_dir))
     _info(f"cx_Freeze output: {out_dir}")
     return out_dir

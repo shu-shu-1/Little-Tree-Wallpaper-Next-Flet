@@ -1,5 +1,5 @@
 """Sniffing utilities."""
 
-from .service import SniffService, SniffedImage, SniffServiceError
+from .service import SniffedImage, SniffService, SniffServiceError
 
-__all__ = ["SniffService", "SniffedImage", "SniffServiceError"]
+__all__ = ["SniffService", "SniffServiceError", "SniffedImage"]

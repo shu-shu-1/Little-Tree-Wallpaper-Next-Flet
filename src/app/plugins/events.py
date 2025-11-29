@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -22,7 +23,7 @@ class PluginEvent:
     """Runtime envelope delivered to plugin listeners."""
 
     type: str
-    payload: Dict[str, Any]
+    payload: dict[str, Any]
     source: str
 
 
@@ -40,13 +41,13 @@ class PluginEventBus:
 
     def __init__(
         self,
-        permission_resolver: Optional[Callable[[str, str], bool]] = None,
+        permission_resolver: Callable[[str, str], bool] | None = None,
     ) -> None:
         self._permission_resolver = permission_resolver
-        self._listeners: Dict[str, List[_EventListener]] = {}
-        self._definitions: Dict[str, EventDefinition] = {}
-        self._owners: Dict[str, str] = {}
-        self._last_events: Dict[str, PluginEvent] = {}
+        self._listeners: dict[str, list[_EventListener]] = {}
+        self._definitions: dict[str, EventDefinition] = {}
+        self._owners: dict[str, str] = {}
+        self._last_events: dict[str, PluginEvent] = {}
 
     # ------------------------------------------------------------------
     # configuration helpers
@@ -76,18 +77,16 @@ class PluginEventBus:
             permission=permission,
         )
 
-    def list_event_definitions(self) -> List[EventDefinition]:
+    def list_event_definitions(self) -> list[EventDefinition]:
         return list(self._definitions.values())
 
     def reset(self) -> None:
         """Clear listeners and transient state while preserving definitions."""
-
         self._listeners.clear()
         self._last_events.clear()
 
     def clear_all(self) -> None:
         """Reset all definitions and listeners."""
-
         self._listeners.clear()
         self._definitions.clear()
         self._owners.clear()
@@ -136,7 +135,7 @@ class PluginEventBus:
     def emit(
         self,
         event_type: str,
-        payload: Dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
         *,
         source: str,
     ) -> None:
@@ -184,7 +183,7 @@ class PluginEventBus:
             )
 
 
-CORE_EVENT_DEFINITIONS: List[EventDefinition] = [
+CORE_EVENT_DEFINITIONS: list[EventDefinition] = [
     EventDefinition(
         event_type="resource.bing.updated",
         description="当 Bing 每日壁纸数据刷新时触发。",
@@ -220,5 +219,5 @@ CORE_EVENT_DEFINITIONS: List[EventDefinition] = [
         description="当用户对 IntelliMarkets 下载结果执行内置操作（设为壁纸、复制、收藏等）时触发。",
         permission="resource_data",
     ),
-    
+
 ]

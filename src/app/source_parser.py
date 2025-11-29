@@ -1,5 +1,4 @@
-"""
-Wallpaper Source TOML parser for Little Tree Wallpaper Next (Protocol v2.0).
+"""Wallpaper Source TOML parser for Little Tree Wallpaper Next (Protocol v2.0).
 
 - Parses and validates a source TOML using rtoml.
 - Returns normalized, typed structures for main program consumption.
@@ -19,10 +18,10 @@ Usage:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from typing import Any, Dict, List, Literal, Optional, Tuple
 import re
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any, Literal
 
 import rtoml
 from loguru import logger
@@ -47,9 +46,9 @@ MethodType = Literal["GET", "POST"]
 @dataclass(slots=True)
 class FieldMapping:
     image: str
-    title: Optional[str] = None
-    description: Optional[str] = None
-    copyright: Optional[str] = None
+    title: str | None = None
+    description: str | None = None
+    copyright: str | None = None
 
 
 @dataclass(slots=True)
@@ -60,37 +59,37 @@ class MultiConfig:
 
 @dataclass(slots=True)
 class StaticList:
-    urls: List[str]
+    urls: list[str]
 
 
 @dataclass(slots=True)
 class StaticDictItem:
     url: str
-    title: Optional[str] = None
-    description: Optional[str] = None
+    title: str | None = None
+    description: str | None = None
 
 
 @dataclass(slots=True)
 class StaticDict:
-    items: List[StaticDictItem]
+    items: list[StaticDictItem]
 
 
 @dataclass(slots=True)
 class ParameterOption:
     key: str
     type: Literal["choice", "boolean", "text"]
-    label: Optional[str] = None
-    description: Optional[str] = None
+    label: str | None = None
+    description: str | None = None
     default: Any = None
-    choices: Optional[List[str]] = None
-    placeholder: Optional[str] = None
+    choices: list[str] | None = None
+    placeholder: str | None = None
     hidden: bool = False
 
 
 @dataclass(slots=True)
 class ParameterPreset:
     id: str
-    options: List[ParameterOption] = field(default_factory=list)
+    options: list[ParameterOption] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -98,26 +97,26 @@ class Category:
     id: str
     name: str
     category: str
-    subcategory: Optional[str] = None
-    subsubcategory: Optional[str] = None
-    param_preset_id: Optional[str] = None
+    subcategory: str | None = None
+    subsubcategory: str | None = None
+    param_preset_id: str | None = None
 
 
 @dataclass(slots=True)
 class API:
     name: str
     format: FormatType
-    url: Optional[str] = None
-    description: Optional[str] = None
-    footer_text: Optional[str] = None
+    url: str | None = None
+    description: str | None = None
+    footer_text: str | None = None
     method: MethodType = "GET"
-    multi: Optional[MultiConfig] = None
-    field_mapping: Optional[FieldMapping] = None
-    static_list: Optional[StaticList] = None
-    static_dict: Optional[StaticDict] = None
-    category_ids: Tuple[str, ...] = field(default_factory=tuple)
-    category_param_mapping: Dict[str, str] = field(default_factory=dict)
-    param_preset_id: Optional[str] = None
+    multi: MultiConfig | None = None
+    field_mapping: FieldMapping | None = None
+    static_list: StaticList | None = None
+    static_dict: StaticDict | None = None
+    category_ids: tuple[str, ...] = field(default_factory=tuple)
+    category_param_mapping: dict[str, str] = field(default_factory=dict)
+    param_preset_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -126,21 +125,21 @@ class SourceSpec:
     identifier: str
     name: str
     version: str
-    description: Optional[str] = None
-    details: Optional[str] = None
-    logo: Optional[str] = None
+    description: str | None = None
+    details: str | None = None
+    logo: str | None = None
     skip_ssl_verify: bool = False
     refresh_interval_seconds: int = 0
-    footer_text: Optional[str] = None
+    footer_text: str | None = None
 
-    apis: List[API] = field(default_factory=list)
-    parameters: Dict[str, ParameterPreset] = field(default_factory=dict)
-    categories: List[Category] = field(default_factory=list)
+    apis: list[API] = field(default_factory=list)
+    parameters: dict[str, ParameterPreset] = field(default_factory=dict)
+    categories: list[Category] = field(default_factory=list)
 
     # Convenience: API name -> categories
-    api_categories: Dict[str, List[Category]] = field(default_factory=dict)
+    api_categories: dict[str, list[Category]] = field(default_factory=dict)
 
-    def effective_footer_for_api(self, api: API) -> Optional[str]:
+    def effective_footer_for_api(self, api: API) -> str | None:
         return api.footer_text or self.footer_text
 
 
@@ -153,7 +152,7 @@ _IDENTIFIER_RE = re.compile(r"^[a-z0-9_]{3,32}$")
 _SEMVER_RE = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
-    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$",
 )
 
 
@@ -197,12 +196,12 @@ def parse_source_file(path: str | Path) -> SourceSpec:
 # Internal builders
 # -----------------------------
 
-def _build_spec(data: Dict[str, Any], *, path_hint: Optional[str]) -> SourceSpec:
+def _build_spec(data: dict[str, Any], *, path_hint: str | None) -> SourceSpec:
     # Global required fields
     scheme = _req_str(data, "scheme")
     if scheme != "littletree_wallpaper_source_v2":
         raise SourceValidationError(
-            f"scheme 必须为 'littletree_wallpaper_source_v2'，实际为: {scheme}"
+            f"scheme 必须为 'littletree_wallpaper_source_v2'，实际为: {scheme}",
         )
 
     identifier = _req_str(data, "identifier")
@@ -237,7 +236,7 @@ def _build_spec(data: Dict[str, Any], *, path_hint: Optional[str]) -> SourceSpec
     footer_text = _opt_str(data, "footer_text")
 
     # Parameters (presets)
-    parameter_index: Dict[str, ParameterPreset] = {}
+    parameter_index: dict[str, ParameterPreset] = {}
     for preset in data.get("parameters", []) or []:
         if not isinstance(preset, dict):
             raise SourceValidationError("parameters 列表项必须为对象")
@@ -247,7 +246,7 @@ def _build_spec(data: Dict[str, Any], *, path_hint: Optional[str]) -> SourceSpec
         options_raw = preset.get("options", []) or []
         if not isinstance(options_raw, list):
             raise SourceValidationError("parameters.options 必须为数组")
-        options: List[ParameterOption] = []
+        options: list[ParameterOption] = []
         for opt in options_raw:
             if not isinstance(opt, dict):
                 raise SourceValidationError("parameters.options 元素必须为对象")
@@ -258,8 +257,8 @@ def _build_spec(data: Dict[str, Any], *, path_hint: Optional[str]) -> SourceSpec
     categories_raw = data.get("categories", []) or []
     if not isinstance(categories_raw, list):
         raise SourceValidationError("categories 必须为数组")
-    categories: List[Category] = []
-    category_index: Dict[str, Category] = {}
+    categories: list[Category] = []
+    category_index: dict[str, Category] = {}
     for entry in categories_raw:
         if not isinstance(entry, dict):
             raise SourceValidationError("categories 列表项必须为对象")
@@ -287,8 +286,8 @@ def _build_spec(data: Dict[str, Any], *, path_hint: Optional[str]) -> SourceSpec
     apis_raw = data.get("apis", []) or []
     if not isinstance(apis_raw, list):
         raise SourceValidationError("apis 必须为数组")
-    apis: List[API] = []
-    api_categories: Dict[str, List[Category]] = {}
+    apis: list[API] = []
+    api_categories: dict[str, list[Category]] = {}
     for api_entry in apis_raw:
         if not isinstance(api_entry, dict):
             raise SourceValidationError("apis 列表项必须为对象")
@@ -328,7 +327,7 @@ def _build_spec(data: Dict[str, Any], *, path_hint: Optional[str]) -> SourceSpec
     )
 
 
-def _build_parameter_option(opt: Dict[str, Any]) -> ParameterOption:
+def _build_parameter_option(opt: dict[str, Any]) -> ParameterOption:
     key = _req_str(opt, "key", ctx="parameters.options")
     typ = _req_str(opt, "type", ctx="parameters.options")
     if typ not in ("choice", "boolean", "text"):
@@ -338,7 +337,7 @@ def _build_parameter_option(opt: Dict[str, Any]) -> ParameterOption:
     if not hidden and not label:
         raise SourceValidationError("可见参数必须提供 label")
     desc = _opt_str(opt, "description")
-    default = opt.get("default", None)
+    default = opt.get("default")
     choices = opt.get("choices")
     placeholder = _opt_str(opt, "placeholder")
 
@@ -367,12 +366,12 @@ def _build_parameter_option(opt: Dict[str, Any]) -> ParameterOption:
 
 
 def _build_api(
-    api_data: Dict[str, Any],
+    api_data: dict[str, Any],
     *,
     global_skip_ssl: bool,
-    parameters: Dict[str, ParameterPreset],
-    categories: Dict[str, Category],
-) -> Tuple[API, List[Category]]:
+    parameters: dict[str, ParameterPreset],
+    categories: dict[str, Category],
+) -> tuple[API, list[Category]]:
     name = _req_str(api_data, "name", ctx="apis")
     fmt = _req_str(api_data, "format", ctx="apis").lower()
     valid_formats = {
@@ -395,10 +394,10 @@ def _build_api(
     footer_text = _opt_str(api_data, "footer_text")
 
     url = _opt_str(api_data, "url")
-    static_list: Optional[StaticList] = None
-    static_dict: Optional[StaticDict] = None
-    multi: Optional[MultiConfig] = None
-    field_mapping: Optional[FieldMapping] = None
+    static_list: StaticList | None = None
+    static_dict: StaticDict | None = None
+    multi: MultiConfig | None = None
+    field_mapping: FieldMapping | None = None
 
     supports_parameters = fmt in ("json", "toml")
 
@@ -415,7 +414,7 @@ def _build_api(
         urls_raw = static_section.get("urls")
         if not isinstance(urls_raw, list) or not urls_raw:
             raise SourceValidationError("static_list.urls 必须为非空数组")
-        urls: List[str] = []
+        urls: list[str] = []
         for entry in urls_raw:
             if not isinstance(entry, str) or not entry.strip():
                 raise SourceValidationError("static_list.urls 必须为字符串")
@@ -438,7 +437,7 @@ def _build_api(
         items_raw = static_section.get("items")
         if not isinstance(items_raw, list) or not items_raw:
             raise SourceValidationError("static_dict.items 必须为非空数组")
-        items: List[StaticDictItem] = []
+        items: list[StaticDictItem] = []
         for item in items_raw:
             if not isinstance(item, dict):
                 raise SourceValidationError("static_dict.items 元素必须为对象")
@@ -450,7 +449,7 @@ def _build_api(
                     url=item_url,
                     title=_opt_str(item, "title"),
                     description=_opt_str(item, "description"),
-                )
+                ),
             )
         static_dict = StaticDict(items=items)
         url = None
@@ -509,17 +508,17 @@ def _build_api(
         if param_preset_id not in parameters:
             raise SourceValidationError(f"param_preset_id 未定义: {param_preset_id}")
 
-    bindings: List[Category] = []
-    category_ids: Tuple[str, ...] = ()
-    category_param_mapping: Dict[str, str] = {}
+    bindings: list[Category] = []
+    category_ids: tuple[str, ...] = ()
+    category_param_mapping: dict[str, str] = {}
 
     if category_param_mapping_raw is not None:
         if not supports_parameters:
             raise SourceValidationError("category_param_mapping 仅支持 json/toml 格式")
         if not isinstance(category_param_mapping_raw, dict) or not category_param_mapping_raw:
             raise SourceValidationError("category_param_mapping 必须为非空对象")
-        mapping: Dict[str, str] = {}
-        ordered_ids: List[str] = []
+        mapping: dict[str, str] = {}
+        ordered_ids: list[str] = []
         for cat_id_raw, preset_raw in category_param_mapping_raw.items():
             if not isinstance(cat_id_raw, str) or not cat_id_raw:
                 raise SourceValidationError("category_param_mapping 的键必须为字符串")
@@ -550,7 +549,7 @@ def _build_api(
             raise SourceValidationError("category_ids 必须为字符串或字符串数组")
         if not ids_list:
             raise SourceValidationError("category_ids 不能为空")
-        validated_ids: List[str] = []
+        validated_ids: list[str] = []
         for cat_id in ids_list:
             if cat_id not in categories:
                 raise SourceValidationError(f"category_ids 引用了未定义的分类: {cat_id}")
@@ -587,7 +586,7 @@ def _build_api(
 # Small helpers
 # -----------------------------
 
-def _req_str(d: Dict[str, Any], key: str, *, ctx: str | None = None) -> str:
+def _req_str(d: dict[str, Any], key: str, *, ctx: str | None = None) -> str:
     val = d.get(key)
     if not isinstance(val, str) or not val:
         where = f" in {ctx}" if ctx else ""
@@ -595,7 +594,7 @@ def _req_str(d: Dict[str, Any], key: str, *, ctx: str | None = None) -> str:
     return val
 
 
-def _opt_str(d: Dict[str, Any], key: str) -> Optional[str]:
+def _opt_str(d: dict[str, Any], key: str) -> str | None:
     val = d.get(key)
     return val if isinstance(val, str) and val else None
 
@@ -610,10 +609,10 @@ __all__ = [
     "ParameterOption",
     "ParameterPreset",
     "SourceSpec",
+    "SourceValidationError",
     "StaticDict",
     "StaticDictItem",
     "StaticList",
-    "SourceValidationError",
     "parse_source_file",
     "parse_source_string",
 ]

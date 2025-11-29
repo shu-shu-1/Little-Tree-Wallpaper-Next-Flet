@@ -6,7 +6,7 @@ import copy
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import flet as ft
 from loguru import logger
@@ -14,7 +14,7 @@ from loguru import logger
 from .paths import CONFIG_DIR
 from .settings import SettingsStore
 
-DEFAULT_THEME_DATA: Dict[str, Any] = {
+DEFAULT_THEME_DATA: dict[str, Any] = {
     "schema_version": 1,
     "name": "Default",
     "description": "Little Tree Wallpaper Next 的默认配色方案，自动适配浅色和深色模式。",
@@ -123,31 +123,31 @@ class OverlayLayer:
 
 @dataclass(slots=True)
 class LoadedTheme:
-    raw: Dict[str, Any]
+    raw: dict[str, Any]
     theme: ft.Theme
-    preferred_mode: Optional[ft.ThemeMode]
-    components: Dict[str, Dict[str, Any]]
-    background: Optional[BackgroundLayer]
-    overlay: Optional[OverlayLayer]
-    source_path: Optional[Path]
+    preferred_mode: ft.ThemeMode | None
+    components: dict[str, dict[str, Any]]
+    background: BackgroundLayer | None
+    overlay: OverlayLayer | None
+    source_path: Path | None
 
 
 @dataclass(slots=True)
 class ThemeProfileInfo:
     identifier: str
     name: str
-    path: Optional[str]
+    path: str | None
     builtin: bool
     source: str
-    summary: Optional[str] = None
-    description: Optional[str] = None
-    author: Optional[str] = None
-    logo: Optional[str] = None
-    details: Optional[str] = None
-    website: Optional[str] = None
+    summary: str | None = None
+    description: str | None = None
+    author: str | None = None
+    logo: str | None = None
+    details: str | None = None
+    website: str | None = None
     is_active: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.identifier,
             "name": self.name,
@@ -169,14 +169,14 @@ class ThemeManager:
 
     def __init__(
         self,
-        settings: Optional[SettingsStore] = None,
+        settings: SettingsStore | None = None,
         *,
-        themes_dir: Optional[Path] = None,
+        themes_dir: Path | None = None,
     ) -> None:
         self._settings = settings
         self._themes_dir = themes_dir or (CONFIG_DIR / "themes")
         self._themes_dir.mkdir(parents=True, exist_ok=True)
-        self._active: Optional[LoadedTheme] = None
+        self._active: LoadedTheme | None = None
 
     @property
     def active(self) -> LoadedTheme:
@@ -186,7 +186,7 @@ class ThemeManager:
         return self._active
 
     @property
-    def preferred_theme_mode(self) -> Optional[ft.ThemeMode]:
+    def preferred_theme_mode(self) -> ft.ThemeMode | None:
         return self.active.preferred_mode
 
     @property
@@ -205,18 +205,18 @@ class ThemeManager:
         return token
 
     @staticmethod
-    def _sanitize_metadata_text(value: Any) -> Optional[str]:
+    def _sanitize_metadata_text(value: Any) -> str | None:
         if not isinstance(value, str):
             return None
         text = value.strip()
         return text or None
 
     def _extract_profile_metadata(
-        self, payload: Dict[str, Any], source_path: Optional[Path]
-    ) -> Dict[str, Optional[str]]:
+        self, payload: dict[str, Any], source_path: Path | None,
+    ) -> dict[str, str | None]:
         name = self._sanitize_metadata_text(payload.get("name"))
         description = self._sanitize_metadata_text(
-            payload.get("description") or payload.get("summary")
+            payload.get("description") or payload.get("summary"),
         )
         if not description:
             description = self._sanitize_metadata_text(payload.get("details"))
@@ -228,7 +228,7 @@ class ThemeManager:
         if summary and len(summary) > 120:
             summary = summary[:119] + "…"
 
-        logo: Optional[str] = None
+        logo: str | None = None
         raw_logo = payload.get("logo")
         if isinstance(raw_logo, str) and raw_logo.strip():
             token = raw_logo.strip()
@@ -250,7 +250,7 @@ class ThemeManager:
     def reload(self) -> None:
         self._active = self._load_theme()
 
-    def style_for(self, component: str) -> Dict[str, Any]:
+    def style_for(self, component: str) -> dict[str, Any]:
         return copy.deepcopy(self.active.components.get(component, {}))
 
     def apply_component_style(self, component: str, target: Any) -> None:
@@ -279,7 +279,7 @@ class ThemeManager:
         page.theme = self.active.theme
         self.apply_component_style("page", page)
 
-    def build_background_layer(self) -> Optional[ft.Container]:
+    def build_background_layer(self) -> ft.Container | None:
         background = self.active.background
         if background is None:
             return None
@@ -296,7 +296,7 @@ class ThemeManager:
             opacity=background.opacity,
         )
 
-    def build_overlay_layer(self) -> Optional[ft.Container]:
+    def build_overlay_layer(self) -> ft.Container | None:
         overlay = self.active.overlay
         if overlay is None:
             return None
@@ -306,7 +306,7 @@ class ThemeManager:
             opacity=overlay.opacity,
         )
 
-    def list_profiles(self) -> list[Dict[str, Any]]:
+    def list_profiles(self) -> list[dict[str, Any]]:
         current = self.current_profile()
         profiles: list[ThemeProfileInfo] = []
 
@@ -330,7 +330,7 @@ class ThemeManager:
                 details=default_meta.get("details"),
                 website=default_meta.get("website"),
                 is_active=current.lower() in {"default"},
-            )
+            ),
         )
 
         seen: set[str] = {"default"}
@@ -347,7 +347,7 @@ class ThemeManager:
             except Exception:
                 identifier = file_path.name
 
-            metadata: Dict[str, Optional[str]] = {}
+            metadata: dict[str, str | None] = {}
             try:
                 with file_path.open("r", encoding="utf-8") as fp:
                     payload = json.load(fp)
@@ -382,7 +382,7 @@ class ThemeManager:
 
         if current not in seen and current not in {"default"}:
             resolved = self._resolve_profile_path(current)
-            metadata: Dict[str, Optional[str]] = {}
+            metadata: dict[str, str | None] = {}
             if resolved and resolved.exists():
                 try:
                     with resolved.open("r", encoding="utf-8") as fp:
@@ -406,12 +406,12 @@ class ThemeManager:
                     details=metadata.get("details"),
                     website=metadata.get("website"),
                     is_active=True,
-                )
+                ),
             )
 
         return [profile.to_dict() for profile in profiles]
 
-    def import_theme(self, source: Path) -> Dict[str, Any]:
+    def import_theme(self, source: Path) -> dict[str, Any]:
         if not source.exists():
             raise FileNotFoundError(f"未找到主题文件: {source}")
         if not source.is_file():
@@ -454,7 +454,7 @@ class ThemeManager:
             "metadata": metadata,
         }
 
-    def set_profile(self, profile: str) -> Dict[str, Any]:
+    def set_profile(self, profile: str) -> dict[str, Any]:
         if self._settings is None:
             raise RuntimeError("ThemeManager 未绑定设置存储，无法更新主题。")
         token = (profile or "").strip()
@@ -490,7 +490,7 @@ class ThemeManager:
                 profile = raw_profile.strip()
 
         data = copy.deepcopy(DEFAULT_THEME_DATA)
-        source_path: Optional[Path] = None
+        source_path: Path | None = None
 
         if profile.lower() not in ("default", "system"):
             candidate = self._resolve_profile_path(profile)
@@ -510,13 +510,13 @@ class ThemeManager:
 
         return self._parse_theme(data, source_path)
 
-    def _parse_theme(self, data: Dict[str, Any], source_path: Optional[Path]) -> LoadedTheme:
+    def _parse_theme(self, data: dict[str, Any], source_path: Path | None) -> LoadedTheme:
         palette = data.get("palette") or {}
         components = data.get("components") or {}
         background = data.get("background") or {}
 
         theme, preferred_mode = self._build_theme_from_palette(palette)
-        sanitized_components: Dict[str, Dict[str, Any]] = {}
+        sanitized_components: dict[str, dict[str, Any]] = {}
         for key, value in components.items():
             if isinstance(key, str) and isinstance(value, dict):
                 sanitized_components[key] = value
@@ -538,8 +538,8 @@ class ThemeManager:
         )
 
     def _build_theme_from_palette(
-        self, palette: Dict[str, Any]
-    ) -> tuple[ft.Theme, Optional[ft.ThemeMode]]:
+        self, palette: dict[str, Any],
+    ) -> tuple[ft.Theme, ft.ThemeMode | None]:
         mode = str(palette.get("mode", "seed")).lower()
         preferred_mode = self._coerce_theme_mode(palette.get("preferred_mode"))
         theme = ft.Theme()
@@ -566,10 +566,10 @@ class ThemeManager:
 
         return theme, preferred_mode
 
-    def _build_color_scheme(self, data: Dict[str, Any]) -> Optional[ft.ColorScheme]:
+    def _build_color_scheme(self, data: dict[str, Any]) -> ft.ColorScheme | None:
         if not isinstance(data, dict):
             return None
-        kwargs: Dict[str, Any] = {}
+        kwargs: dict[str, Any] = {}
         for key in ALLOWED_COLOR_SCHEME_KEYS:
             if key in data:
                 value = data[key]
@@ -584,8 +584,8 @@ class ThemeManager:
         return ft.ColorScheme(**kwargs)
 
     def _build_background_layer(
-        self, data: Dict[str, Any], source_path: Optional[Path]
-    ) -> Optional[BackgroundLayer]:
+        self, data: dict[str, Any], source_path: Path | None,
+    ) -> BackgroundLayer | None:
         image = data.get("image")
         if not image:
             return None
@@ -612,9 +612,9 @@ class ThemeManager:
 
     def _extract_overlay_layer(
         self,
-        home_view_style: Optional[Dict[str, Any]],
-        background: Optional[BackgroundLayer],
-    ) -> Optional[OverlayLayer]:
+        home_view_style: dict[str, Any] | None,
+        background: BackgroundLayer | None,
+    ) -> OverlayLayer | None:
         if not isinstance(home_view_style, dict):
             return None
 
@@ -664,7 +664,7 @@ class ThemeManager:
                 return ALIGNMENT_MAP[key]
         return ft.alignment.center
 
-    def _coerce_theme_mode(self, value: Any) -> Optional[ft.ThemeMode]:
+    def _coerce_theme_mode(self, value: Any) -> ft.ThemeMode | None:
         if not isinstance(value, str):
             return None
         key = value.strip().lower()
@@ -676,7 +676,7 @@ class ThemeManager:
             return ft.ThemeMode.SYSTEM
         return None
 
-    def _coerce_brightness(self, value: Any) -> Optional[ft.Brightness]:
+    def _coerce_brightness(self, value: Any) -> ft.Brightness | None:
         if isinstance(value, ft.Brightness):
             return value
         if isinstance(value, str):
@@ -713,7 +713,7 @@ class ThemeManager:
                     return value
         return value
 
-    def _resolve_profile_path(self, profile: str) -> Optional[Path]:
+    def _resolve_profile_path(self, profile: str) -> Path | None:
         if profile.startswith("http://") or profile.startswith("https://"):
             return None
 
@@ -738,7 +738,7 @@ class ThemeManager:
 
         return candidates[0] if candidates else raw
 
-    def _resolve_asset_path(self, value: str, source_path: Optional[Path]) -> str:
+    def _resolve_asset_path(self, value: str, source_path: Path | None) -> str:
         if value.startswith("http://") or value.startswith("https://") or value.startswith("data:"):
             return value
         candidate = Path(value)
@@ -759,4 +759,4 @@ class ThemeManager:
         return str(candidate)
 
 
-__all__ = ["ThemeManager", "DEFAULT_THEME_DATA", "ThemeProfileInfo"]
+__all__ = ["DEFAULT_THEME_DATA", "ThemeManager", "ThemeProfileInfo"]

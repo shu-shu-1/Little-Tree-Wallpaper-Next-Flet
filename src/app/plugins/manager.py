@@ -7,21 +7,21 @@ import importlib
 import importlib.util
 import shutil
 import sys
+from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from collections import deque
-from typing import Callable, Iterable, List, Dict, Set
 
 from loguru import logger
 
 from .base import Plugin, PluginContext, PluginManifest
 from .config import PluginConfigStore
 from .permissions import (
+    KNOWN_PERMISSIONS,
     PermissionState,
     PluginPermission,
     ensure_permission_states,
-    KNOWN_PERMISSIONS,
 )
 from .runtime import PluginRuntimeInfo, PluginStatus
 
@@ -50,7 +50,7 @@ class PluginImportResult:
 class PluginManager:
     """Responsible for discovering and activating plugins."""
 
-    _IMPORT_WHITELIST: Set[str] = {"flet", "datetime", "time", "json"}
+    _IMPORT_WHITELIST: set[str] = {"flet", "datetime", "time", "json"}
     _IMPORT_WHITELIST_PREFIXES: tuple[str, ...] = ("app.plugins",)
 
     def __init__(
@@ -60,12 +60,12 @@ class PluginManager:
         package_prefix: str = "plugins",
         builtin_identifiers: Iterable[str] | None = None,
     ):
-        self._search_paths: List[Path] = [Path(p) for p in search_paths]
+        self._search_paths: list[Path] = [Path(p) for p in search_paths]
         self._package_prefix = package_prefix
         self._config = config_store
-        self._builtin_ids: Set[str] = set(builtin_identifiers or [])
+        self._builtin_ids: set[str] = set(builtin_identifiers or [])
         self._loaded: list[LoadedPlugin] = []
-        self._runtime: Dict[str, PluginRuntimeInfo] = {}
+        self._runtime: dict[str, PluginRuntimeInfo] = {}
 
     @staticmethod
     def _states_to_bool(states: dict[str, PermissionState]) -> dict[str, bool]:
@@ -87,14 +87,14 @@ class PluginManager:
         return identifier in self._builtin_ids
 
     def register(
-        self, plugin: Plugin, manifest: PluginManifest, module: ModuleType | None = None
+        self, plugin: Plugin, manifest: PluginManifest, module: ModuleType | None = None,
     ) -> None:
         self._loaded.append(LoadedPlugin(plugin=plugin, manifest=manifest, module=module))
 
     def discover(self) -> None:
         self._loaded.clear()
         self._runtime.clear()
-        found_identifiers: Set[str] = set()
+        found_identifiers: set[str] = set()
 
         for path in self._search_paths:
             if not path.exists():
@@ -138,7 +138,7 @@ class PluginManager:
                 plugin = getattr(module, "PLUGIN", None)
                 if plugin is None:
                     logger.warning(
-                        f"插件模块 {import_name} 未提供 PLUGIN 实例，已跳过"
+                        f"插件模块 {import_name} 未提供 PLUGIN 实例，已跳过",
                     )
                     identifier = module_name
                     config_entry = self._config.register_plugin(
@@ -165,7 +165,7 @@ class PluginManager:
                 manifest = getattr(plugin, "manifest", None)
                 if not isinstance(manifest, PluginManifest):
                     logger.error(
-                        f"插件 {import_name} 缺少 manifest 或类型错误，已跳过"
+                        f"插件 {import_name} 缺少 manifest 或类型错误，已跳过",
                     )
                     identifier = module_name
                     config_entry = self._config.register_plugin(
@@ -222,11 +222,11 @@ class PluginManager:
                 )
                 enabled = config_entry.enabled
                 permission_states = ensure_permission_states(
-                    manifest.permissions, config_entry.permissions
+                    manifest.permissions, config_entry.permissions,
                 )
 
                 runtime_status = PluginStatus.DISABLED
-                pending_permissions: List[str] = []
+                pending_permissions: list[str] = []
                 if enabled:
                     pending_permissions = [
                         perm
@@ -261,7 +261,7 @@ class PluginManager:
                             module_name=module_name,
                             source_path=module_path,
                             builtin=is_builtin,
-                        )
+                        ),
                     )
 
                 found_identifiers.add(identifier)
@@ -291,13 +291,13 @@ class PluginManager:
         self._evaluate_dependencies()
 
     def _evaluate_dependencies(self) -> None:
-        manifest_versions: Dict[str, str] = {}
+        manifest_versions: dict[str, str] = {}
         for identifier, runtime in self._runtime.items():
             if runtime.manifest:
                 manifest_versions[identifier] = runtime.manifest.version
 
         for identifier, runtime in self._runtime.items():
-            issues: Dict[str, str] = {}
+            issues: dict[str, str] = {}
             for spec in runtime.dependencies:
                 dep_runtime = self._runtime.get(spec.identifier)
                 if dep_runtime is None or dep_runtime.manifest is None:
@@ -330,12 +330,12 @@ class PluginManager:
             if self._runtime.get(loaded.identifier) and self._runtime[loaded.identifier].status == PluginStatus.LOADED
         ]
 
-    def _compute_activation_order(self) -> List[LoadedPlugin]:
+    def _compute_activation_order(self) -> list[LoadedPlugin]:
         if not self._loaded:
             return []
         available = {loaded.identifier: loaded for loaded in self._loaded}
-        in_degree: Dict[str, int] = {identifier: 0 for identifier in available}
-        dependents: Dict[str, Set[str]] = {identifier: set() for identifier in available}
+        in_degree: dict[str, int] = dict.fromkeys(available, 0)
+        dependents: dict[str, set[str]] = {identifier: set() for identifier in available}
 
         for identifier, loaded in available.items():
             runtime = self._runtime.get(identifier)
@@ -347,7 +347,7 @@ class PluginManager:
                 dependents.setdefault(dep, set()).add(identifier)
 
         queue = deque([identifier for identifier, degree in in_degree.items() if degree == 0])
-        ordered: List[str] = []
+        ordered: list[str] = []
         while queue:
             current = queue.popleft()
             ordered.append(current)
@@ -374,7 +374,7 @@ class PluginManager:
             except Exception as exc:
                 name = loaded.manifest.identifier if loaded.manifest else (loaded.module_name or loaded.identifier)
                 logger.error(
-                    f"构建插件上下文失败 {name}: {exc}"
+                    f"构建插件上下文失败 {name}: {exc}",
                 )
                 if runtime:
                     runtime.status = PluginStatus.ERROR
@@ -384,14 +384,14 @@ class PluginManager:
             try:
                 loaded.plugin.activate(context)
                 logger.info(
-                    f"插件 {loaded.manifest.identifier if loaded.manifest else loaded.identifier} ({loaded.manifest.short_label() if loaded.manifest else ''}) 已激活"
+                    f"插件 {loaded.manifest.identifier if loaded.manifest else loaded.identifier} ({loaded.manifest.short_label() if loaded.manifest else ''}) 已激活",
                 )
                 if runtime:
                     runtime.status = PluginStatus.ACTIVE
                     runtime.error = None
             except Exception as exc:
                 logger.error(
-                    f"插件 {loaded.manifest.identifier if loaded.manifest else loaded.identifier} 激活失败: {exc}"
+                    f"插件 {loaded.manifest.identifier if loaded.manifest else loaded.identifier} 激活失败: {exc}",
                 )
                 if runtime:
                     runtime.status = PluginStatus.ERROR
@@ -404,7 +404,7 @@ class PluginManager:
         self._config.set_enabled(identifier, enabled)
 
     def update_permission(
-        self, identifier: str, permission: str, allowed: bool | PermissionState | None
+        self, identifier: str, permission: str, allowed: bool | PermissionState | None,
     ) -> None:
         if isinstance(allowed, PermissionState):
             state = allowed
@@ -429,7 +429,7 @@ class PluginManager:
         ]
         if dependents:
             raise ValueError(
-                f"以下插件依赖于 {identifier}，请先卸载依赖项：{', '.join(sorted(dependents))}"
+                f"以下插件依赖于 {identifier}，请先卸载依赖项：{', '.join(sorted(dependents))}",
             )
         path = runtime.source_path
         if path and path.exists():
@@ -487,7 +487,7 @@ class PluginManager:
         module_name = destination.stem
 
         import_permissions = self._derive_import_permissions(
-            self._collect_import_modules(destination)
+            self._collect_import_modules(destination),
         )
         requested_permissions.update(import_permissions)
 
@@ -623,9 +623,8 @@ class PluginManager:
                     if cfg_state is None:
                         if state is not None and state.value != "prompt":
                             return True
-                    else:
-                        if getattr(cfg_state, "value", cfg_state) != getattr(state, "value", state):
-                            return True
+                    elif getattr(cfg_state, "value", cfg_state) != getattr(state, "value", state):
+                        return True
             return False
         except Exception:
             # Defensive: if inspection fails, assume no pending changes to avoid false positives

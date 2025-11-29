@@ -2,30 +2,28 @@ from __future__ import annotations
 
 import os
 import threading
-from loguru import logger
-from typing import Any, Callable, Optional
-
+from collections.abc import Callable
+from typing import Any
 
 import pystray
-from pystray import MenuItem, Menu
-
-
+from loguru import logger
 from PIL import Image
+from pystray import Menu, MenuItem
 
 
 class TrayIcon:
     """System tray helper backed by pystray."""
 
-    def __init__(self, app: Any, icon_path: Optional[str] = None) -> None:
+    def __init__(self, app: Any, icon_path: str | None = None) -> None:
         self._app = app
         self._icon_path = icon_path
-        self._icon: Optional[Any] = None
-        self._thread: Optional[threading.Thread] = None
+        self._icon: Any | None = None
+        self._thread: threading.Thread | None = None
 
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
-    def _make_image(self) -> Optional[Any]:
+    def _make_image(self) -> Any | None:
         if pystray is None or Image is None:
             return None
         if self._icon_path and os.path.exists(self._icon_path):

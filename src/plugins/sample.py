@@ -3,23 +3,23 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
 import flet as ft
 
+from app.constants import SETTINGS_TAB_PLUGINS
 from app.plugins import (
     AppNavigationView,
     AppRouteView,
+    PermissionState,
     Plugin,
     PluginContext,
-    PluginManifest,
     PluginEvent,
+    PluginManifest,
     PluginPermissionError,
-    PermissionState,
 )
-from app.constants import SETTINGS_TAB_PLUGINS
 
 
 class SamplePlugin(Plugin):
@@ -211,7 +211,7 @@ class SamplePlugin(Plugin):
                 can_localize = bool(
                     self._demo_favorite_id
                     and self._latest_download_path
-                    and Path(self._latest_download_path).exists()
+                    and Path(self._latest_download_path).exists(),
                 )
                 localize_button.disabled = not can_localize
             export_button = favorite_export_button_ref.current
@@ -287,7 +287,7 @@ class SamplePlugin(Plugin):
                 return
             try:
                 results = context.favorites.localize_items_from_files(
-                    {self._demo_favorite_id: self._latest_download_path}
+                    {self._demo_favorite_id: self._latest_download_path},
                 )
             except PluginPermissionError as exc:
                 set_favorite_status(f"缺少权限：{exc.permission}", "error")
@@ -417,7 +417,7 @@ class SamplePlugin(Plugin):
                             ft.Text(f"{perm}（{label}）", size=12),
                         ],
                         spacing=6,
-                    )
+                    ),
                 )
 
             download_bg = getattr(ft.Colors, "SURFACE_CONTAINER_LOW", ft.Colors.ON_SURFACE_VARIANT)
@@ -564,7 +564,7 @@ class SamplePlugin(Plugin):
                         ft.Text(str(config.get("welcome_message"))),
                         ft.Text(f"插件版本: {self.manifest.version}"),
                         ft.Text(
-                            f"应用版本: {context.metadata.get('app_version', 'unknown')}"
+                            f"应用版本: {context.metadata.get('app_version', 'unknown')}",
                         ),
                         ft.Text("专属数据目录:"),
                         ft.Text(str(data_dir), selectable=True),
@@ -613,7 +613,7 @@ class SamplePlugin(Plugin):
                     alignment=ft.MainAxisAlignment.START,
                     horizontal_alignment=ft.CrossAxisAlignment.START,
                     spacing=10,
-                    scroll=ft.ScrollMode.AUTO
+                    scroll=ft.ScrollMode.AUTO,
                 ),
             )
 
@@ -629,7 +629,7 @@ class SamplePlugin(Plugin):
                                 ft.Text("示例路由页面"),
                                 ft.Text("这里展示了如何注册自定义路由与视图。"),
                                 ft.Text(
-                                    f"当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                                    f"当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                                 ),
                                 ft.ElevatedButton(
                                     "返回首页",
@@ -641,7 +641,7 @@ class SamplePlugin(Plugin):
                             horizontal_alignment=ft.CrossAxisAlignment.START,
                             spacing=12,
                         ),
-                    )
+                    ),
                 ],
                 appbar=ft.AppBar(
                     title=ft.Text("示例插件"),
@@ -656,14 +656,14 @@ class SamplePlugin(Plugin):
                 icon=ft.Icons.EMOJI_OBJECTS_OUTLINED,
                 selected_icon=ft.Icons.EMOJI_OBJECTS,
                 content=build_navigation_content(),
-            )
+            ),
         )
 
         context.add_route_view(
             AppRouteView(
                 route="/sample/details",
                 builder=build_details_view,
-            )
+            ),
         )
 
         context.add_bing_action(
@@ -671,7 +671,7 @@ class SamplePlugin(Plugin):
                 "示例操作",
                 icon=ft.Icons.EXTENSION,
                 on_click=lambda _: context.logger.info("示例插件 Bing 扩展按钮被点击"),
-            )
+            ),
         )
 
         context.add_spotlight_action(
@@ -679,7 +679,7 @@ class SamplePlugin(Plugin):
                 "查看示例路由",
                 icon=ft.Icons.PAGEVIEW,
                 on_click=lambda _: context.page.go("/sample/details"),
-            )
+            ),
         )
 
         def build_settings_page() -> ft.Control:

@@ -1,7 +1,9 @@
 import platform
+
 from loguru import logger
-from .paths import SOFTWARE_DIR
+
 from .constants import APP_NAME
+from .paths import SOFTWARE_DIR
 
 if platform.system() == "Windows":
     import winreg
@@ -20,7 +22,7 @@ class StartupManager:
             logger.info("Startup enabled")
         else:
             raise NotImplementedError(
-                "Startup management is only implemented for Windows."
+                "Startup management is only implemented for Windows.",
             )
 
     def disable_startup(self):
@@ -28,16 +30,15 @@ class StartupManager:
             self._disable_startup_windows()
         else:
             raise NotImplementedError(
-                "Startup management is only implemented for Windows."
+                "Startup management is only implemented for Windows.",
             )
 
     def is_startup_enabled(self):
         if platform.system() == "Windows":
             return self._is_startup_enabled_windows()
-        else:
-            raise NotImplementedError(
-                "Startup management is only implemented for Windows."
-            )
+        raise NotImplementedError(
+            "Startup management is only implemented for Windows.",
+        )
 
     def _enable_startup_windows(self):
         with winreg.OpenKey(
@@ -48,7 +49,7 @@ class StartupManager:
         ) as key:
             winreg.SetValueEx(key, self.app_name, 0, winreg.REG_SZ, self.app_path)
         logger.info(
-            f"添加Windows开启启动项: \n\t注册表 -> HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n\t名称 -> {self.app_name}\n\t路径 -> {self.app_path}"
+            f"添加Windows开启启动项: \n\t注册表 -> HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n\t名称 -> {self.app_name}\n\t路径 -> {self.app_path}",
         )
     def _disable_startup_windows(self):
         with winreg.OpenKey(
@@ -62,7 +63,7 @@ class StartupManager:
             except FileNotFoundError:
                 pass  # Value does not exist
         logger.info(
-            f"移除Windows开启启动项: \n\t注册表 -> HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n\t名称 -> {self.app_name}"
+            f"移除Windows开启启动项: \n\t注册表 -> HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n\t名称 -> {self.app_name}",
         )
 
     def _is_startup_enabled_windows(self):
@@ -76,11 +77,11 @@ class StartupManager:
                 value, _ = winreg.QueryValueEx(key, self.app_name)
                 enabled = value == self.app_path
                 logger.info(
-                    f"检查Windows开启启动项: \n\t注册表 -> HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n\t名称 -> {self.app_name}\n\t状态 -> {'已启用' if enabled else '未启用'}"
+                    f"检查Windows开启启动项: \n\t注册表 -> HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n\t名称 -> {self.app_name}\n\t状态 -> {'已启用' if enabled else '未启用'}",
                 )
                 return enabled
             except FileNotFoundError:
                 logger.info(
-                    f"检查Windows开启启动项: 未找到注册表项 -> {self.app_name}"
+                    f"检查Windows开启启动项: 未找到注册表项 -> {self.app_name}",
                 )
                 return False

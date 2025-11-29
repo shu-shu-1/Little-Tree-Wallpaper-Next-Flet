@@ -1,23 +1,25 @@
-import os
-import sys
-import requests
-import aiohttp
-import platform
-import subprocess
-from pathlib import Path
-import re
-import io
-import uuid
-import time
-import json
-import shutil
 import hashlib
+import io
+import json
 import mimetypes
-from urllib.parse import urlparse, unquote
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from collections.abc import Callable
+from pathlib import Path
+
 # NOTE: download_file moved from pycurl to requests streaming
-from typing import Callable, Optional, Dict
-from loguru import logger
+from urllib.parse import unquote, urlparse
+
+import aiohttp
 import platformdirs
+import requests
+from loguru import logger
 
 try:
     import magic
@@ -30,7 +32,7 @@ except ImportError:
 
 
 
-def _try_subprocess(cmd: list) -> Optional[str]:
+def _try_subprocess(cmd: list) -> str | None:
     """运行命令并返回 stdout 的 str，失败返回 None。"""
     try:
         return subprocess.check_output(cmd, text=True).strip()
@@ -40,16 +42,15 @@ def _try_subprocess(cmd: list) -> Optional[str]:
 
 def _from_file_uri(raw: str) -> str:
     """把 gsettings 返回的 'file:///xxx/yyy.jpg' 转成真实路径。"""
-    from urllib.parse import urlparse, unquote
+    from urllib.parse import unquote, urlparse
 
     if raw.startswith("file://"):
         return unquote(urlparse(raw).path)
     return unquote(raw)
 
 
-def get_sys_wallpaper(windows_way = "reg") -> Optional[str]:
-    """
-    返回当前系统桌面壁纸的绝对路径；失败返回 None。
+def get_sys_wallpaper(windows_way = "reg") -> str | None:
+    """返回当前系统桌面壁纸的绝对路径；失败返回 None。
     支持 Windows / macOS / Linux(GNOME/KDE/XFCE)。
     """
     if os.name == "nt":
@@ -59,7 +60,7 @@ def get_sys_wallpaper(windows_way = "reg") -> Optional[str]:
                 import winreg
 
                 with winreg.OpenKey(
-                    winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop"
+                    winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop",
                 ) as key:
                     path, _ = winreg.QueryValueEx(key, "WallPaper")
                 return path if os.path.isfile(path) else None
@@ -123,7 +124,7 @@ def get_sys_wallpaper(windows_way = "reg") -> Optional[str]:
         # 2) KDE Plasma 5/6
         # 读取 plasma 配置文件，可能有多个 Image=，优先后出现的（通常为当前活动桌面）
         kde_conf = os.path.expanduser(
-            "~/.config/plasma-org.kde.plasma.desktop-appletsrc"
+            "~/.config/plasma-org.kde.plasma.desktop-appletsrc",
         )
         if os.path.isfile(kde_conf):
             try:
@@ -145,7 +146,7 @@ def get_sys_wallpaper(windows_way = "reg") -> Optional[str]:
         # 列出所有 backdrop 键，检查包含 image-path/last-image 的键值
         try:
             props_out = _try_subprocess(
-                ["xfconf-query", "--channel", "xfce4-desktop", "--property", "/backdrop", "--list"]
+                ["xfconf-query", "--channel", "xfce4-desktop", "--property", "/backdrop", "--list"],
             )
             if props_out:
                 props = [p.strip() for p in props_out.splitlines() if p.strip()]
@@ -158,7 +159,7 @@ def get_sys_wallpaper(windows_way = "reg") -> Optional[str]:
                                 "xfce4-desktop",
                                 "--property",
                                 prop,
-                            ]
+                            ],
                         )
                         if val:
                             p = _from_file_uri(val.strip())
@@ -215,11 +216,9 @@ async def get_bing_wallpaper_async(
                 return None
     except Exception:
         return None
-    
-async def get_spotlight_wallpaper_async(user_agent: str = None):
 
-    """
-    异步获取 Windows Spotlight 壁纸信息。
+async def get_spotlight_wallpaper_async(user_agent: str = None):
+    """异步获取 Windows Spotlight 壁纸信息。
     """
     try:
         url = "https://fd.api.iris.microsoft.com/v4/api/selection?&placement=88000820&bcnt=4&country=CN&locale=zh-CN&fmt=json"
@@ -245,16 +244,15 @@ async def get_spotlight_wallpaper_async(user_agent: str = None):
                     return spotlight_wallpaper
                 logger.error("获取 Windows Spotlight 壁纸失败，返回数据格式不正确")
                 return None
-                
+
 
     except Exception as e:
         logger.error(f"获取 Windows Spotlight 壁纸失败: {e}")
         return None
-                            
+
 
 def set_wallpaper(path: str) -> None:
-    """
-    将指定图片设置为当前桌面壁纸。
+    """将指定图片设置为当前桌面壁纸。
     支持 Windows / macOS / Linux 常见桌面环境。
     """
     path = os.path.abspath(os.path.expanduser(path))
@@ -267,8 +265,8 @@ def set_wallpaper(path: str) -> None:
     try:
         data_dir = Path(
             platformdirs.user_data_dir(
-                "Little-Tree-Wallpaper", "Little Tree Studio", "Next", ensure_exists=True
-            )
+                "Little-Tree-Wallpaper", "Little Tree Studio", "Next", ensure_exists=True,
+            ),
         )
         wallpaper_dir = data_dir / "wallpaper"
         wallpaper_dir.mkdir(parents=True, exist_ok=True)
@@ -300,7 +298,7 @@ def set_wallpaper(path: str) -> None:
         ctypes.windll.user32.SystemParametersInfoW(20, 0, path, 3)
 
         key = reg.OpenKey(
-            reg.HKEY_CURRENT_USER, r"Control Panel\Desktop", 0, reg.KEY_SET_VALUE
+            reg.HKEY_CURRENT_USER, r"Control Panel\Desktop", 0, reg.KEY_SET_VALUE,
         )
         reg.SetValueEx(key, "Wallpaper", 0, reg.REG_SZ, path)
         reg.CloseKey(key)
@@ -358,7 +356,7 @@ def set_wallpaper(path: str) -> None:
         # 获取所有背景通道
         result = subprocess.run(
             ["xfconf-query", "-c", "xfce4-desktop", "-p", "/backdrop", "-l"],
-            capture_output=True,
+            check=False, capture_output=True,
             text=True,
         )
         for line in result.stdout.splitlines():
@@ -422,7 +420,7 @@ def set_wallpaper(path: str) -> None:
     raise OSError("无法识别当前 Linux 桌面环境或缺少设置工具")
 
 
-def which(program: str) -> Optional[str]:
+def which(program: str) -> str | None:
     """模拟 shutil.which 的简易实现，兼容旧版本 Python"""
     for d in os.environ["PATH"].split(os.pathsep):
         exe = os.path.join(d, program)
@@ -449,14 +447,14 @@ SIGNATURE_MAP = {
 }
 
 
-def _guess_ext_by_signature(head: bytes) -> Optional[str]:
+def _guess_ext_by_signature(head: bytes) -> str | None:
     for sig, ext in SIGNATURE_MAP.items():
         if head.startswith(sig):
             return ext
     return None
 
 
-def _is_office_zip(head: bytes) -> Optional[str]:
+def _is_office_zip(head: bytes) -> str | None:
     try:
         import zipfile
 
@@ -474,7 +472,7 @@ def _is_office_zip(head: bytes) -> Optional[str]:
 
 
 # ---------- 反向 MIME 表 ----------
-def _build_reverse_mime_map() -> Dict[str, str]:
+def _build_reverse_mime_map() -> dict[str, str]:
     try:
         import requests
 
@@ -494,10 +492,10 @@ def _build_reverse_mime_map() -> Dict[str, str]:
     return m
 
 
-_REVERSE_MIME_MAP: Optional[Dict[str, str]] = None
+_REVERSE_MIME_MAP: dict[str, str] | None = None
 
 
-def _reverse_mime(mime: str) -> Optional[str]:
+def _reverse_mime(mime: str) -> str | None:
     global _REVERSE_MIME_MAP
     if _REVERSE_MIME_MAP is None:
         _REVERSE_MIME_MAP = _build_reverse_mime_map()
@@ -505,10 +503,10 @@ def _reverse_mime(mime: str) -> Optional[str]:
 
 
 # ---------- 服务器侧推断 ----------
-def _infer_ext_from_server(resp_headers: Dict[str, str], url: str) -> Optional[str]:
+def _infer_ext_from_server(resp_headers: dict[str, str], url: str) -> str | None:
     # 1) Content-Disposition
     cd = resp_headers.get("content-disposition", "")
-    match = re.findall(r'filename\*?=(?:[^\'"]*\'\'|["\']?)([^"\';]+)', cd, re.I)
+    match = re.findall(r'filename\*?=(?:[^\'"]*\'\'|["\']?)([^"\';]+)', cd, re.IGNORECASE)
     if match:
         filename = unquote(match[-1].strip())
         ext = Path(filename).suffix.lower()
@@ -538,17 +536,17 @@ def _infer_ext_from_server(resp_headers: Dict[str, str], url: str) -> Optional[s
 def download_file(
     url: str,
     save_path: str = "./temp",
-    custom_filename: Optional[str] = None,
+    custom_filename: str | None = None,
     timeout: int = 300,
     max_retries: int = 3,
-    headers: Optional[Dict[str, str]] = None,
-    progress_callback: Optional[Callable[[int, int], None]] = None,
+    headers: dict[str, str] | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
     resume: bool = False,
-) -> Optional[str]:
+) -> str | None:
     logger.debug(f"开始下载：{url}")
 
     # 构造请求头（字典形式，便于 requests 直接使用）
-    req_headers_dict: Dict[str, str] = {
+    req_headers_dict: dict[str, str] = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "*/*",
         "Connection": "keep-alive",
@@ -646,7 +644,7 @@ def download_file(
                 if not filename:
                     cd = resp_headers.get("content-disposition", "")
                     match = re.findall(
-                        r'filename\*?=(?:[^\'\"]*\'\'|["\']?)([^"\';]+)', cd, re.I
+                        r'filename\*?=(?:[^\'\"]*\'\'|["\']?)([^"\';]+)', cd, re.IGNORECASE,
                     )
                     if match:
                         filename = unquote(match[-1].strip())
@@ -693,7 +691,7 @@ def download_file(
                 time.sleep(2 ** attempt)
             finally:
                 try:
-                    if attempt == max_retries and 'tmp_path' in locals() and tmp_path.exists():
+                    if attempt == max_retries and "tmp_path" in locals() and tmp_path.exists():
                         tmp_path.unlink(missing_ok=True)
                 except Exception:
                     pass

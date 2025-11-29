@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import builtins
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List
+from typing import Any
 
 from loguru import logger
 
@@ -38,12 +40,12 @@ class GlobalDataEntry:
     identifier: str
     namespace: str
     owner: str
-    payload: Dict[str, Any]
+    payload: dict[str, Any]
     revision: int
     created_at: float
     updated_at: float
 
-    def snapshot(self) -> "GlobalDataSnapshot":
+    def snapshot(self) -> GlobalDataSnapshot:
         return GlobalDataSnapshot(
             namespace=self.namespace,
             identifier=self.identifier,
@@ -63,10 +65,10 @@ class GlobalDataNamespace:
     owner: str
     description: str = ""
     permission: str | None = None
-    entries: Dict[str, GlobalDataEntry] = field(default_factory=dict)
+    entries: dict[str, GlobalDataEntry] = field(default_factory=dict)
     latest_id: str | None = None
 
-    def describe(self) -> Dict[str, Any]:
+    def describe(self) -> dict[str, Any]:
         return {
             "identifier": self.identifier,
             "owner": self.owner,
@@ -84,12 +86,12 @@ class GlobalDataSnapshot:
     namespace: str
     identifier: str
     owner: str
-    payload: Dict[str, Any]
+    payload: dict[str, Any]
     revision: int
     created_at: float
     updated_at: float
 
-    def as_dict(self) -> Dict[str, Any]:
+    def as_dict(self) -> dict[str, Any]:
         return {
             "namespace": self.namespace,
             "identifier": self.identifier,
@@ -105,7 +107,7 @@ class GlobalDataStore:
     """Authoritative registry of shared plugin data."""
 
     def __init__(self, permission_resolver: PermissionResolver | None = None) -> None:
-        self._namespaces: Dict[str, GlobalDataNamespace] = {}
+        self._namespaces: dict[str, GlobalDataNamespace] = {}
         self._permission_resolver = permission_resolver
 
     # ------------------------------------------------------------------
@@ -127,7 +129,7 @@ class GlobalDataStore:
         if namespace:
             if namespace.owner != owner and not overwrite:
                 raise NamespaceRegistrationError(
-                    f"命名空间 {identifier} 已由 {namespace.owner} 拥有"
+                    f"命名空间 {identifier} 已由 {namespace.owner} 拥有",
                 )
             if namespace.owner != owner and overwrite:
                 logger.warning(
@@ -158,10 +160,10 @@ class GlobalDataStore:
             permission=permission,
         )
 
-    def list_namespaces(self) -> List[GlobalDataNamespace]:
+    def list_namespaces(self) -> list[GlobalDataNamespace]:
         return list(self._namespaces.values())
 
-    def describe_namespaces(self) -> List[Dict[str, Any]]:
+    def describe_namespaces(self) -> list[dict[str, Any]]:
         return [ns.describe() for ns in self._namespaces.values()]
 
     def namespace_permission(self, identifier: str) -> str | None:
@@ -178,14 +180,14 @@ class GlobalDataStore:
         owner: str,
         namespace_id: str,
         entry_id: str,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
     ) -> GlobalDataSnapshot:
         namespace = self._namespaces.get(namespace_id)
         if namespace is None:
             raise NamespaceNotFound(namespace_id)
         if namespace.owner != owner:
             raise NamespaceOwnershipError(
-                f"插件 {owner} 无权写入命名空间 {namespace_id}"
+                f"插件 {owner} 无权写入命名空间 {namespace_id}",
             )
         if not entry_id:
             raise GlobalDataError("数据条目 ID 不能为空")
@@ -226,7 +228,7 @@ class GlobalDataStore:
         self,
         plugin_id: str,
         namespace_id: str,
-    ) -> List[GlobalDataSnapshot]:
+    ) -> list[GlobalDataSnapshot]:
         namespace = self._namespaces.get(namespace_id)
         if namespace is None:
             raise NamespaceNotFound(namespace_id)
@@ -294,19 +296,19 @@ class GlobalDataAccess:
             overwrite=overwrite,
         )
 
-    def list_namespaces(self) -> List[Dict[str, Any]]:
+    def list_namespaces(self) -> builtins.list[dict[str, Any]]:
         namespaces = self._store.list_namespaces()
-        result: List[Dict[str, Any]] = []
+        result: list[dict[str, Any]] = []
         for namespace in namespaces:
             if namespace.permission and not self._store._can_access(
-                self._plugin_id, namespace.permission
+                self._plugin_id, namespace.permission,
             ):
                 continue
             result.append(namespace.describe())
         return result
 
     # Data helpers ------------------------------------------------------
-    def publish(self, namespace_id: str, entry_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def publish(self, namespace_id: str, entry_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         snapshot = self._store.publish(
             owner=self._plugin_id,
             namespace_id=namespace_id,
@@ -315,7 +317,7 @@ class GlobalDataAccess:
         )
         return snapshot.as_dict()
 
-    def get(self, namespace_id: str, entry_id: str) -> Dict[str, Any] | None:
+    def get(self, namespace_id: str, entry_id: str) -> dict[str, Any] | None:
         try:
             snapshot = self._store.get_entry(
                 plugin_id=self._plugin_id,
@@ -326,7 +328,7 @@ class GlobalDataAccess:
             return None
         return snapshot.as_dict() if snapshot else None
 
-    def latest(self, namespace_id: str) -> Dict[str, Any] | None:
+    def latest(self, namespace_id: str) -> dict[str, Any] | None:
         try:
             snapshot = self._store.latest_entry(
                 plugin_id=self._plugin_id,
@@ -336,7 +338,7 @@ class GlobalDataAccess:
             return None
         return snapshot.as_dict() if snapshot else None
 
-    def list(self, namespace_id: str) -> List[Dict[str, Any]]:
+    def list(self, namespace_id: str) -> builtins.list[dict[str, Any]]:
         try:
             snapshots = self._store.list_entries(
                 plugin_id=self._plugin_id,

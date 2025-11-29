@@ -8,17 +8,17 @@ import os
 import re
 import shutil
 import uuid
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Iterable, Sequence
 from urllib.parse import urljoin, urlparse
 
+import aiohttp
 from loguru import logger
 
-from app.paths import CACHE_DIR
 import ltwapi
-import aiohttp
+from app.paths import CACHE_DIR
 
 _IMAGE_TAGS = {"img", "image", "input"}
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".avif", ".svg", ".tiff"}
@@ -118,7 +118,7 @@ class SniffService:
                                 filename=filename,
                                 content_type=content_type,
                                 referer=normalized,
-                            )
+                            ),
                         ]
                     text = await resp.text(errors="ignore")
             except asyncio.CancelledError:
@@ -290,4 +290,4 @@ class SniffService:
         return "LittleTreeWallpaperSniffer/1.0"
 
 
-__all__ = ["SniffService", "SniffedImage", "SniffServiceError"]
+__all__ = ["SniffService", "SniffServiceError", "SniffedImage"]

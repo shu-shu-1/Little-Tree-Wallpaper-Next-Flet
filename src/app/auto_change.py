@@ -10,19 +10,19 @@ import os
 import random
 import re
 import time
-from datetime import datetime, timedelta
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from threading import RLock
-from typing import Any, Dict, Iterator, List, Sequence
+from typing import Any
+from urllib.parse import parse_qsl, quote, quote_plus
 
 import aiohttp
-from urllib.parse import parse_qsl, quote, quote_plus
 from loguru import logger
 
 import ltwapi
-
 from app.favorites import FavoriteItem, FavoriteManager
 from app.paths import CACHE_DIR, DATA_DIR
 from app.settings import SettingsStore
@@ -33,6 +33,7 @@ from app.wallpaper_sources import (
 )
 
 __all__ = [
+    "UNIT_SECONDS",
     "AutoChangeList",
     "AutoChangeListEntry",
     "AutoChangeListStore",
@@ -43,7 +44,6 @@ __all__ = [
     "ScheduleSettings",
     "SlideshowItem",
     "SlideshowSettings",
-    "UNIT_SECONDS",
 ]
 
 AUTO_LISTS_VERSION = 1
@@ -51,7 +51,7 @@ AUTO_LISTS_PATH = DATA_DIR / "auto_change" / "lists.json"
 AUTO_CACHE_DIR = CACHE_DIR / "auto_change"
 AUTO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-UNIT_SECONDS: Dict[str, int] = {
+UNIT_SECONDS: dict[str, int] = {
     "seconds": 1,
     "minutes": 60,
     "hours": 3600,
@@ -85,7 +85,7 @@ def _normalize_slideshow_order(value: str | None) -> str:
     return ORDER_SEQUENTIAL
 
 
-def _entry_identity(entry: "AutoChangeListEntry", index: int) -> str:
+def _entry_identity(entry: AutoChangeListEntry, index: int) -> str:
     return entry.id or f"{entry.type}:{index}"
 
 
@@ -102,9 +102,9 @@ class AutoChangeListEntry:
 
     id: str
     type: str
-    config: Dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "type": self.type,
@@ -112,7 +112,7 @@ class AutoChangeListEntry:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "AutoChangeListEntry":
+    def from_dict(cls, data: dict[str, Any]) -> AutoChangeListEntry:
         return cls(
             id=str(data.get("id") or _random_id()),
             type=str(data.get("type") or "unknown"),
@@ -127,11 +127,11 @@ class AutoChangeList:
     id: str
     name: str
     description: str = ""
-    entries: List[AutoChangeListEntry] = field(default_factory=list)
+    entries: list[AutoChangeListEntry] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
@@ -142,7 +142,7 @@ class AutoChangeList:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "AutoChangeList":
+    def from_dict(cls, data: dict[str, Any]) -> AutoChangeList:
         entries = [AutoChangeListEntry.from_dict(raw) for raw in data.get("entries", [])]
         for entry in entries:
             entry.id = entry.id or _random_id()
@@ -162,7 +162,7 @@ class AutoChangeListStore:
     def __init__(self, path: Path | None = None) -> None:
         self._path = path or AUTO_LISTS_PATH
         self._lock = RLock()
-        self._lists: Dict[str, AutoChangeList] = {}
+        self._lists: dict[str, AutoChangeList] = {}
         self.load()
 
     @property
@@ -183,7 +183,7 @@ class AutoChangeListStore:
             version = int(payload.get("version", 1))
             if version != AUTO_LISTS_VERSION:
                 logger.warning("自动更换列表版本 {version} 未知，尝试兼容加载。", version=version)
-            lists: Dict[str, AutoChangeList] = {}
+            lists: dict[str, AutoChangeList] = {}
             for raw in payload.get("lists", []):
                 try:
                     parsed = AutoChangeList.from_dict(raw)
@@ -207,7 +207,7 @@ class AutoChangeListStore:
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error("保存自动更换列表失败: {error}", error=str(exc))
 
-    def all(self) -> List[AutoChangeList]:
+    def all(self) -> list[AutoChangeList]:
         with self._lock:
             return [AutoChangeList.from_dict(auto_list.to_dict()) for auto_list in self._lists.values()]
 
@@ -250,11 +250,11 @@ class AutoChangeListStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def import_file(self, source: Path) -> List[AutoChangeList]:
+    def import_file(self, source: Path) -> list[AutoChangeList]:
         text = source.read_text(encoding="utf-8")
         payload = json.loads(text)
         raw_lists = payload.get("lists") or []
-        imported: List[AutoChangeList] = []
+        imported: list[AutoChangeList] = []
         for raw in raw_lists:
             auto_list = AutoChangeList.from_dict(raw)
             imported.append(auto_list)
@@ -270,7 +270,7 @@ class AutoChangeListStore:
 class IntervalSettings:
     value: int = 30
     unit: str = "minutes"
-    list_ids: List[str] = field(default_factory=list)
+    list_ids: list[str] = field(default_factory=list)
     fixed_image: str | None = None
     order: str = ORDER_RANDOM
 
@@ -284,10 +284,10 @@ class IntervalSettings:
 @dataclass(slots=True)
 class ScheduleEntry:
     time_str: str
-    list_ids: List[str] = field(default_factory=list)
+    list_ids: list[str] = field(default_factory=list)
     fixed_image: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "time": self.time_str,
             "list_ids": list(self.list_ids),
@@ -295,7 +295,7 @@ class ScheduleEntry:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ScheduleEntry":
+    def from_dict(cls, data: dict[str, Any]) -> ScheduleEntry:
         list_ids = [str(item) for item in data.get("list_ids", []) if item]
         fixed_image = data.get("fixed_image")
         if fixed_image in {"", None}:
@@ -309,17 +309,17 @@ class ScheduleEntry:
 
 @dataclass(slots=True)
 class ScheduleSettings:
-    entries: List[ScheduleEntry] = field(default_factory=list)
+    entries: list[ScheduleEntry] = field(default_factory=list)
     order: str = ORDER_RANDOM
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "entries": [entry.to_dict() for entry in self.entries],
             "order": _normalize_list_order(self.order),
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ScheduleSettings":
+    def from_dict(cls, data: dict[str, Any]) -> ScheduleSettings:
         entries = [ScheduleEntry.from_dict(raw) for raw in data.get("entries", [])]
         entries.sort(key=lambda entry: entry.time_str)
         return cls(entries=entries, order=_normalize_list_order(data.get("order")))
@@ -331,7 +331,7 @@ class SlideshowItem:
     kind: str
     path: str
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "kind": self.kind,
@@ -339,7 +339,7 @@ class SlideshowItem:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SlideshowItem":
+    def from_dict(cls, data: dict[str, Any]) -> SlideshowItem:
         return cls(
             id=str(data.get("id") or _random_id()),
             kind=str(data.get("kind") or "file"),
@@ -351,7 +351,7 @@ class SlideshowItem:
 class SlideshowSettings:
     value: int = 5
     unit: str = "minutes"
-    items: List[SlideshowItem] = field(default_factory=list)
+    items: list[SlideshowItem] = field(default_factory=list)
     order: str = ORDER_SEQUENTIAL
 
     def seconds(self) -> int:
@@ -360,7 +360,7 @@ class SlideshowSettings:
         seconds = raw * factor
         return max(seconds, 1)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         order = _normalize_slideshow_order(self.order)
         return {
             "value": self.value,
@@ -370,7 +370,7 @@ class SlideshowSettings:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SlideshowSettings":
+    def from_dict(cls, data: dict[str, Any]) -> SlideshowSettings:
         items = [SlideshowItem.from_dict(raw) for raw in data.get("items", [])]
         return cls(
             value=int(data.get("value", 5) or 5),
@@ -388,7 +388,7 @@ class AutoChangeSettings:
     schedule: ScheduleSettings
     slideshow: SlideshowSettings
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
             "mode": self.mode.value,
@@ -404,7 +404,7 @@ class AutoChangeSettings:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "AutoChangeSettings":
+    def from_dict(cls, data: dict[str, Any]) -> AutoChangeSettings:
         enabled = bool(data.get("enabled", False))
         raw_mode = str(data.get("mode") or "off")
         try:
@@ -449,9 +449,9 @@ class AutoChangeService:
         self._task: asyncio.Task[None] | None = None
         self._stopped = False
         self._slideshow_index = 0
-        self._slideshow_cycle: List[Path] = []
-        self._slideshow_snapshot: List[str] = []
-        self._list_order_state: Dict[tuple[str, ...], Dict[str, Any]] = {}
+        self._slideshow_cycle: list[Path] = []
+        self._slideshow_snapshot: list[str] = []
+        self._list_order_state: dict[tuple[str, ...], dict[str, Any]] = {}
         self._im_executor = _IntelliMarketsExecutor()
 
     async def ensure_running(self) -> None:
@@ -507,7 +507,6 @@ class AutoChangeService:
         order: str | None = ORDER_RANDOM,
     ) -> bool:
         """Execute a one-off wallpaper change using the provided lists."""
-
         return await self._perform_change(list_ids, fixed_image, order=order)
 
     async def _run(self) -> None:
@@ -724,8 +723,8 @@ class AutoChangeService:
         state["pool"] = pool
         return False
 
-    def _collect_entries(self, list_ids: Sequence[str]) -> List[AutoChangeListEntry]:
-        entries: List[AutoChangeListEntry] = []
+    def _collect_entries(self, list_ids: Sequence[str]) -> list[AutoChangeListEntry]:
+        entries: list[AutoChangeListEntry] = []
         for list_id in list_ids:
             auto_list = self._list_store.get(list_id)
             if not auto_list:
@@ -747,7 +746,7 @@ class AutoChangeService:
         self,
         key: tuple[str, ...],
         entries: Sequence[AutoChangeListEntry],
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         identities = [_entry_identity(entry, idx) for idx, entry in enumerate(entries)]
         state = self._list_order_state.get(key)
         if state is None or state.get("ids") != identities:
@@ -834,7 +833,7 @@ class AutoChangeService:
                 return True
         return False
 
-    async def _apply_wallpaper_source(self, category_id: str | None, params: Dict[str, Any]) -> bool:
+    async def _apply_wallpaper_source(self, category_id: str | None, params: dict[str, Any]) -> bool:
         if not category_id:
             return False
         try:
@@ -852,7 +851,7 @@ class AutoChangeService:
                 return True
         return False
 
-    async def _apply_intellimarkets(self, source: Dict[str, Any] | None, params: List[Dict[str, Any]]) -> bool:
+    async def _apply_intellimarkets(self, source: dict[str, Any] | None, params: list[dict[str, Any]]) -> bool:
         if not source:
             return False
         try:
@@ -866,7 +865,7 @@ class AutoChangeService:
                 return True
         return False
 
-    async def _apply_ai(self, config: Dict[str, Any]) -> bool:
+    async def _apply_ai(self, config: dict[str, Any]) -> bool:
         provider = str(config.get("provider") or "pollinations")
         prompt = str(config.get("prompt") or "").strip()
         if not prompt:
@@ -874,7 +873,7 @@ class AutoChangeService:
         width = config.get("width")
         height = config.get("height")
         allow_nsfw = bool(self._settings_store.get("wallpaper.allow_nsfw", False))
-        params: Dict[str, str] = {}
+        params: dict[str, str] = {}
         if width:
             params["width"] = str(width)
         if height:
@@ -929,7 +928,7 @@ class AutoChangeService:
             return False
 
     async def _resolve_favorite_path(self, item: FavoriteItem) -> Path | None:
-        candidates: List[str] = []
+        candidates: list[str] = []
         if item.local_path:
             candidates.append(item.local_path)
         if item.localization.local_path:
@@ -1000,8 +999,8 @@ class AutoChangeService:
             return None
         return best_dt.timestamp(), best_entry
 
-    def _collect_slideshow_candidates(self, items: Sequence[SlideshowItem]) -> List[Path]:
-        paths: List[Path] = []
+    def _collect_slideshow_candidates(self, items: Sequence[SlideshowItem]) -> list[Path]:
+        paths: list[Path] = []
         for item in items:
             raw_path = item.path
             if not raw_path:
@@ -1024,10 +1023,10 @@ class _IntelliMarketsExecutor:
 
     async def execute(
         self,
-        source: Dict[str, Any],
-        params: Sequence[Dict[str, Any]],
-    ) -> List[Path]:
-        param_pairs: List[tuple[Dict[str, Any], Any]] = []
+        source: dict[str, Any],
+        params: Sequence[dict[str, Any]],
+    ) -> list[Path]:
+        param_pairs: list[tuple[dict[str, Any], Any]] = []
         for item in params:
             config = item.get("config") or item.get("parameter") or {}
             value = item.get("value")
@@ -1069,20 +1068,20 @@ class _IntelliMarketsExecutor:
 
     def _build_request(
         self,
-        source: Dict[str, Any],
-        param_pairs: Sequence[tuple[Dict[str, Any], Any]],
-    ) -> Dict[str, Any]:
+        source: dict[str, Any],
+        param_pairs: Sequence[tuple[dict[str, Any], Any]],
+    ) -> dict[str, Any]:
         method = str(source.get("func") or "GET").upper()
         raw_url = str(source.get("link") or "").strip()
         if not raw_url:
             raise ValueError("图片源缺少请求链接")
         base_url, _, raw_query = raw_url.partition("?")
         base_url = base_url.rstrip("/")
-        query_pairs: List[tuple[str, str]] = []
+        query_pairs: list[tuple[str, str]] = []
         if raw_query:
             query_pairs.extend(parse_qsl(raw_query, keep_blank_values=True))
-        path_segments: List[str] = []
-        body_payload: Dict[str, Any] = {}
+        path_segments: list[str] = []
+        body_payload: dict[str, Any] = {}
         headers = (source.get("content") or {}).get("headers") or {}
         for param, value in param_pairs:
             name = param.get("name")
@@ -1105,9 +1104,8 @@ class _IntelliMarketsExecutor:
                         query_pairs.append((name, str(item)))
                 elif prepared_query not in (None, ""):
                     query_pairs.append((name, str(prepared_query)))
-            else:
-                if prepared_body is not None:
-                    body_payload[name] = prepared_body
+            elif prepared_body is not None:
+                body_payload[name] = prepared_body
         final_url = base_url
         if path_segments:
             final_url = "/".join(segment for segment in [base_url, *path_segments] if segment)
@@ -1126,7 +1124,7 @@ class _IntelliMarketsExecutor:
             "headers": headers,
         }
 
-    def _prepare_value(self, param: Dict[str, Any], value: Any, *, as_query: bool) -> Any:
+    def _prepare_value(self, param: dict[str, Any], value: Any, *, as_query: bool) -> Any:
         split_str = param.get("split_str")
         if isinstance(value, list):
             if split_str and as_query:
@@ -1153,15 +1151,15 @@ class _IntelliMarketsExecutor:
 
     async def _process_response(
         self,
-        source: Dict[str, Any],
-        image_cfg: Dict[str, Any],
+        source: dict[str, Any],
+        image_cfg: dict[str, Any],
         payload: Any,
         binary: bytes | None,
-        headers: Dict[str, str],
-        param_pairs: Sequence[tuple[Dict[str, Any], Any]],
-    ) -> List[Path]:
+        headers: dict[str, str],
+        param_pairs: Sequence[tuple[dict[str, Any], Any]],
+    ) -> list[Path]:
         storage_dir = AUTO_CACHE_DIR / "intellimarkets" / _slugify(
-            source.get("friendly_name") or source.get("file_name") or "intellimarkets"
+            source.get("friendly_name") or source.get("file_name") or "intellimarkets",
         )
         storage_dir.mkdir(parents=True, exist_ok=True)
         timestamp = int(time.time())
@@ -1180,7 +1178,7 @@ class _IntelliMarketsExecutor:
         values = _extract_path_values(payload, image_cfg.get("path"))
         if image_cfg.get("is_list"):
             values = _flatten_sequence_values(values)
-        results: List[Path] = []
+        results: list[Path] = []
         for idx, raw in enumerate(values):
             if raw in (None, ""):
                 continue
@@ -1237,7 +1235,7 @@ def _normalize_bing_url(url: str) -> str:
     return f"https://cn.bing.com{url}" if url.startswith("/") else f"https://cn.bing.com/{url}"
 
 
-def _build_ai_url(provider: str, prompt: str, params: Dict[str, str]) -> str:
+def _build_ai_url(provider: str, prompt: str, params: dict[str, str]) -> str:
     encoded_prompt = quote_plus(prompt)
     if provider == "pollinations":
         base = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
@@ -1261,7 +1259,7 @@ def _save_bytes(directory: Path, data: bytes, content_type: str | None, seed: in
     return path
 
 
-def _extract_path_values(payload: Any, path: str | None) -> List[Any]:
+def _extract_path_values(payload: Any, path: str | None) -> list[Any]:
     if payload is None:
         return []
     if not path:
@@ -1269,7 +1267,7 @@ def _extract_path_values(payload: Any, path: str | None) -> List[Any]:
             return payload
         return [payload]
     tokens = _parse_path_tokens(path)
-    results: List[Any] = []
+    results: list[Any] = []
 
     def traverse(current: Any, index: int) -> None:
         if index >= len(tokens):
@@ -1297,8 +1295,8 @@ def _extract_path_values(payload: Any, path: str | None) -> List[Any]:
     return results
 
 
-def _flatten_sequence_values(values: Sequence[Any]) -> List[Any]:
-    flattened: List[Any] = []
+def _flatten_sequence_values(values: Sequence[Any]) -> list[Any]:
+    flattened: list[Any] = []
     for value in values:
         if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
             flattened.extend(_flatten_sequence_values(list(value)))
@@ -1307,9 +1305,9 @@ def _flatten_sequence_values(values: Sequence[Any]) -> List[Any]:
     return flattened
 
 
-def _parse_path_tokens(path: str) -> List[tuple[str, Any]]:
-    tokens: List[tuple[str, Any]] = []
-    buffer: List[str] = []
+def _parse_path_tokens(path: str) -> list[tuple[str, Any]]:
+    tokens: list[tuple[str, Any]] = []
+    buffer: list[str] = []
     i = 0
     while i < len(path):
         ch = path[i]

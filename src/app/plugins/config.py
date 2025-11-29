@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from .permissions import PermissionState, normalize_permission_state
 
@@ -127,7 +127,7 @@ class PluginConfigStore:
         self.set_permission_state(identifier, permission, state)
 
     def set_permission_state(
-        self, identifier: str, permission: str, state: PermissionState
+        self, identifier: str, permission: str, state: PermissionState,
     ) -> None:
         plugins = self._data.setdefault("plugins", {})
         entry = plugins.setdefault(identifier, {})
@@ -148,13 +148,13 @@ class PluginConfigStore:
         return result
 
     def get_permission_state(
-        self, identifier: str, permission: str
+        self, identifier: str, permission: str,
     ) -> PermissionState:
         entry = self.get_permissions(identifier)
         return entry.get(permission, PermissionState.PROMPT)
 
     def _normalize_permissions(
-        self, values: Dict[str, Any] | None
+        self, values: dict[str, Any] | None,
     ) -> dict[str, PermissionState]:
         result: dict[str, PermissionState] = {}
         if not values:
@@ -164,7 +164,7 @@ class PluginConfigStore:
         return result
 
     def _serialize_permissions(
-        self, values: Dict[str, Any] | None
+        self, values: dict[str, Any] | None,
     ) -> dict[str, str]:
         if not values:
             return {}

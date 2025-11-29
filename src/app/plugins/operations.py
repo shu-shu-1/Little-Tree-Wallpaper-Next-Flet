@@ -25,13 +25,13 @@ class PluginOperationResult:
     permission: str | None = None
 
     @classmethod
-    def ok(cls, data: Any = None, message: str | None = None) -> "PluginOperationResult":
+    def ok(cls, data: Any = None, message: str | None = None) -> PluginOperationResult:
         return cls(success=True, data=data, message=message)
 
     @classmethod
     def denied(
-        cls, permission: str, message: str | None = None
-    ) -> "PluginOperationResult":
+        cls, permission: str, message: str | None = None,
+    ) -> PluginOperationResult:
         return cls(
             success=False,
             error="permission_denied",
@@ -41,8 +41,8 @@ class PluginOperationResult:
 
     @classmethod
     def pending(
-        cls, permission: str, message: str | None = None
-    ) -> "PluginOperationResult":
+        cls, permission: str, message: str | None = None,
+    ) -> PluginOperationResult:
         return cls(
             success=False,
             error="permission_pending",
@@ -57,12 +57,11 @@ class PluginOperationResult:
         message: str | None = None,
         *,
         data: Any = None,
-    ) -> "PluginOperationResult":
+    ) -> PluginOperationResult:
         return cls(success=False, error=error, message=message, data=data)
 
     def raise_for_error(self) -> None:
         """Convenience helper: 将失败结果转为异常。"""
-
         if self.success:
             return
         if self.error == "permission_denied" and self.permission:

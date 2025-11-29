@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from .base import PluginManifest, PluginDependencySpec, PluginKind
+from .base import PluginDependencySpec, PluginKind, PluginManifest
 from .permissions import PermissionState
 
 

@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, Protocol, Sequence, Tuple
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
 
 import flet as ft
 from loguru import logger as _loguru_logger
 
-from .permissions import PermissionState
-from .operations import PluginOperationResult, PluginPermissionError
-from .favorites_api import FavoriteService
 from app.favorites import (
     FavoriteAIResult,
     FavoriteClassifier,
@@ -22,16 +20,21 @@ from app.favorites import (
     FavoriteSource,
 )
 
+from .favorites_api import FavoriteService
+from .operations import PluginOperationResult, PluginPermissionError
+from .permissions import PermissionState
+
 if TYPE_CHECKING:
     from loguru._logger import Logger
-    from .runtime import PluginRuntimeInfo
-    from .events import PluginEventBus, EventDefinition, EventHandler
+
     from .data import GlobalDataAccess
+    from .events import EventDefinition, EventHandler, PluginEventBus
     from .manager import PluginImportResult
+    from .runtime import PluginRuntimeInfo
 else:  # pragma: no cover - runtime assignment for typing compatibility
     Logger = type(_loguru_logger)
-    from .events import PluginEventBus, EventDefinition, EventHandler
     from .data import GlobalDataAccess
+    from .events import EventDefinition, EventHandler, PluginEventBus
 
 
 class PluginKind(str, Enum):
@@ -73,7 +76,7 @@ class PluginDependencySpec:
     version: str | None = None
 
     @classmethod
-    def from_string(cls, declaration: str) -> "PluginDependencySpec":
+    def from_string(cls, declaration: str) -> PluginDependencySpec:
         text = declaration.strip()
         if not text:
             raise ValueError("依赖声明不能为空")
@@ -115,8 +118,8 @@ class PluginManifest:
     description: str = ""
     author: str = ""
     homepage: str | None = None
-    dependencies: Tuple[str | PluginDependencySpec, ...] = tuple()
-    permissions: Tuple[str, ...] = tuple()
+    dependencies: tuple[str | PluginDependencySpec, ...] = tuple()
+    permissions: tuple[str, ...] = tuple()
     kind: PluginKind = PluginKind.FEATURE
 
     def short_label(self) -> str:
@@ -132,14 +135,14 @@ class PluginManifest:
         return tuple(specs)
 
 
-PathFactory = Callable[[str, Tuple[str, ...], bool], Path]
+PathFactory = Callable[[str, tuple[str, ...], bool], Path]
 ActionFactory = Callable[[], ft.Control]
 
 
 class PluginService(Protocol):
     """为生命周期管理向特权插件开放的操作。"""
 
-    def list_plugins(self) -> list["PluginRuntimeInfo"]:
+    def list_plugins(self) -> list[PluginRuntimeInfo]:
         ...
 
     def set_enabled(self, identifier: str, enabled: bool) -> None:
@@ -148,11 +151,11 @@ class PluginService(Protocol):
     def delete_plugin(self, identifier: str) -> None:
         ...
 
-    def import_plugin(self, source_path: Path) -> "PluginImportResult":
+    def import_plugin(self, source_path: Path) -> PluginImportResult:
         ...
 
     def update_permission(
-        self, identifier: str, permission: str, allowed: bool | PermissionState | None
+        self, identifier: str, permission: str, allowed: bool | PermissionState | None,
     ) -> None:
         ...
 
@@ -239,12 +242,10 @@ class PluginContext:
 
     def add_navigation_view(self, view: AppNavigationView) -> None:
         """Register a navigation destination for the application sidebar."""
-
         self.register_navigation(view)
 
     def add_route_view(self, view: AppRouteView) -> None:
         """Register an auxiliary route handled through ``page.views``."""
-
         self.register_route(view)
 
     # ------------------------------------------------------------------
@@ -312,17 +313,14 @@ class PluginContext:
 
     def add_startup_hook(self, hook: StartupHook) -> None:
         """Register a callable to execute once the application is ready."""
-
         self.register_startup_hook(hook)
 
     def add_bing_action(self, factory: ActionFactory) -> None:
         """Register an action control to display under the Bing wallpaper tab."""
-
         self.bing_action_factories.append(factory)
 
     def add_spotlight_action(self, factory: ActionFactory) -> None:
         """Register an action control to display under the Spotlight wallpaper tab."""
-
         self.spotlight_action_factories.append(factory)
 
     def register_settings_page(
@@ -335,7 +333,6 @@ class PluginContext:
         description: str | None = None,
     ) -> None:
         """Register a dedicated settings page accessible from the plugin management panel."""
-
         existing = [page for page in self.settings_pages if page.plugin_identifier != self.manifest.identifier]
         new_page = PluginSettingsPage(
             plugin_identifier=self.manifest.identifier,
@@ -368,13 +365,11 @@ class PluginContext:
         icon: str | None = None,
     ) -> None:
         """Backward-compatible alias for :meth:`register_settings_page`."""
-
         self.register_settings_page(label, builder, icon=icon)
 
     @property
     def settings_tabs(self) -> list[PluginSettingsPage]:
         """Backward-compatible accessor returning registered settings pages."""
-
         return self.settings_pages
 
     @settings_tabs.setter
@@ -392,13 +387,11 @@ class PluginContext:
     @property
     def favorites(self) -> FavoriteService:
         """Direct accessor to the favorites service (requires permissions)."""
-
         return self._require_favorite_service()
 
     @property
     def favorite_manager(self) -> FavoriteService | None:  # pragma: no cover - legacy adapter
         """Backward-compatible alias returning :class:`FavoriteService`."""
-
         return self.favorite_service
 
     def has_favorite_support(self) -> bool:
@@ -415,7 +408,7 @@ class PluginContext:
         name: str,
         *,
         description: str = "",
-        metadata: Dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> FavoriteFolder:
         return self._require_favorite_service().create_folder(
             name,
@@ -454,7 +447,7 @@ class PluginContext:
         return self._require_favorite_service().get_item(item_id)
 
     def find_favorite_by_source(
-        self, source: FavoriteSource | Dict[str, Any]
+        self, source: FavoriteSource | dict[str, Any],
     ) -> FavoriteItem | None:
         return self._require_favorite_service().find_by_source(source)
 
@@ -465,10 +458,10 @@ class PluginContext:
         title: str,
         description: str = "",
         tags: Sequence[str] | None = None,
-        source: FavoriteSource | Dict[str, Any] | None = None,
+        source: FavoriteSource | dict[str, Any] | None = None,
         preview_url: str | None = None,
         local_path: str | None = None,
-        extra: Dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
         merge_tags: bool = True,
     ) -> tuple[FavoriteItem, bool]:
         return self._require_favorite_service().add_or_update_item(
@@ -491,7 +484,7 @@ class PluginContext:
         title: str | None = None,
         description: str | None = None,
         tags: Sequence[str] | None = None,
-        extra: Dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> bool:
         return self._require_favorite_service().update_item(
             item_id,
@@ -506,7 +499,7 @@ class PluginContext:
         return self._require_favorite_service().remove_item(item_id)
 
     def register_favorite_classifier(
-        self, classifier: FavoriteClassifier | None
+        self, classifier: FavoriteClassifier | None,
     ) -> None:
         self._require_favorite_service().register_classifier(classifier)
 
@@ -517,7 +510,7 @@ class PluginContext:
         return self.permissions.get(permission, PermissionState.PROMPT) is PermissionState.GRANTED
 
     def request_permission(
-        self, permission: str, *, message: str | None = None
+        self, permission: str, *, message: str | None = None,
     ) -> PermissionState:
         handler = self._permission_request_handler
         if handler is None:
@@ -580,7 +573,7 @@ class PluginContext:
     def subscribe_event(
         self,
         event_type: str,
-        handler: "EventHandler",
+        handler: EventHandler,
         *,
         replay_last: bool = True,
     ) -> Callable[[], None]:
@@ -602,7 +595,7 @@ class PluginContext:
             source=self.manifest.identifier,
         )
 
-    def list_event_definitions(self) -> list["EventDefinition"]:
+    def list_event_definitions(self) -> list[EventDefinition]:
         if not self.event_bus:
             return []
         return self.event_bus.list_event_definitions()

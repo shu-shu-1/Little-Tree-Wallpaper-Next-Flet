@@ -1,9 +1,10 @@
 import copy
-import orjson
 import os
 import platform
 from pathlib import Path
-import toml
+
+import orjson
+import rtoml
 
 DEFAULT_CONFIG = {
     "metadata": {"version": "1.0.0"},
@@ -266,8 +267,7 @@ def _ensure_home_page_config(config: dict, file_path: str) -> dict:
 
 
 def get_config_version(file_path: str) -> str:
-    """
-    获取配置文件的版本号
+    """获取配置文件的版本号
 
     :param file_path: 配置文件的路径
     :return str: 版本号
@@ -278,8 +278,7 @@ def get_config_version(file_path: str) -> str:
 
 
 def check_config_file(file_path):
-    """
-    检查指定的配置文件是否正常。
+    """检查指定的配置文件是否正常。
     1. 检查文件是否存在
     2. 检查文件格式是否正确
     3. 检查文件版本号
@@ -301,15 +300,14 @@ def check_config_file(file_path):
     if config["metadata"]["version"] != DEFAULT_CONFIG["metadata"]["version"]:
         return "low_version"
     # 检查键是否完整
-    for key in DEFAULT_CONFIG.keys():
+    for key in DEFAULT_CONFIG:
         if key not in config:
             return "key_missing"
     return "normal"
 
 
 def fix_config_file(file_path: str, error_type):
-    """
-    修复配置文件
+    """修复配置文件
 
     :param file_path: 配置文件的路径
     :param error_type: 错误类型
@@ -323,7 +321,8 @@ def fix_config_file(file_path: str, error_type):
     elif error_type == "format_error":
         try:
             with open(file_path, "rb") as f:
-                old_config = toml.loads(f.read())
+                text = f.read().decode("utf-8", errors="replace")
+                old_config = rtoml.loads(text)
                 new_config = DEFAULT_CONFIG
                 # 迁移配置数据
                 if "info" in old_config:
@@ -341,14 +340,14 @@ def fix_config_file(file_path: str, error_type):
 
                 if "update" in old_config:
                     new_config["updates"]["auto_check"] = bool(
-                        old_config["update"]["enabled"]
+                        old_config["update"]["enabled"],
                     )
                     new_config["updates"]["channel"] = old_config["update"][
                         "channel"
                     ].lower()
                     if "proxy" in old_config["update"]:
                         new_config["updates"]["proxy"]["enabled"] = bool(
-                            old_config["update"]["proxy"]["enabled"]
+                            old_config["update"]["proxy"]["enabled"],
                         )
                         new_config["updates"]["proxy"]["selected_index"] = old_config[
                             "update"
@@ -371,7 +370,7 @@ def fix_config_file(file_path: str, error_type):
                         "favorites_path"
                     ]
                     new_config["storage"]["clear_cache_after_360_source"] = bool(
-                        old_config["data"]["clear_cache_when_360_back"]
+                        old_config["data"]["clear_cache_when_360_back"],
                     )
 
                 if "automatic_wallpaper_change" in old_config:
@@ -388,7 +387,7 @@ def fix_config_file(file_path: str, error_type):
                     ]
                     if "proxy" in old_config["download"]:
                         new_config["download"]["proxy"]["enabled"] = bool(
-                            old_config["download"]["proxy"]["enabled"]
+                            old_config["download"]["proxy"]["enabled"],
                         )
                         new_config["download"]["proxy"]["type"] = old_config[
                             "download"
@@ -399,26 +398,26 @@ def fix_config_file(file_path: str, error_type):
 
                 if "auto_start" in old_config:
                     new_config["startup"]["auto_start"] = bool(
-                        old_config["auto_start"]["enabled"]
+                        old_config["auto_start"]["enabled"],
                     )
                     new_config["startup"]["script"]["enabled"] = bool(
-                        old_config["auto_start"]["script_enabled"]
+                        old_config["auto_start"]["script_enabled"],
                     )
                     new_config["startup"]["script"]["path"] = old_config["auto_start"][
                         "script_path"
                     ]
                     new_config["startup"]["wallpaper_change"]["enabled"] = bool(
-                        old_config["auto_start"]["change_wallpaper_enabled"]
+                        old_config["auto_start"]["change_wallpaper_enabled"],
                     )
                     new_config["startup"]["wallpaper_change"]["source"] = old_config[
                         "auto_start"
                     ]["change_wallpaper_mode"]
                     new_config["startup"]["wallpaper_change"]["auto_rotation"] = bool(
-                        old_config["auto_start"]["automatic_wallpaper_change"]
+                        old_config["auto_start"]["automatic_wallpaper_change"],
                     )
 
                 save_config_file(file_path, new_config)
-        except toml.TomlDecodeError:
+        except rtoml.TomlParsingError:
             reset_config_file(file_path)
 
 

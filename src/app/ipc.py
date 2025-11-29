@@ -8,10 +8,11 @@ import threading
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from multiprocessing.connection import Connection, Listener
 from queue import Queue
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any
 
 from loguru import logger
 
@@ -26,12 +27,11 @@ class IPCSubscription:
     channel: str
     queue: Queue
 
-    def get(self, timeout: float | None = None) -> Dict[str, Any] | None:
+    def get(self, timeout: float | None = None) -> dict[str, Any] | None:
         """Wait for the next message on this subscription.
 
         Returns ``None`` if the queue is closed or no message arrives before ``timeout``.
         """
-
         try:
             return self.queue.get(timeout=timeout)
         except Exception:
@@ -39,7 +39,6 @@ class IPCSubscription:
 
     def close(self) -> None:
         """Signal that no further messages should be read."""
-
         try:
             self.queue.put_nowait(None)
         except Exception:
@@ -51,9 +50,9 @@ class IPCService:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._subscriptions: Dict[str, IPCSubscription] = {}
-        self._channel_index: Dict[str, set[str]] = defaultdict(set)
-        self._connection_index: Dict[Connection, set[str]] = {}
+        self._subscriptions: dict[str, IPCSubscription] = {}
+        self._channel_index: dict[str, set[str]] = defaultdict(set)
+        self._connection_index: dict[Connection, set[str]] = {}
         self._connection_lock = threading.RLock()
         self._running = True
         self._listener, self._address = self._create_listener()
@@ -86,7 +85,7 @@ class IPCService:
     def broadcast(
         self,
         channel: str,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         *,
         origin: str,
     ) -> None:
@@ -106,7 +105,7 @@ class IPCService:
                 logger.error("IPC 消息投递失败: {error}", error=str(exc))
         self._broadcast_external(event)
 
-    def describe(self) -> Dict[str, Any]:
+    def describe(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "address": self._address,
@@ -134,19 +133,18 @@ class IPCService:
     # ------------------------------------------------------------------
     # listener management
     # ------------------------------------------------------------------
-    def _create_listener(self) -> Tuple[Listener, str]:
+    def _create_listener(self) -> tuple[Listener, str]:
         if os.name == "nt":
             address = r"\\.\pipe\little-tree-wallpaper-ipc"
             listener = Listener(address, family="AF_PIPE")
             return listener, address
-        else:
-            socket_path = RUNTIME_DIR / "ipc.sock"
-            try:
-                socket_path.unlink()
-            except FileNotFoundError:
-                pass
-            listener = Listener(str(socket_path), family="AF_UNIX")
-            return listener, str(socket_path)
+        socket_path = RUNTIME_DIR / "ipc.sock"
+        try:
+            socket_path.unlink()
+        except FileNotFoundError:
+            pass
+        listener = Listener(str(socket_path), family="AF_UNIX")
+        return listener, str(socket_path)
 
     def _accept_loop(self) -> None:
         while self._running:
@@ -231,7 +229,7 @@ class IPCService:
         except Exception:  # pragma: no cover
             pass
 
-    def _broadcast_external(self, event: Dict[str, Any]) -> None:
+    def _broadcast_external(self, event: dict[str, Any]) -> None:
         message = dict(event)
         with self._connection_lock:
             targets = list(self._connection_index.keys())

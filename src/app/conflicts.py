@@ -5,7 +5,6 @@ from __future__ import annotations
 import platform
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
 
 import psutil
 from loguru import logger
@@ -17,7 +16,7 @@ class StartupConflict:
 
 	identifier: str
 	title: str
-	processes: List[str]
+	processes: list[str]
 	note: str | None = None
 
 
@@ -32,9 +31,8 @@ def _normalize_name(name: str | None, exe_path: str | None) -> str:
 	return ""
 
 
-def detect_conflicts() -> List[StartupConflict]:
+def detect_conflicts() -> list[StartupConflict]:
 	"""Return a list of conflicting wallpaper applications currently running."""
-
 	if platform.system().lower() != "windows":
 		return []
 
@@ -74,7 +72,7 @@ def detect_conflicts() -> List[StartupConflict]:
 					display = f"{display} ({exe_path})"
 				wallpaper_generator_execs.add(display)
 
-	conflicts: List[StartupConflict] = []
+	conflicts: list[StartupConflict] = []
 
 	if wallpaper_engine_variants:
 		conflicts.append(
@@ -83,7 +81,7 @@ def detect_conflicts() -> List[StartupConflict]:
 				title="Wallpaper Engine",
 				processes=sorted(wallpaper_engine_variants),
 				note="检测到 Wallpaper Engine 正在运行，可能无法正常显示壁纸。",
-			)
+			),
 		)
 
 	if wallpaper_generator_execs:
@@ -93,7 +91,7 @@ def detect_conflicts() -> List[StartupConflict]:
 				title="壁纸生成器 Next",
 				processes=sorted(wallpaper_generator_execs),
 				note="检测到 壁纸生成器 Next 正在运行，可能会与自动更换壁纸功能冲突。",
-			)
+			),
 		)
 
 	if conflicts:

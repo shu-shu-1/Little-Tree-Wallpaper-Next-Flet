@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 from loguru import logger
 
@@ -17,7 +16,7 @@ def marker_path() -> Path:
     return CONFIG_DIR / _MARKER_FILENAME
 
 
-def read_marker() -> Optional[int]:
+def read_marker() -> int | None:
     """Read the stored marker value from disk.
 
     Returns the parsed integer value if available, otherwise ``None``.

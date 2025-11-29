@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import argparse
 import datetime as _dt
 import os
@@ -30,7 +31,9 @@ PRODUCT_PREFIX = "LittleTreeWallpaper-next"
 
 # 彩色输出
 try:
-    from colorama import init as _colorama_init, Fore as _F, Style as _S
+    from colorama import Fore as _F
+    from colorama import Style as _S
+    from colorama import init as _colorama_init
     _colorama_init()
     _RESET = _S.RESET_ALL
     _C_INFO = _F.CYAN
@@ -89,8 +92,7 @@ def _today_build_index(dist_dir: Path, date_str: str) -> str:
 
 
 def _update_build_constant(constants_path: Path, build_tag: str) -> None:
-    """
-    将 src/app/constants.py 中的 BUILD 变量更新为新的 build_tag。
+    """将 src/app/constants.py 中的 BUILD 变量更新为新的 build_tag。
     若未找到 BUILD 定义，则在文件末尾追加。
     """
     if not constants_path.exists():
@@ -110,8 +112,7 @@ def _update_build_constant(constants_path: Path, build_tag: str) -> None:
 
 
 def _update_mode_constant(constants_path: Path, mode_value: str) -> None:
-    """
-    将 src/app/constants.py 中的 MODE 变量更新为给定的 mode_value。
+    """将 src/app/constants.py 中的 MODE 变量更新为给定的 mode_value。
     若未找到 MODE 定义，则在文件末尾追加。
     """
     if not constants_path.exists():
@@ -141,7 +142,7 @@ def _ensure_tool(cmd: str) -> list[str]:
 
 def _run(cmd: list[str], cwd: Path) -> None:
     _runlog(" ".join(cmd))
-    proc = subprocess.run(cmd, cwd=str(cwd))
+    proc = subprocess.run(cmd, check=False, cwd=str(cwd))
     if proc.returncode != 0:
         raise SystemExit(proc.returncode)
 

@@ -16,43 +16,70 @@ import shutil
 import tarfile
 import time
 import uuid
-import aiohttp
-import pyperclip
-
-import flet as ft
-
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, TYPE_CHECKING
-
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, quote, quote_plus, urlencode
 
+import aiohttp
+import flet as ft
+import pyperclip
 from loguru import logger
 
 import ltwapi
-
+from app.auto_change import (
+    ORDER_RANDOM,
+    ORDER_RANDOM_NO_REPEAT,
+    ORDER_SEQUENTIAL,
+    AutoChangeList,
+    AutoChangeListEntry,
+    AutoChangeListStore,
+    AutoChangeService,
+)
+from app.conflicts import StartupConflict
 from app.constants import (
     BUILD_VERSION,
+    FIRST_RUN_MARKER_VERSION,
     HITOKOTO_API,
     HITOKOTO_CATEGORY_LABELS,
     SHOW_WATERMARK,
     VER,
-    FIRST_RUN_MARKER_VERSION,
     ZHAOYU_API_URL,
 )
-from app.paths import LICENSE_PATH, CACHE_DIR
+from app.download_manager import DownloadLocationType, download_manager
 from app.favorites import (
     FavoriteFolder,
     FavoriteItem,
     FavoriteManager,
     FavoriteSource,
 )
+from app.first_run import update_marker
+from app.image_optimizer import image_optimizer
+from app.paths import CACHE_DIR, LICENSE_PATH
+from app.plugins import (
+    KNOWN_PERMISSIONS,
+    AppRouteView,
+    GlobalDataAccess,
+    GlobalDataError,
+    PermissionState,
+    PluginImportResult,
+    PluginKind,
+    PluginOperationResult,
+    PluginPermission,
+    PluginRuntimeInfo,
+    PluginService,
+    PluginStatus,
+)
+from app.plugins.events import EventDefinition, PluginEventBus
+from app.settings import SettingsStore
+from app.sniff import SniffedImage, SniffService, SniffServiceError
+from app.startup import StartupManager
 from app.ui_utils import (
     build_watermark,
     copy_files_to_clipboard,
     copy_image_to_clipboard,
 )
-from app.sniff import SniffService, SniffedImage, SniffServiceError
 from app.wallpaper_sources import (
     WallpaperCategoryRef,
     WallpaperItem,
@@ -62,38 +89,6 @@ from app.wallpaper_sources import (
     WallpaperSourceManager,
     WallpaperSourceRecord,
 )
-from app.plugins import (
-    AppRouteView,
-    PluginPermission,
-    PluginRuntimeInfo,
-    PluginService,
-    PluginStatus,
-    GlobalDataAccess,
-    GlobalDataError,
-    PluginImportResult,
-    PluginKind,
-    PluginOperationResult,
-    PermissionState,
-    KNOWN_PERMISSIONS,
-)
-from app.plugins.events import EventDefinition, PluginEventBus
-
-from app.settings import SettingsStore
-
-from app.startup import StartupManager
-from app.first_run import update_marker
-from app.conflicts import StartupConflict
-from app.auto_change import (
-    AutoChangeList,
-    AutoChangeListEntry,
-    AutoChangeListStore,
-    AutoChangeService,
-    ORDER_RANDOM,
-    ORDER_RANDOM_NO_REPEAT,
-    ORDER_SEQUENTIAL,
-)
-from app.download_manager import download_manager, DownloadLocationType
-from app.image_optimizer import image_optimizer
 
 app_config = SettingsStore()
 
@@ -102,7 +97,7 @@ _WS_DEFAULT_KEY = "__default__"
 
 @dataclass(slots=True)
 class _IMParameterControl:
-    config: Dict[str, Any]
+    config: dict[str, Any]
     control: ft.Control
     display: ft.Control
     getter: Callable[[], Any]
@@ -120,9 +115,9 @@ class _WSParameterControl:
 
 
 if TYPE_CHECKING:
+    from app.plugins import PluginOperationResult
     from app.plugins.base import PluginSettingsPage
     from app.theme import ThemeManager
-    from app.plugins import PluginOperationResult
 
 
 class Pages:
@@ -131,17 +126,17 @@ class Pages:
         page: ft.Page,
         bing_action_factories: list[Callable[[], ft.Control]] | None = None,
         spotlight_action_factories: list[Callable[[], ft.Control]] | None = None,
-        settings_pages: list["PluginSettingsPage"] | None = None,
+        settings_pages: list[PluginSettingsPage] | None = None,
         event_bus: PluginEventBus | None = None,
-        plugin_service: Optional[PluginService] = None,
-        plugin_runtime: Optional[List[PluginRuntimeInfo]] = None,
-        known_permissions: Optional[Dict[str, PluginPermission]] = None,
-        event_definitions: Optional[List[EventDefinition]] = None,
+        plugin_service: PluginService | None = None,
+        plugin_runtime: list[PluginRuntimeInfo] | None = None,
+        known_permissions: dict[str, PluginPermission] | None = None,
+        event_definitions: list[EventDefinition] | None = None,
         global_data: GlobalDataAccess | None = None,
-        theme_manager: "ThemeManager" | None = None,
-        theme_list_handler: Callable[[], "PluginOperationResult"] | None = None,
-        theme_apply_handler: Callable[[str], "PluginOperationResult"] | None = None,
-        theme_profiles: Optional[List[Dict[str, Any]]] = None,
+        theme_manager: ThemeManager | None = None,
+        theme_list_handler: Callable[[], PluginOperationResult] | None = None,
+        theme_apply_handler: Callable[[str], PluginOperationResult] | None = None,
+        theme_profiles: list[dict[str, Any]] | None = None,
         first_run_required_version: int | None = None,
         first_run_pending: bool = False,
         first_run_next_route: str = "/",
@@ -149,21 +144,21 @@ class Pages:
         self.page = page
         self.event_bus = event_bus
         self.plugin_service = plugin_service
-        self._plugin_runtime_cache: List[PluginRuntimeInfo] = list(plugin_runtime or [])
-        self._known_permissions: Dict[str, PluginPermission] = dict(
-            known_permissions or {}
+        self._plugin_runtime_cache: list[PluginRuntimeInfo] = list(plugin_runtime or [])
+        self._known_permissions: dict[str, PluginPermission] = dict(
+            known_permissions or {},
         )
         self._sync_known_permissions()
         # Flet Colors compatibility: some versions may not expose SURFACE_CONTAINER_LOW
         self._bgcolor_surface_low = getattr(
-            ft.Colors, "SURFACE_CONTAINER_LOW", ft.Colors.SURFACE_CONTAINER_HIGHEST
+            ft.Colors, "SURFACE_CONTAINER_LOW", ft.Colors.SURFACE_CONTAINER_HIGHEST,
         )
-        self._event_definitions: List[EventDefinition] = list(event_definitions or [])
-        self._plugin_list_column: Optional[ft.Column] = None
-        self._plugin_file_picker: Optional[ft.FilePicker] = None
-        self._favorite_file_picker: Optional[ft.FilePicker] = None
-        self._theme_file_picker: Optional[ft.FilePicker] = None
-        self._home_export_picker: Optional[ft.FilePicker] = None
+        self._event_definitions: list[EventDefinition] = list(event_definitions or [])
+        self._plugin_list_column: ft.Column | None = None
+        self._plugin_file_picker: ft.FilePicker | None = None
+        self._favorite_file_picker: ft.FilePicker | None = None
+        self._theme_file_picker: ft.FilePicker | None = None
+        self._home_export_picker: ft.FilePicker | None = None
         self._home_pending_export_source: Path | None = None
         self._home_change_button: ft.TextButton | None = None
         self.home_quote_text: ft.Text | None = None
@@ -196,7 +191,7 @@ class Pages:
             spotlight_action_factories if spotlight_action_factories is not None else []
         )
         self._settings_pages = settings_pages if settings_pages is not None else []
-        self._settings_page_map: dict[str, "PluginSettingsPage"] = {}
+        self._settings_page_map: dict[str, PluginSettingsPage] = {}
         self._refresh_settings_registry()
         self._global_data = global_data
         self._bing_data_id: str | None = None
@@ -227,7 +222,7 @@ class Pages:
         self._favorite_localization_spinner: ft.ProgressRing | None = None
         self._favorite_localizing_items: set[str] = set()
         self._favorite_item_localize_controls: dict[
-            str, tuple[ft.IconButton, ft.Control]
+            str, tuple[ft.IconButton, ft.Control],
         ] = {}
         self._favorite_item_wallpaper_buttons: dict[str, ft.IconButton] = {}
         self._favorite_item_export_buttons: dict[str, ft.IconButton] = {}
@@ -244,7 +239,7 @@ class Pages:
         self._theme_manager = theme_manager
         self._theme_list_handler = theme_list_handler
         self._theme_apply_handler = theme_apply_handler
-        self._theme_profiles: list[Dict[str, Any]] = list(theme_profiles or [])
+        self._theme_profiles: list[dict[str, Any]] = list(theme_profiles or [])
         self._theme_cards_wrap: ft.Row | None = None
         self._theme_detail_dialog: ft.AlertDialog | None = None
         try:
@@ -674,7 +669,7 @@ class Pages:
             return
         if self._auto_list_picker is None:
             self._auto_list_picker = ft.FilePicker(
-                on_result=self._handle_auto_list_picker_result
+                on_result=self._handle_auto_list_picker_result,
             )
         if self._auto_list_picker not in self.page.overlay:
             self.page.overlay.append(self._auto_list_picker)
@@ -888,7 +883,7 @@ class Pages:
             on_change=self._auto_on_interval_order_change,
         )
         order_hint = ft.Text(
-            "随机从列表中选择条目或按照顺序轮换。", size=12, color=ft.Colors.GREY
+            "随机从列表中选择条目或按照顺序轮换。", size=12, color=ft.Colors.GREY,
         )
         order_section = ft.Column(
             [self._auto_interval_order_dropdown, order_hint],
@@ -905,7 +900,7 @@ class Pages:
         )
 
         self._auto_interval_fixed_image_display = ft.Text(
-            "未选择", size=12, color=ft.Colors.GREY
+            "未选择", size=12, color=ft.Colors.GREY,
         )
         self._auto_interval_select_button = ft.TextButton(
             "选择图片",
@@ -1158,21 +1153,21 @@ class Pages:
             if enabled is not None
             else bool(
                 config.get("enabled", False)
-                and str(config.get("mode") or "off") == "schedule"
+                and str(config.get("mode") or "off") == "schedule",
             )
         )
         column = self._auto_schedule_entries_column
         column.controls.clear()
         if not indexed_entries:
             column.controls.append(
-                ft.Text("尚未添加任何定时任务。", size=12, color=ft.Colors.GREY)
+                ft.Text("尚未添加任何定时任务。", size=12, color=ft.Colors.GREY),
             )
         else:
             for config_index, entry in indexed_entries:
                 column.controls.append(
                     self._auto_build_schedule_entry_card(
-                        config_index, entry, list_map, enabled=enabled_state
-                    )
+                        config_index, entry, list_map, enabled=enabled_state,
+                    ),
                 )
         if column.page is not None:
             column.update()
@@ -1219,7 +1214,7 @@ class Pages:
                     "编辑",
                     icon=ft.Icons.EDIT,
                     on_click=lambda _: self._auto_open_schedule_entry_dialog(
-                        config_index
+                        config_index,
                     ),
                     disabled=not enabled,
                 ),
@@ -1240,7 +1235,7 @@ class Pages:
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 padding=ft.padding.symmetric(vertical=8, horizontal=12),
-            )
+            ),
         )
 
     def _auto_open_schedule_entry_dialog(self, index: int | None = None) -> None:
@@ -1263,8 +1258,8 @@ class Pages:
         if not available_lists:
             list_controls.append(
                 ft.Text(
-                    "暂无自动更换列表，可在下方新建。", size=12, color=ft.Colors.GREY
-                )
+                    "暂无自动更换列表，可在下方新建。", size=12, color=ft.Colors.GREY,
+                ),
             )
         else:
             for auto_list in available_lists:
@@ -1301,7 +1296,7 @@ class Pages:
         dialog_content = ft.Column(
             [
                 ft.Text(
-                    "设定每天的执行时间（24 小时制）", size=12, color=ft.Colors.GREY
+                    "设定每天的执行时间（24 小时制）", size=12, color=ft.Colors.GREY,
                 ),
                 time_field,
                 ft.Text("选择自动更换列表 (可多选)", size=12, color=ft.Colors.GREY),
@@ -1318,10 +1313,10 @@ class Pages:
             content=ft.Container(dialog_content, width=420),
             actions=[
                 ft.TextButton(
-                    "取消", on_click=lambda _: self._auto_schedule_dialog_cancel()
+                    "取消", on_click=lambda _: self._auto_schedule_dialog_cancel(),
                 ),
                 ft.FilledButton(
-                    "保存", on_click=lambda _: self._auto_schedule_dialog_save()
+                    "保存", on_click=lambda _: self._auto_schedule_dialog_save(),
                 ),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
@@ -1361,7 +1356,7 @@ class Pages:
         self._auto_schedule_dialog_state["fixed_image"] = fixed_image
         display: ft.Text = self._auto_schedule_dialog_state.get("fixed_display")  # type: ignore[assignment]
         clear_button: ft.TextButton = self._auto_schedule_dialog_state.get(
-            "clear_button"
+            "clear_button",
         )  # type: ignore[assignment]
         if display is not None:
             display.value = fixed_image if fixed_image else "未选择"
@@ -1491,19 +1486,19 @@ class Pages:
             if enabled is not None
             else bool(
                 config.get("enabled", False)
-                and str(config.get("mode") or "off") == "slideshow"
+                and str(config.get("mode") or "off") == "slideshow",
             )
         )
         column = self._auto_slideshow_items_column
         column.controls.clear()
         if not items:
             column.controls.append(
-                ft.Text("尚未添加任何轮播素材。", size=12, color=ft.Colors.GREY)
+                ft.Text("尚未添加任何轮播素材。", size=12, color=ft.Colors.GREY),
             )
         else:
             for item in items:
                 column.controls.append(
-                    self._auto_build_slideshow_item_row(item, enabled=enabled_state)
+                    self._auto_build_slideshow_item_row(item, enabled=enabled_state),
                 )
         if column.page is not None:
             column.update()
@@ -1517,7 +1512,7 @@ class Pages:
                     button.update()
 
     def _auto_build_slideshow_item_row(
-        self, item: dict[str, Any], *, enabled: bool
+        self, item: dict[str, Any], *, enabled: bool,
     ) -> ft.Control:
         item_id = str(item.get("id") or uuid.uuid4().hex)
         kind = str(item.get("kind") or "file")
@@ -1586,7 +1581,7 @@ class Pages:
             return
         if self._auto_slideshow_file_picker is None:
             self._auto_slideshow_file_picker = ft.FilePicker(
-                on_result=self._handle_auto_slideshow_file_result
+                on_result=self._handle_auto_slideshow_file_result,
             )
         if self._auto_slideshow_file_picker not in self.page.overlay:
             self.page.overlay.append(self._auto_slideshow_file_picker)
@@ -1597,14 +1592,14 @@ class Pages:
             return
         if self._auto_slideshow_dir_picker is None:
             self._auto_slideshow_dir_picker = ft.FilePicker(
-                on_result=self._handle_auto_slideshow_dir_result
+                on_result=self._handle_auto_slideshow_dir_result,
             )
         if self._auto_slideshow_dir_picker not in self.page.overlay:
             self.page.overlay.append(self._auto_slideshow_dir_picker)
             self.page.update()
 
     def _handle_auto_slideshow_file_result(
-        self, event: ft.FilePickerResultEvent
+        self, event: ft.FilePickerResultEvent,
     ) -> None:
         if not event.files:
             return
@@ -1615,7 +1610,7 @@ class Pages:
         self._auto_add_slideshow_items("file", valid_paths)
 
     def _handle_auto_slideshow_dir_result(
-        self, event: ft.FilePickerResultEvent
+        self, event: ft.FilePickerResultEvent,
     ) -> None:
         path = getattr(event, "path", None) or getattr(event, "full_path", None)
         if not path:
@@ -1815,8 +1810,8 @@ class Pages:
         if not lists:
             self._auto_interval_lists_wrap.controls.append(
                 ft.Text(
-                    "暂无自动更换列表，可在下方新建。", size=12, color=ft.Colors.GREY
-                )
+                    "暂无自动更换列表，可在下方新建。", size=12, color=ft.Colors.GREY,
+                ),
             )
         else:
             for auto_list in lists:
@@ -1826,7 +1821,7 @@ class Pages:
                     value=auto_list.id in selected_ids,
                     on_change=lambda e,
                     list_id=auto_list.id: self._auto_on_interval_list_toggle(
-                        list_id, bool(getattr(e.control, "value", False))
+                        list_id, bool(getattr(e.control, "value", False)),
                     ),
                     disabled=not enabled_state,
                 )
@@ -1860,7 +1855,7 @@ class Pages:
         self._auto_set_interval_fixed_image(None)
 
     def _auto_open_fixed_image_picker(
-        self, target: str, index: int | None = None
+        self, target: str, index: int | None = None,
     ) -> None:
         self._ensure_auto_fixed_image_picker()
         if self._auto_fixed_image_picker is None:
@@ -1881,14 +1876,14 @@ class Pages:
             return
         if self._auto_fixed_image_picker is None:
             self._auto_fixed_image_picker = ft.FilePicker(
-                on_result=self._handle_auto_fixed_image_picker_result
+                on_result=self._handle_auto_fixed_image_picker_result,
             )
         if self._auto_fixed_image_picker not in self.page.overlay:
             self.page.overlay.append(self._auto_fixed_image_picker)
             self.page.update()
 
     def _handle_auto_fixed_image_picker_result(
-        self, event: ft.FilePickerResultEvent
+        self, event: ft.FilePickerResultEvent,
     ) -> None:
         target = self._auto_fixed_image_target
         self._auto_fixed_image_target = None
@@ -1907,13 +1902,11 @@ class Pages:
             self._auto_update_schedule_entry_fixed_image(target_index, path)
         elif target_name == "startup":
             self._startup_set_fixed_image(path)
-        elif target_name == "schedule_dialog":
-            self._auto_schedule_dialog_set_fixed_image(path)
-        elif target_name == "schedule_dialog":
+        elif target_name == "schedule_dialog" or target_name == "schedule_dialog":
             self._auto_schedule_dialog_set_fixed_image(path)
 
     def _auto_update_schedule_entry_fixed_image(
-        self, index: int | None, path: str | None
+        self, index: int | None, path: str | None,
     ) -> None:
         # 占位：定时模式界面尚未实现
         if index is None:
@@ -1973,12 +1966,12 @@ class Pages:
         self._auto_lists_column.controls.clear()
         if not lists:
             self._auto_lists_column.controls.append(
-                ft.Text("尚未创建任何自动更换列表。", size=12, color=ft.Colors.GREY)
+                ft.Text("尚未创建任何自动更换列表。", size=12, color=ft.Colors.GREY),
             )
         else:
             for auto_list in lists:
                 self._auto_lists_column.controls.append(
-                    self._auto_build_list_card(auto_list)
+                    self._auto_build_list_card(auto_list),
                 )
         if self._auto_lists_column.page is not None:
             self._auto_lists_column.update()
@@ -2025,7 +2018,7 @@ class Pages:
             content=ft.Container(
                 summary,
                 padding=12,
-            )
+            ),
         )
 
     def _auto_create_list(self) -> None:
@@ -2109,7 +2102,7 @@ class Pages:
 
     def _auto_start_list_editor(self, auto_list: AutoChangeList) -> None:
         name_field = ft.TextField(
-            label="列表名称", value=auto_list.name, autofocus=True
+            label="列表名称", value=auto_list.name, autofocus=True,
         )
         desc_field = ft.TextField(
             label="描述",
@@ -2144,13 +2137,13 @@ class Pages:
                 ft.PopupMenuItem(
                     text="收藏夹",
                     on_click=lambda _: self._auto_editor_add_entry_type(
-                        "favorite_folder"
+                        "favorite_folder",
                     ),
                 ),
                 ft.PopupMenuItem(
                     text="壁纸源",
                     on_click=lambda _: self._auto_editor_add_entry_type(
-                        "wallpaper_source"
+                        "wallpaper_source",
                     ),
                 ),
                 ft.PopupMenuItem(
@@ -2242,18 +2235,18 @@ class Pages:
         entries_column.controls.clear()
         if not entries:
             entries_column.controls.append(
-                ft.Text("当前列表暂无条目。", size=12, color=ft.Colors.GREY)
+                ft.Text("当前列表暂无条目。", size=12, color=ft.Colors.GREY),
             )
         else:
             for index, entry in enumerate(entries):
                 entries_column.controls.append(
-                    self._auto_build_editor_entry_row(index, entry)
+                    self._auto_build_editor_entry_row(index, entry),
                 )
         if entries_column.page is not None:
             entries_column.update()
 
     def _auto_build_editor_entry_row(
-        self, index: int, entry: dict[str, Any]
+        self, index: int, entry: dict[str, Any],
     ) -> ft.Control:
         summary = self._auto_entry_summary(entry)
         return ft.Container(
@@ -2266,14 +2259,14 @@ class Pages:
                                 icon=ft.Icons.EDIT,
                                 tooltip="编辑",
                                 on_click=lambda _: self._auto_editor_add_entry_type(
-                                    entry.get("type", ""), index
+                                    entry.get("type", ""), index,
                                 ),
                             ),
                             ft.IconButton(
                                 icon=ft.Icons.DELETE,
                                 tooltip="删除",
                                 on_click=lambda _: self._auto_editor_remove_entry(
-                                    index
+                                    index,
                                 ),
                             ),
                         ],
@@ -2342,7 +2335,7 @@ class Pages:
         return entry_type or "未知条目"
 
     def _auto_editor_add_entry_type(
-        self, entry_type: str, index: int | None = None
+        self, entry_type: str, index: int | None = None,
     ) -> None:
         state = self._auto_editor_state
         if not state:
@@ -2381,14 +2374,14 @@ class Pages:
             if ref is None:
                 raise ValueError("未找到所选壁纸源分类。")
             params_controls: list[_WSParameterControl] = collected_controls.get(
-                "params", []
+                "params", [],
             )
             params: dict[str, Any] = {}
             for control in params_controls:
                 value = control.getter()
                 if getattr(control.option, "required", False) and value in (None, ""):
                     label = getattr(control.option, "label", None) or getattr(
-                        control.option, "key", "参数"
+                        control.option, "key", "参数",
                     )
                     raise ValueError(f"请填写 {label}。")
                 if value not in (None, ""):
@@ -2411,7 +2404,7 @@ class Pages:
             if not source:
                 raise ValueError("未找到该 IM 图片源。")
             param_controls: list[_IMParameterControl] = collected_controls.get(
-                "params", []
+                "params", [],
             )
             parameters: list[dict[str, Any]] = []
             for control in param_controls:
@@ -2432,7 +2425,7 @@ class Pages:
                         "config": copy.deepcopy(config_meta),
                         "value": value,
                         "key": control.key,
-                    }
+                    },
                 )
             payload = {"source": source}
             if parameters:
@@ -2476,8 +2469,8 @@ class Pages:
         if normalized_type == "bing":
             controls.append(
                 ft.Text(
-                    "Bing 每日壁纸将自动获取最新图片。", size=12, color=ft.Colors.GREY
-                )
+                    "Bing 每日壁纸将自动获取最新图片。", size=12, color=ft.Colors.GREY,
+                ),
             )
 
             def _collect_bing() -> dict[str, Any]:
@@ -2490,7 +2483,7 @@ class Pages:
                     "Windows 聚焦将使用系统 Spotlight 壁纸。",
                     size=12,
                     color=ft.Colors.GREY,
-                )
+                ),
             )
 
             def _collect_spotlight() -> dict[str, Any]:
@@ -2525,12 +2518,12 @@ class Pages:
             for ref in refs:
                 dropdown_options.append(
                     ft.dropdown.Option(
-                        text=f"{ref.source_name} · {ref.label}", key=ref.category_id
-                    )
+                        text=f"{ref.source_name} · {ref.label}", key=ref.category_id,
+                    ),
                 )
                 ref_map[ref.category_id] = ref
             dropdown = ft.Dropdown(
-                label="壁纸源分类", options=dropdown_options, dense=True
+                label="壁纸源分类", options=dropdown_options, dense=True,
             )
             params_column = ft.Column(spacing=8, tight=True)
             collected_controls["dropdown"] = dropdown
@@ -2541,17 +2534,17 @@ class Pages:
                 params_column.controls.clear()
                 if not category_id:
                     params_column.controls.append(
-                        ft.Text("请选择分类。", size=12, color=ft.Colors.GREY)
+                        ft.Text("请选择分类。", size=12, color=ft.Colors.GREY),
                     )
                 else:
                     ref = ref_map.get(category_id)
                     if ref is None:
                         params_column.controls.append(
-                            ft.Text("该分类不可用。", size=12, color=ft.Colors.RED)
+                            ft.Text("该分类不可用。", size=12, color=ft.Colors.RED),
                         )
                     else:
                         record = self._wallpaper_source_manager.get_record(
-                            ref.source_id
+                            ref.source_id,
                         )
                         cached_params = (
                             dict(config.get("params") or {})
@@ -2561,8 +2554,8 @@ class Pages:
                         if record is None:
                             params_column.controls.append(
                                 ft.Text(
-                                    "无法加载壁纸源。", size=12, color=ft.Colors.RED
-                                )
+                                    "无法加载壁纸源。", size=12, color=ft.Colors.RED,
+                                ),
                             )
                         else:
                             preset_id = ref.category.param_preset_id
@@ -2587,7 +2580,7 @@ class Pages:
                                         "该分类无需额外参数。",
                                         size=12,
                                         color=ft.Colors.GREY,
-                                    )
+                                    ),
                                 )
                 collected_controls["params"] = params_controls
                 if params_column.page is not None:
@@ -2620,12 +2613,12 @@ class Pages:
                     )
                     dropdown_options.append(
                         ft.dropdown.Option(
-                            text=f"{category} · {friendly_name}", key=key
-                        )
+                            text=f"{category} · {friendly_name}", key=key,
+                        ),
                     )
                     source_map[key] = item
             dropdown = ft.Dropdown(
-                label="IM 图片源", options=dropdown_options, dense=True
+                label="IM 图片源", options=dropdown_options, dense=True,
             )
             collected_controls["dropdown"] = dropdown
             collected_controls["source_map"] = source_map
@@ -2637,19 +2630,19 @@ class Pages:
                 params_column.controls.clear()
                 if not source_key:
                     params_column.controls.append(
-                        ft.Text("请选择图片源。", size=12, color=ft.Colors.GREY)
+                        ft.Text("请选择图片源。", size=12, color=ft.Colors.GREY),
                     )
                 else:
                     source = source_map.get(source_key)
                     if source is None:
                         params_column.controls.append(
-                            ft.Text("未找到该图片源。", size=12, color=ft.Colors.RED)
+                            ft.Text("未找到该图片源。", size=12, color=ft.Colors.RED),
                         )
                     else:
                         params = source.get("parameters") or []
                         cached_params: dict[str, Any] = {}
                         if existing and source_key == self._im_source_id(
-                            config.get("source") or {}
+                            config.get("source") or {},
                         ):
                             raw_cached = config.get("parameters") or []
                             if isinstance(raw_cached, Sequence):
@@ -2666,7 +2659,7 @@ class Pages:
                                         cache_key = meta.get("name")
                                     if cache_key:
                                         cached_params[str(cache_key)] = item.get(
-                                            "value"
+                                            "value",
                                         )
                         for idx, param in enumerate(params):
                             try:
@@ -2683,8 +2676,8 @@ class Pages:
                         if not params_controls:
                             params_column.controls.append(
                                 ft.Text(
-                                    "该图片源无需参数。", size=12, color=ft.Colors.GREY
-                                )
+                                    "该图片源无需参数。", size=12, color=ft.Colors.GREY,
+                                ),
                             )
                 collected_controls["params"] = params_controls
                 if params_column.page is not None:
@@ -2741,7 +2734,7 @@ class Pages:
                     provider_dropdown,
                     prompt_field,
                     ft.Row([width_field, height_field], spacing=8),
-                ]
+                ],
             )
             collect_fn = _collect_ai
         elif normalized_type == "local_image":
@@ -2755,7 +2748,7 @@ class Pages:
             collect_fn = _collect_local_image
         elif normalized_type == "local_folder":
             path_field = ft.TextField(
-                label="文件夹路径", value=config.get("path") or ""
+                label="文件夹路径", value=config.get("path") or "",
             )
             collected_controls["path"] = path_field
             controls.append(path_field)
@@ -2784,7 +2777,7 @@ class Pages:
             }
 
             cancel_btn = ft.TextButton(
-                "取消", on_click=lambda _: self._auto_close_entry_inline()
+                "取消", on_click=lambda _: self._auto_close_entry_inline(),
             )
             confirm_btn = ft.FilledButton(
                 "确定",
@@ -2796,7 +2789,7 @@ class Pages:
                 [
                     body,
                     ft.Row(
-                        [cancel_btn, confirm_btn], alignment=ft.MainAxisAlignment.END
+                        [cancel_btn, confirm_btn], alignment=ft.MainAxisAlignment.END,
                     ),
                 ],
                 spacing=8,
@@ -2827,12 +2820,12 @@ class Pages:
             content=ft.Container(body, width=420),
             actions=[
                 ft.TextButton(
-                    "取消", on_click=lambda _: self._auto_close_entry_dialog()
+                    "取消", on_click=lambda _: self._auto_close_entry_dialog(),
                 ),
                 ft.FilledButton(
                     "确定",
                     on_click=lambda _: self._auto_confirm_entry(
-                        normalized_type, collect_fn, existing, index
+                        normalized_type, collect_fn, existing, index,
                     ),
                     disabled=not confirm_enabled,
                 ),
@@ -2891,7 +2884,7 @@ class Pages:
         # Clear inline editor area in list editor dialog
         try:
             placeholder: ft.Container | None = self._auto_editor_state.get(
-                "entry_editor"
+                "entry_editor",
             )  # type: ignore[assignment]
         except Exception:
             placeholder = None
@@ -2945,7 +2938,7 @@ class Pages:
         return refs
 
     def _build_plugin_actions(
-        self, factories: list[Callable[[], ft.Control]]
+        self, factories: list[Callable[[], ft.Control]],
     ) -> list[ft.Control]:
         controls: list[ft.Control] = []
         for factory in factories:
@@ -2987,11 +2980,10 @@ class Pages:
 
     def set_route_registrar(self, registrar: Callable[[AppRouteView], None]) -> None:
         """Provide a callback used to register plugin settings routes."""
-
         self._route_register = registrar
         self._register_all_plugin_settings_routes()
 
-    def _make_plugin_settings_route(self, entry: "PluginSettingsPage") -> AppRouteView:
+    def _make_plugin_settings_route(self, entry: PluginSettingsPage) -> AppRouteView:
         route_path = self._settings_route(entry.plugin_identifier)
 
         def _builder(pid: str = entry.plugin_identifier) -> ft.View:
@@ -2999,7 +2991,7 @@ class Pages:
 
         return AppRouteView(route=route_path, builder=_builder)
 
-    def _register_settings_page_route(self, entry: "PluginSettingsPage") -> None:
+    def _register_settings_page_route(self, entry: PluginSettingsPage) -> None:
         if not self._route_register:
             return
         try:
@@ -3017,7 +3009,7 @@ class Pages:
         for entry in self.iter_plugin_settings_pages():
             self._register_settings_page_route(entry)
 
-    def notify_settings_page_registered(self, entry: "PluginSettingsPage") -> None:
+    def notify_settings_page_registered(self, entry: PluginSettingsPage) -> None:
         self._refresh_settings_registry()
         self._register_settings_page_route(entry)
 
@@ -3060,7 +3052,7 @@ class Pages:
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("首次运行完成后跳转失败: {error}", error=str(exc))
 
-    def iter_plugin_settings_pages(self) -> list["PluginSettingsPage"]:
+    def iter_plugin_settings_pages(self) -> list[PluginSettingsPage]:
         self._refresh_settings_registry()
         return list(self._settings_pages)
 
@@ -3077,7 +3069,7 @@ class Pages:
 
         self._settings_tabs.selected_index = self._settings_tab_indices[normalized]
         logger.info(
-            f"切换设置页面标签到 {normalized}({self._settings_tabs.selected_index})"
+            f"切换设置页面标签到 {normalized}({self._settings_tabs.selected_index})",
         )
         self.page.update()
         return True
@@ -3104,7 +3096,7 @@ class Pages:
         self.page.update()
         return True
 
-    def _resolve_plugin_runtime(self, plugin_id: str) -> Optional[PluginRuntimeInfo]:
+    def _resolve_plugin_runtime(self, plugin_id: str) -> PluginRuntimeInfo | None:
         for runtime in self._plugin_runtime_cache:
             if runtime.identifier == plugin_id:
                 return runtime
@@ -3148,12 +3140,12 @@ class Pages:
 
         if registration:
             content_controls.append(
-                ft.Text(registration.title, size=20, weight=ft.FontWeight.BOLD)
+                ft.Text(registration.title, size=20, weight=ft.FontWeight.BOLD),
             )
 
         if description_text:
             content_controls.append(
-                ft.Text(description_text, size=12, color=ft.Colors.GREY)
+                ft.Text(description_text, size=12, color=ft.Colors.GREY),
             )
 
         if registration and registration.description:
@@ -3162,7 +3154,7 @@ class Pages:
                     registration.description,
                     size=12,
                     color=ft.Colors.GREY,
-                )
+                ),
             )
 
         content_controls.append(plugin_control)
@@ -3286,7 +3278,7 @@ class Pages:
                 spacing=12,
                 alignment=ft.MainAxisAlignment.CENTER,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            )
+            ),
         ]
         self.page.update()
 
@@ -3349,7 +3341,7 @@ class Pages:
                 "查看详情",
                 icon=ft.Icons.INFO,
                 on_click=lambda _: self._show_plugin_details(runtime),
-            )
+            ),
         ]
 
         self._refresh_settings_registry()
@@ -3360,11 +3352,11 @@ class Pages:
                     settings_page.button_label,
                     icon=settings_page.icon or ft.Icons.TUNE,
                     on_click=lambda _: self._open_plugin_settings_page(runtime),
-                )
+                ),
             )
 
         all_permissions = set(runtime.permissions_required) | set(
-            runtime.permissions_granted.keys()
+            runtime.permissions_granted.keys(),
         )
         if all_permissions:
             action_buttons.append(
@@ -3372,7 +3364,7 @@ class Pages:
                     "管理权限",
                     icon=ft.Icons.ADMIN_PANEL_SETTINGS,
                     on_click=lambda _: self._show_permission_dialog(runtime),
-                )
+                ),
             )
 
         if not runtime.builtin:
@@ -3381,7 +3373,7 @@ class Pages:
                     "删除插件",
                     icon=ft.Icons.DELETE,
                     on_click=lambda _: self._confirm_delete_plugin(runtime),
-                )
+                ),
             )
 
         header = ft.Row(
@@ -3451,7 +3443,7 @@ class Pages:
                         size=11,
                         color=ft.Colors.RED_700,
                     ),
-                )
+                ),
             )
         if prompt_permissions:
             badges.append(
@@ -3464,7 +3456,7 @@ class Pages:
                         size=11,
                         color=ft.Colors.AMBER_800,
                     ),
-                )
+                ),
             )
 
         if badges:
@@ -3474,7 +3466,7 @@ class Pages:
                     spacing=6,
                     run_spacing=6,
                     wrap=True,
-                )
+                ),
             )
 
         controls.append(
@@ -3482,7 +3474,7 @@ class Pages:
                 f"类型：{self._format_plugin_kind(runtime.plugin_type)}",
                 size=12,
                 color=ft.Colors.GREY,
-            )
+            ),
         )
 
         dependency_summary = self._dependency_summary(runtime)
@@ -3491,14 +3483,14 @@ class Pages:
                 f"依赖：{dependency_summary}",
                 size=12,
                 color=ft.Colors.ERROR if runtime.dependency_issues else ft.Colors.GREY,
-            )
+            ),
         )
 
         if runtime.error:
             controls.append(ft.Text(f"错误：{runtime.error}", color=ft.Colors.ERROR))
 
         controls.append(
-            ft.Text(f"权限：{permissions_summary}", size=12, color=ft.Colors.GREY)
+            ft.Text(f"权限：{permissions_summary}", size=12, color=ft.Colors.GREY),
         )
         controls.append(
             ft.Row(
@@ -3507,7 +3499,7 @@ class Pages:
                 run_spacing=6,
                 wrap=True,
                 vertical_alignment=ft.CrossAxisAlignment.START,
-            )
+            ),
         )
 
         return ft.Card(
@@ -3556,7 +3548,7 @@ class Pages:
         return "、".join(parts)
 
     def _dependency_detail_controls(
-        self, runtime: PluginRuntimeInfo
+        self, runtime: PluginRuntimeInfo,
     ) -> list[ft.Control]:
         if not runtime.dependencies:
             return [ft.Text("无依赖", size=12, color=ft.Colors.GREY)]
@@ -3569,7 +3561,7 @@ class Pages:
                         f"{spec.describe()} - {issue}",
                         size=12,
                         color=ft.Colors.ERROR,
-                    )
+                    ),
                 )
             else:
                 controls.append(
@@ -3577,13 +3569,13 @@ class Pages:
                         f"{spec.describe()} - 已满足",
                         size=12,
                         color=ft.Colors.GREY,
-                    )
+                    ),
                 )
         return controls
 
     def _format_permissions(self, runtime: PluginRuntimeInfo) -> str:
         keys = sorted(
-            set(runtime.permission_states.keys()) | set(runtime.permissions_required)
+            set(runtime.permission_states.keys()) | set(runtime.permissions_required),
         )
         if not keys:
             return "无需权限"
@@ -3616,7 +3608,7 @@ class Pages:
             ft.ListTile(
                 title=ft.Text("描述"),
                 subtitle=ft.Text(
-                    manifest.description if manifest else runtime.description or "无"
+                    manifest.description if manifest else runtime.description or "无",
                 ),
             ),
             ft.ListTile(
@@ -3635,7 +3627,7 @@ class Pages:
                     title=ft.Text("主页"),
                     subtitle=ft.Text(manifest.homepage, selectable=True),
                     on_click=lambda _: self.page.launch_url(manifest.homepage),
-                )
+                ),
             )
 
         info_rows.extend(
@@ -3645,14 +3637,14 @@ class Pages:
                     subtitle=ft.Text(
                         str(runtime.source_path)
                         if runtime.source_path
-                        else runtime.module_name or "未知"
+                        else runtime.module_name or "未知",
                     ),
                 ),
                 ft.ListTile(
                     title=ft.Text("状态"),
                     subtitle=ft.Text(self._status_display(runtime.status)[0]),
                 ),
-            ]
+            ],
         )
 
         if runtime.error:
@@ -3660,21 +3652,21 @@ class Pages:
                 ft.ListTile(
                     title=ft.Text("错误"),
                     subtitle=ft.Text(runtime.error, color=ft.Colors.ERROR),
-                )
+                ),
             )
 
         permissions_text = self._format_permissions(runtime)
         info_rows.append(
-            ft.ListTile(title=ft.Text("权限"), subtitle=ft.Text(permissions_text))
+            ft.ListTile(title=ft.Text("权限"), subtitle=ft.Text(permissions_text)),
         )
 
         info_rows.append(
             ft.ListTile(
                 title=ft.Text("依赖"),
                 subtitle=ft.Column(
-                    self._dependency_detail_controls(runtime), spacing=4
+                    self._dependency_detail_controls(runtime), spacing=4,
                 ),
-            )
+            ),
         )
 
         dialog = ft.AlertDialog(
@@ -3683,7 +3675,7 @@ class Pages:
             content=ft.Container(
                 width=400,
                 content=ft.Column(
-                    info_rows, tight=True, spacing=4, scroll=ft.ScrollMode.AUTO
+                    info_rows, tight=True, spacing=4, scroll=ft.ScrollMode.AUTO,
                 ),
             ),
             actions=[
@@ -3697,7 +3689,7 @@ class Pages:
     def _show_permission_dialog(self, runtime: PluginRuntimeInfo) -> None:
         self._sync_known_permissions()
         requested = sorted(
-            set(runtime.permission_states.keys()) | set(runtime.permissions_required)
+            set(runtime.permission_states.keys()) | set(runtime.permissions_required),
         )
 
         if not requested:
@@ -3722,7 +3714,7 @@ class Pages:
             for permission_id, choice in list(pending_choices.items()):
                 new_state = self._state_from_choice(choice)
                 if not self._update_permission_state(
-                    runtime.identifier, permission_id, new_state
+                    runtime.identifier, permission_id, new_state,
                 ):
                     _update_apply_state()
                     return
@@ -3774,11 +3766,11 @@ class Pages:
                         ],
                         on_change=_on_choice,
                     ),
-                )
+                ),
             )
 
         apply_button = ft.FilledButton(
-            "确定", icon=ft.Icons.CHECK, disabled=True, on_click=_submit
+            "确定", icon=ft.Icons.CHECK, disabled=True, on_click=_submit,
         )
         action_holder["button"] = apply_button
 
@@ -3788,7 +3780,7 @@ class Pages:
             content=ft.Container(
                 width=420,
                 content=ft.Column(
-                    rows, tight=True, spacing=4, scroll=ft.ScrollMode.AUTO
+                    rows, tight=True, spacing=4, scroll=ft.ScrollMode.AUTO,
                 ),
             ),
             actions=[
@@ -3815,7 +3807,7 @@ class Pages:
             return False
 
     def _update_permission_state(
-        self, identifier: str, permission: str, state: PermissionState
+        self, identifier: str, permission: str, state: PermissionState,
     ) -> bool:
         if not self.plugin_service:
             self._show_snackbar("插件服务不可用。", error=True)
@@ -3907,7 +3899,7 @@ class Pages:
     def _ensure_favorite_file_picker(self) -> None:
         if self._favorite_file_picker is None:
             self._favorite_file_picker = ft.FilePicker(
-                on_result=self._handle_add_local_favorite_result
+                on_result=self._handle_add_local_favorite_result,
             )
         if self._favorite_file_picker not in self.page.overlay:
             self.page.overlay.append(self._favorite_file_picker)
@@ -3931,7 +3923,7 @@ class Pages:
             )
 
     def _handle_add_local_favorite_result(
-        self, event: ft.FilePickerResultEvent
+        self, event: ft.FilePickerResultEvent,
     ) -> None:
         if not event.files:
             return
@@ -3961,7 +3953,7 @@ class Pages:
             self._show_snackbar(f"已添加 {count} 项本地收藏。")
         elif count and errors:
             self._show_snackbar(
-                f"已添加 {count} 项本地收藏，{errors} 项失败。", error=True
+                f"已添加 {count} 项本地收藏，{errors} 项失败。", error=True,
             )
         elif errors:
             self._show_snackbar("添加本地收藏失败。", error=True)
@@ -3969,7 +3961,7 @@ class Pages:
     def _ensure_plugin_file_picker(self) -> None:
         if self._plugin_file_picker is None:
             self._plugin_file_picker = ft.FilePicker(
-                on_result=self._handle_import_result
+                on_result=self._handle_import_result,
             )
         if self._plugin_file_picker not in self.page.overlay:
             self.page.overlay.append(self._plugin_file_picker)
@@ -4006,7 +3998,7 @@ class Pages:
 
         if not result.identifier:
             self._show_snackbar(
-                "插件已导入，但无法识别 manifest，将使用默认设置重新加载。"
+                "插件已导入，但无法识别 manifest，将使用默认设置重新加载。",
             )
             try:
                 self.plugin_service.reload()
@@ -4058,13 +4050,13 @@ class Pages:
                             ),
                         ],
                         spacing=4,
-                    )
+                    ),
                 )
         else:
             permission_controls.append(
                 ft.Text(
-                    "该插件未请求额外权限，可直接加载。", size=12, color=ft.Colors.GREY
-                )
+                    "该插件未请求额外权限，可直接加载。", size=12, color=ft.Colors.GREY,
+                ),
             )
 
         warning_text: list[ft.Control] = []
@@ -4074,7 +4066,7 @@ class Pages:
                     f"警告：解析 manifest 时出现问题（{result.error}）。将尝试继续加载。",
                     color=ft.Colors.ERROR,
                     size=12,
-                )
+                ),
             )
 
         def _on_accept(_: ft.ControlEvent) -> None:
@@ -4118,7 +4110,7 @@ class Pages:
         self._open_dialog(dialog)
 
     def _apply_import_permissions(
-        self, identifier: str, toggles: dict[str, ft.Dropdown]
+        self, identifier: str, toggles: dict[str, ft.Dropdown],
     ) -> None:
         if not self.plugin_service:
             return
@@ -4147,7 +4139,7 @@ class Pages:
                 subtitle=ft.Text(permission.description),
             )
             for permission in sorted(
-                self._known_permissions.values(), key=lambda p: p.identifier
+                self._known_permissions.values(), key=lambda p: p.identifier,
             )
         ]
 
@@ -4176,7 +4168,7 @@ class Pages:
                     leading=ft.Icon(ft.Icons.EVENT),
                     title=ft.Text(definition.event_type, selectable=True),
                     subtitle=ft.Text(f"{definition.description}\n{permission_text}"),
-                )
+                ),
             )
 
         return ft.Column(
@@ -4227,9 +4219,9 @@ class Pages:
     # ------------------------------------------------------------------
     # plugin event helpers
     # ------------------------------------------------------------------
-    def _bing_payload_data(self) -> Dict[str, Any]:
+    def _bing_payload_data(self) -> dict[str, Any]:
         data = self.bing_wallpaper or {}
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "available": bool(self.bing_wallpaper_url),
             "title": data.get("title"),
             "description": data.get("copyright") or data.get("desc"),
@@ -4239,7 +4231,7 @@ class Pages:
         }
         return payload
 
-    def _spotlight_payload_data(self) -> Dict[str, Any]:
+    def _spotlight_payload_data(self) -> dict[str, Any]:
         items = self.spotlight_wallpaper or []
         idx = self.spotlight_current_index if items else None
         current = items[idx] if idx is not None and idx < len(items) else None
@@ -4252,7 +4244,7 @@ class Pages:
             "items": items,
         }
 
-    def _resolve_bing_entry_id(self, payload: Dict[str, Any]) -> str:
+    def _resolve_bing_entry_id(self, payload: dict[str, Any]) -> str:
         raw = payload.get("raw") or {}
         if isinstance(raw, dict):
             for key in ("startdate", "enddate", "date"):
@@ -4265,7 +4257,7 @@ class Pages:
             return str(payload["image_url"])
         return f"bing-{int(time.time())}"
 
-    def _resolve_spotlight_entry_id(self, payload: Dict[str, Any]) -> str:
+    def _resolve_spotlight_entry_id(self, payload: dict[str, Any]) -> str:
         current = payload.get("current")
         if isinstance(current, dict):
             for key in ("id", "identifier", "sha256", "url"):
@@ -4287,7 +4279,7 @@ class Pages:
         payload_with_meta["namespace"] = "resource.bing"
         try:
             snapshot = self._global_data.publish(
-                "resource.bing", entry_id, payload_with_meta
+                "resource.bing", entry_id, payload_with_meta,
             )
             self._bing_data_id = snapshot.get("identifier")
         except GlobalDataError as exc:
@@ -4314,7 +4306,7 @@ class Pages:
         except GlobalDataError as exc:
             logger.error(f"写入 Spotlight 全局数据失败: {exc}")
 
-    def _emit_resource_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+    def _emit_resource_event(self, event_type: str, payload: dict[str, Any]) -> None:
         if self.event_bus is None:
             return
         try:
@@ -4327,9 +4319,9 @@ class Pages:
         source: str,
         action: str,
         file_path: str,
-        extra: Dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> None:
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "source": source,
             "action": action,
             "file_path": str(file_path),
@@ -4342,20 +4334,20 @@ class Pages:
             payload.update(extra)
         self._emit_resource_event("resource.download.completed", payload)
 
-    def _bing_event_payload(self) -> Dict[str, Any]:
+    def _bing_event_payload(self) -> dict[str, Any]:
         payload = self._bing_payload_data()
         payload["data_id"] = self._bing_data_id
         payload["namespace"] = "resource.bing"
         return payload
 
-    def _spotlight_event_payload(self) -> Dict[str, Any]:
+    def _spotlight_event_payload(self) -> dict[str, Any]:
         payload = self._spotlight_payload_data()
         payload["data_id"] = self._spotlight_data_id
         payload["namespace"] = "resource.spotlight"
         return payload
 
     def _emit_bing_action(
-        self, action: str, success: bool, extra: Dict[str, Any] | None = None
+        self, action: str, success: bool, extra: dict[str, Any] | None = None,
     ) -> None:
         payload = {
             "action": action,
@@ -4370,7 +4362,7 @@ class Pages:
         self,
         action: str,
         success: bool,
-        extra: Dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> None:
         payload = {
             "action": action,
@@ -4448,7 +4440,7 @@ class Pages:
                 data = await response.json()
         text = str(data.get("hitokoto") or "").strip()
         author = str(
-            data.get("from_who") or data.get("creator") or data.get("author") or ""
+            data.get("from_who") or data.get("creator") or data.get("author") or "",
         ).strip()
         source = str(data.get("from") or data.get("origin") or "").strip()
         if not text:
@@ -4482,7 +4474,7 @@ class Pages:
             payload.get("name")
             or payload.get("catalog")
             or payload.get("src_url")
-            or ""
+            or "",
         ).strip()
         return {"text": text, "author": author, "source": source}
 
@@ -4569,9 +4561,9 @@ class Pages:
                                 color=ft.Colors.ON_SECONDARY,
                             ),
                             ft.Text("未检测到壁纸路径，请先刷新~"),
-                        ]
-                    )
-                )
+                        ],
+                    ),
+                ),
             )
             return
         pyperclip.copy(self.wallpaper_path)
@@ -4581,9 +4573,9 @@ class Pages:
                     controls=[
                         ft.Icon(name=ft.Icons.DONE, color=ft.Colors.ON_SECONDARY),
                         ft.Text("壁纸路径已复制~ (。・∀・)"),
-                    ]
-                )
-            )
+                    ],
+                ),
+            ),
         )
 
     def _refresh_home(self, _):
@@ -4600,7 +4592,7 @@ class Pages:
             base = self.bing_wallpaper.get("url")
             if base:
                 self.bing_wallpaper_url = f"https://www.bing.com{base}".replace(
-                    "1920x1080", "UHD"
+                    "1920x1080", "UHD",
                 )
         except Exception:
             self.bing_wallpaper_url = None
@@ -4608,7 +4600,7 @@ class Pages:
             self.bing_loading = False
             self._publish_bing_data()
             self._emit_resource_event(
-                "resource.bing.updated", self._bing_event_payload()
+                "resource.bing.updated", self._bing_event_payload(),
             )
             self._refresh_bing_tab()
 
@@ -4630,7 +4622,7 @@ class Pages:
             self.spotlight_loading = False
             self._publish_spotlight_data()
             self._emit_resource_event(
-                "resource.spotlight.updated", self._spotlight_event_payload()
+                "resource.spotlight.updated", self._spotlight_event_payload(),
             )
             self._refresh_spotlight_tab()
 
@@ -4651,7 +4643,7 @@ class Pages:
     def _ensure_home_export_picker(self) -> None:
         if self._home_export_picker is None:
             self._home_export_picker = ft.FilePicker(
-                on_result=self._handle_home_export_result
+                on_result=self._handle_home_export_result,
             )
         if self.page and self._home_export_picker not in self.page.overlay:
             self.page.overlay.append(self._home_export_picker)
@@ -4820,7 +4812,7 @@ class Pages:
                                 ],
                                 alignment=ft.MainAxisAlignment.END,
                             ),
-                        ]
+                        ],
                     ),
                     self.file_name,
                     ft.Container(
@@ -4882,7 +4874,7 @@ class Pages:
             self.refresh_home_quote()
 
     def _handle_home_hitokoto_category_change(
-        self, category: str, selected: bool
+        self, category: str, selected: bool,
     ) -> None:
         existing = app_config.get("home_page.hitokoto.categories", [])
         values = [
@@ -4897,7 +4889,7 @@ class Pages:
             self.refresh_home_quote()
 
     def _build_home_custom_entry_row(
-        self, index: int, item: dict[str, str]
+        self, index: int, item: dict[str, str],
     ) -> ft.Control:
         sentence_field = ft.TextField(
             label=f"语句 {index + 1}",
@@ -4927,7 +4919,7 @@ class Pages:
             icon=ft.Icons.DELETE_FOREVER,
             tooltip="删除此语句",
             on_click=lambda _=None, idx=index: self._handle_home_custom_remove_entry(
-                idx
+                idx,
             ),
         )
         return ft.Card(
@@ -4949,7 +4941,7 @@ class Pages:
                     ],
                     spacing=12,
                 ),
-            )
+            ),
         )
 
     def _refresh_home_custom_entries_ui(self) -> None:
@@ -4962,7 +4954,7 @@ class Pages:
                     "暂无自定义语句。点击下方“新增语句”按钮进行添加。",
                     size=12,
                     color=ft.Colors.GREY,
-                )
+                ),
             )
         else:
             for idx, item in enumerate(self._home_custom_entries):
@@ -4974,7 +4966,7 @@ class Pages:
     def _handle_home_custom_add_entry(self, _: ft.ControlEvent | None = None) -> None:
         self._home_custom_entries.append({"text": "", "author": "", "source": ""})
         app_config.set(
-            "home_page.custom.items", copy.deepcopy(self._home_custom_entries)
+            "home_page.custom.items", copy.deepcopy(self._home_custom_entries),
         )
         self._refresh_home_custom_entries_ui()
 
@@ -4982,7 +4974,7 @@ class Pages:
         if 0 <= index < len(self._home_custom_entries):
             self._home_custom_entries.pop(index)
             app_config.set(
-                "home_page.custom.items", copy.deepcopy(self._home_custom_entries)
+                "home_page.custom.items", copy.deepcopy(self._home_custom_entries),
             )
             self._refresh_home_custom_entries_ui()
             if str(app_config.get("home_page.source", "hitokoto")).lower() == "custom":
@@ -5001,19 +4993,19 @@ class Pages:
         value = str(getattr(e.control, "value", "") or "")
         self._home_custom_entries[index][field] = value
         app_config.set(
-            "home_page.custom.items", copy.deepcopy(self._home_custom_entries)
+            "home_page.custom.items", copy.deepcopy(self._home_custom_entries),
         )
 
     def _ensure_home_custom_file_pickers(self) -> None:
         changed = False
         if self._home_custom_import_picker is None:
             self._home_custom_import_picker = ft.FilePicker(
-                on_result=self._handle_home_custom_import_result
+                on_result=self._handle_home_custom_import_result,
             )
             changed = True
         if self._home_custom_export_picker is None:
             self._home_custom_export_picker = ft.FilePicker(
-                on_result=self._handle_home_custom_export_result
+                on_result=self._handle_home_custom_export_result,
             )
             changed = True
         for picker in (
@@ -5038,7 +5030,7 @@ class Pages:
         )
 
     def _handle_home_custom_import_result(
-        self, event: ft.FilePickerResultEvent
+        self, event: ft.FilePickerResultEvent,
     ) -> None:
         if not event.files:
             return
@@ -5079,7 +5071,7 @@ class Pages:
 
         self._home_custom_entries = imported
         app_config.set(
-            "home_page.custom.items", copy.deepcopy(self._home_custom_entries)
+            "home_page.custom.items", copy.deepcopy(self._home_custom_entries),
         )
         self._refresh_home_custom_entries_ui()
         if str(app_config.get("home_page.source", "hitokoto")).lower() == "custom":
@@ -5101,7 +5093,7 @@ class Pages:
         )
 
     def _handle_home_custom_export_result(
-        self, event: ft.FilePickerResultEvent
+        self, event: ft.FilePickerResultEvent,
     ) -> None:
         if not event.path:
             return
@@ -5125,7 +5117,7 @@ class Pages:
 
     def _build_home_settings_section(self) -> ft.Control:
         source_value = str(
-            app_config.get("home_page.source", "hitokoto") or "hitokoto"
+            app_config.get("home_page.source", "hitokoto") or "hitokoto",
         ).lower()
 
         self._home_source_dropdown = ft.Dropdown(
@@ -5152,7 +5144,7 @@ class Pages:
         )
 
         hitokoto_region = str(
-            app_config.get("home_page.hitokoto.region", "domestic") or "domestic"
+            app_config.get("home_page.hitokoto.region", "domestic") or "domestic",
         ).lower()
         if hitokoto_region not in {"domestic", "international"}:
             hitokoto_region = "domestic"
@@ -5181,7 +5173,7 @@ class Pages:
                 value=code in selected_categories,
                 on_change=lambda e,
                 cat=code: self._handle_home_hitokoto_category_change(
-                    cat, bool(getattr(e.control, "value", False))
+                    cat, bool(getattr(e.control, "value", False)),
                 ),
             )
             self._home_hitokoto_category_checks[code] = checkbox
@@ -5353,7 +5345,7 @@ class Pages:
                 "fixed_image": config.get("fixed_image") or None,
                 "order": self._normalize_startup_order(config.get("order")),
                 "delay_seconds": max(0, int(config.get("delay_seconds", 0) or 0)),
-            }
+            },
         )
         app_config.set("startup.wallpaper_change", base)
         self._refresh_startup_wallpaper_controls()
@@ -5391,7 +5383,7 @@ class Pages:
                     "暂无可用自动更换列表，请先在“壁纸”页创建。",
                     size=12,
                     color=ft.Colors.GREY,
-                )
+                ),
             )
         else:
             for auto_list in lists:
@@ -5679,18 +5671,17 @@ class Pages:
 
     def _build_download_settings_section(self) -> ft.Control:
         """构建下载设置页面"""
-        
         # 获取当前下载位置配置
         current_location = download_manager.get_current_location(app_config)
-        
+
         # 下载位置选择
         location_options = []
         available_locations = download_manager.get_available_locations(app_config)
         for loc in available_locations:
             location_options.append(
-                ft.DropdownOption(key=loc.type, text=f"{loc.display_name} ({loc.path})")
+                ft.DropdownOption(key=loc.type, text=f"{loc.display_name} ({loc.path})"),
             )
-        
+
         self._download_location_dropdown = ft.Dropdown(
             label="下载位置",
             value=current_location.type,
@@ -5698,7 +5689,7 @@ class Pages:
             on_change=self._handle_download_location_change,
             width=400,
         )
-        
+
         # 自定义路径输入（仅在选择自定义位置时显示）
         custom_path_value = app_config.get("download.custom_path", "")
         self._download_custom_path_field = ft.TextField(
@@ -5709,53 +5700,53 @@ class Pages:
             visible=current_location.type == "custom",
             width=400,
         )
-        
+
         # 路径验证状态
         self._download_path_status = ft.Text(
             "",
             size=12,
             color=ft.Colors.GREY,
-            visible=False
+            visible=False,
         )
-        
+
         # 下载统计信息
         stats = download_manager.get_download_stats(app_config)
         used_space_text = download_manager.format_file_size(stats.total_size)
         file_count_text = f"{stats.total_files} 个文件"
         last_download_text = "从未下载" if not stats.last_download_time else \
             f"最后下载: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stats.last_download_time))}"
-        
+
         self._download_stats_text = ft.Text(
             f"已用空间: {used_space_text} | {file_count_text} | {last_download_text}",
             size=12,
             color=ft.Colors.GREY,
         )
-        
+
         # 按钮组
         open_folder_button = ft.FilledTonalButton(
             "打开文件夹",
             icon=ft.Icons.FOLDER_OPEN,
             on_click=self._handle_open_download_folder,
         )
-        
+
         refresh_stats_button = ft.FilledTonalButton(
             "刷新统计",
             icon=ft.Icons.REFRESH,
             on_click=self._handle_refresh_download_stats,
         )
-        
+
         clear_folder_button = ft.FilledTonalButton(
             "清空文件夹",
             icon=ft.Icons.DELETE_SWEEP,
             on_click=self._handle_clear_download_folder,
         )
-        
+
         optimize_button = ft.FilledTonalButton(
             "优化图片",
             icon=ft.Icons.IMAGE,
             on_click=self._handle_optimize_images,
         )
-        
+
         # 当前路径显示
         current_path_text = f"当前路径: {current_location.path}"
         self._current_path_display = ft.Text(
@@ -5763,7 +5754,7 @@ class Pages:
             size=12,
             color=ft.Colors.GREY_600,
         )
-        
+
         return ft.Column(
             controls=[
                 ft.Text("下载设置", size=18, weight=ft.FontWeight.BOLD),
@@ -5773,14 +5764,14 @@ class Pages:
                     color=ft.Colors.GREY,
                 ),
                 ft.Divider(),
-                
+
                 # 下载位置配置
                 ft.Text("下载位置", size=16, weight=ft.FontWeight.BOLD),
                 self._download_location_dropdown,
                 self._download_custom_path_field,
                 self._download_path_status,
                 ft.Divider(),
-                
+
                 # 统计信息
                 ft.Text("下载统计", size=16, weight=ft.FontWeight.BOLD),
                 self._current_path_display,
@@ -5791,7 +5782,7 @@ class Pages:
                     run_spacing=12,
                     wrap=True,
                 ),
-                
+
                 # 优化进度显示区域
                 ft.Column(
                     controls=[
@@ -5832,7 +5823,7 @@ class Pages:
             spacing=16,
             tight=True,
         )
-    
+
     # 下载设置事件处理方法
     def _handle_download_location_change(self, e: ft.ControlEvent):
         """处理下载位置改变"""
@@ -5878,7 +5869,7 @@ class Pages:
 
         # 设置下载位置
         success = download_manager.set_download_location(
-            app_config, new_location_type, custom_path
+            app_config, new_location_type, custom_path,
         )
 
         if success:
@@ -5886,18 +5877,18 @@ class Pages:
             self._show_snackbar("下载位置已更新")
         else:
             self._show_snackbar("设置下载位置失败", error=True)
-    
+
     def _handle_download_custom_path_change(self, e: ft.ControlEvent):
         """处理自定义路径改变"""
         new_path = e.control.value or ""
         if new_path:
             is_valid, message = download_manager.validate_custom_path(new_path)
-            if hasattr(self, '_download_path_status'):
+            if hasattr(self, "_download_path_status"):
                 self._download_path_status.value = message
                 self._download_path_status.color = ft.Colors.GREEN if is_valid else ft.Colors.RED_400
                 self._download_path_status.visible = True
                 self._download_path_status.update()
-            
+
             if is_valid:
                 app_config.set("download.custom_path", new_path)
                 # 如果当前选择的是自定义位置，则更新下载位置
@@ -5905,27 +5896,27 @@ class Pages:
                     getattr(self, "_download_location_dropdown", None).value
                     if getattr(self, "_download_location_dropdown", None)
                     else app_config.get(
-                        "download.location_type", DownloadLocationType.SYSTEM_DOWNLOAD
+                        "download.location_type", DownloadLocationType.SYSTEM_DOWNLOAD,
                     )
                 )
                 if selected_type == DownloadLocationType.CUSTOM:
                     success = download_manager.set_download_location(
-                        app_config, DownloadLocationType.CUSTOM, new_path
+                        app_config, DownloadLocationType.CUSTOM, new_path,
                     )
                     if success:
                         self._refresh_download_path_display()
                         self._show_snackbar("下载位置已更新")
                     else:
                         self._show_snackbar("保存自定义路径失败", error=True)
-    
+
     def _refresh_download_path_display(self):
         """刷新当前路径显示"""
         current_location = download_manager.get_current_location(app_config)
         current_path_text = f"当前路径: {current_location.path}"
-        if hasattr(self, '_current_path_display'):
+        if hasattr(self, "_current_path_display"):
             self._current_path_display.value = current_path_text
             self._current_path_display.update()
-    
+
     def _handle_open_download_folder(self, e: ft.ControlEvent):
         """处理打开下载文件夹"""
         success = download_manager.open_download_folder(app_config)
@@ -5933,7 +5924,7 @@ class Pages:
             self._show_snackbar("已打开下载文件夹")
         else:
             self._show_snackbar("打开下载文件夹失败", error=True)
-    
+
     def _handle_refresh_download_stats(self, e: ft.ControlEvent):
         """处理刷新下载统计"""
         stats = download_manager.get_download_stats(app_config)
@@ -5941,13 +5932,13 @@ class Pages:
         file_count_text = f"{stats.total_files} 个文件"
         last_download_text = "从未下载" if not stats.last_download_time else \
             f"最后下载: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stats.last_download_time))}"
-        
-        if hasattr(self, '_download_stats_text'):
+
+        if hasattr(self, "_download_stats_text"):
             self._download_stats_text.value = f"已用空间: {used_space_text} | {file_count_text} | {last_download_text}"
             self._download_stats_text.update()
-        
+
         self._show_snackbar("统计信息已刷新")
-    
+
     def _handle_clear_download_folder(self, e: ft.ControlEvent):
         """处理清空下载文件夹"""
         # 显示确认对话框
@@ -5967,20 +5958,20 @@ class Pages:
                 ),
             ],
         )
-        
+
         self._download_clear_dialog = confirm_dialog
         self.page.dialog = confirm_dialog
         confirm_dialog.open = True
         self.page.open(confirm_dialog)
         self.page.update()
-    
+
     def _confirm_clear_download_folder(self):
         """确认清空下载文件夹"""
         success, message = download_manager.clear_download_folder(app_config)
 
         # 关闭下载清空确认对话框
         self._close_clear_download_dialog()
-        
+
         # 显示结果
         if success:
             self._show_snackbar(message)
@@ -6003,10 +5994,10 @@ class Pages:
                 # 兼容性处理：如果 close 过程中出错，不影响后续 UI 更新
                 pass
             self.page.update()
-    
+
     def _show_snackbar(self, message: str, error: bool = False):
         """显示提示消息"""
-        if hasattr(self, 'page') and self.page:
+        if hasattr(self, "page") and self.page:
             snack = ft.SnackBar(
                 content=ft.Text(message),
                 bgcolor=ft.Colors.RED_400 if error else ft.Colors.ON_SURFACE,
@@ -6015,29 +6006,29 @@ class Pages:
             snack.open = True
             self.page.open(snack)
             self.page.update()
-    
+
     # 图片优化相关方法
     def _handle_optimize_images(self, e: ft.ControlEvent):
         """处理优化图片按钮点击"""
         # 检查是否已在优化中
-        if hasattr(self, '_is_optimizing') and self._is_optimizing:
+        if hasattr(self, "_is_optimizing") and self._is_optimizing:
             self._show_snackbar("图片优化正在进行中，请等待完成", error=True)
             return
-        
+
         folder_path = download_manager.get_download_folder_path(app_config)
         if not folder_path or not folder_path.exists():
             self._show_snackbar("下载文件夹不存在，无法优化", error=True)
             return
-        
+
         # 检查是否有图片文件
         image_files = image_optimizer.get_image_files(folder_path)
         if not image_files:
             self._show_snackbar("没有找到可优化的图片文件", error=True)
             return
-        
+
         # 显示优化对话框
         self._show_optimize_dialog(len(image_files))
-    
+
     def _show_optimize_dialog(self, image_count: int):
         """显示图片优化对话框"""
         # 质量选择滑块
@@ -6048,7 +6039,7 @@ class Pages:
             value=85,
             label="{value}%",
         )
-        
+
         # 进度条
         progress_bar = ft.ProgressBar(
             width=300,
@@ -6057,14 +6048,14 @@ class Pages:
             color=ft.Colors.PRIMARY,
             visible=False,
         )
-        
+
         # 状态文本
         status_text = ft.Text(
             f"准备优化 {image_count} 张图片...",
             size=14,
             visible=True,
         )
-        
+
         # 统计信息文本
         stats_text = ft.Text(
             "",
@@ -6072,54 +6063,54 @@ class Pages:
             color=ft.Colors.GREY_600,
             visible=True,
         )
-        
+
         def on_start_optimize(e):
             """开始优化"""
             quality = int(quality_slider.value)
-            
+
             # 设置优化状态
             self._is_optimizing = True
-            
+
             # 禁用下载设置页面的按钮和控件
             self._disable_download_controls()
-            
+
             # 显示进度显示区域
             self._show_optimize_progress_ui()
-            
+
             # 禁用对话框控件
             start_button.disabled = True
             cancel_button.disabled = False
             quality_slider.disabled = True
-            
+
             # 显示进度条
             progress_bar.visible = True
             progress_bar.value = 0
             status_text.value = "正在优化..."
             stats_text.visible = True
             stats_text.value = "准备开始..."
-            
+
             self.page.update()
-            
+
             # 开始异步优化
             self.page.run_task(self._start_image_optimization, quality, progress_bar, status_text, stats_text)
-        
+
         def on_cancel_optimize(e):
             """取消优化"""
             self._close_optimize_dialog()
-        
+
         start_button = ft.ElevatedButton(
             "开始优化",
             icon=ft.Icons.PLAY_ARROW,
             on_click=on_start_optimize,
         )
-        
+
         cancel_button = ft.TextButton(
             "取消",
             icon=ft.Icons.CANCEL,
             on_click=on_cancel_optimize,
             disabled=True,
         )
-        
+
         optimize_dialog = ft.AlertDialog(
             title=ft.Text("图片优化", size=18, weight=ft.FontWeight.BOLD),
             content=ft.Container(
@@ -6143,51 +6134,51 @@ class Pages:
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
-        
+
         self._optimize_dialog = optimize_dialog
         self.page.dialog = optimize_dialog
         optimize_dialog.open = True
         self.page.open(optimize_dialog)
         self.page.update()
-    
+
     async def _start_image_optimization(self, quality: int, progress_bar: ft.ProgressBar, status_text: ft.Text, stats_text: ft.Text):
         """开始图片优化过程"""
         try:
             folder_path = download_manager.get_download_folder_path(app_config)
             if not folder_path:
                 return
-            
+
             # 进度回调函数
             def progress_callback(progress):
-                if hasattr(self, '_optimize_dialog') and self._optimize_dialog.open:
+                if hasattr(self, "_optimize_dialog") and self._optimize_dialog.open:
                     # 更新进度条
                     progress_bar.value = progress.percentage / 100
-                    
+
                     # 更新状态文本
                     status_text.value = f"正在处理: {progress.current_file}"
-                    
+
                     # 更新统计信息
                     original_size_text = image_optimizer.format_file_size(progress.current_size)
                     optimized_size_text = image_optimizer.format_file_size(progress.optimized_size)
-                    
+
                     if progress.optimized_size > 0:
                         compression_ratio = image_optimizer.calculate_compression_ratio(progress.current_size, progress.optimized_size)
                         stats_text.value = f"已处理 {progress.processed_count}/{progress.total_count} | 原始: {original_size_text} → 优化: {optimized_size_text} | 压缩比: {compression_ratio:.1f}%"
                     else:
                         stats_text.value = f"已处理 {progress.processed_count}/{progress.total_count} | 原始: {original_size_text}"
-                    
+
                     # 更新UI
                     self.page.update()
-            
+
             # 执行优化
             result = await image_optimizer.optimize_folder_to_avif(
                 folder_path,
                 quality=quality,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
             )
-            
+
             # 更新最终状态
-            if hasattr(self, '_optimize_dialog') and self._optimize_dialog.open:
+            if hasattr(self, "_optimize_dialog") and self._optimize_dialog.open:
                 if result.success:
                     status_text.value = "优化完成！"
                     compression_ratio = image_optimizer.calculate_compression_ratio(result.original_size, result.optimized_size)
@@ -6197,82 +6188,82 @@ class Pages:
                     status_text.value = "优化完成（有错误）"
                     stats_text.value = f"成功: {result.processed_files}, 失败: {result.failed_files}"
                     self._show_snackbar(f"优化完成，但有 {result.failed_files} 个文件处理失败", error=True)
-                
+
                 # 更新按钮状态
                 cancel_button = next((action for action in self._optimize_dialog.actions if isinstance(action, ft.TextButton)), None)
                 if cancel_button:
                     cancel_button.text = "关闭"
                     cancel_button.on_click = lambda e: self._close_optimize_dialog()
-                
+
                 self.page.update()
-                
+
                 # 刷新下载统计
                 self._handle_refresh_download_stats(None)
-        
+
         except Exception as e:
             logger.error(f"图片优化过程出错: {e}")
-            if hasattr(self, '_optimize_dialog') and self._optimize_dialog.open:
+            if hasattr(self, "_optimize_dialog") and self._optimize_dialog.open:
                 status_text.value = "优化失败"
-                stats_text.value = f"错误: {str(e)}"
+                stats_text.value = f"错误: {e!s}"
                 self.page.update()
-            
+
             # 重置优化状态
             self._is_optimizing = False
             self._enable_download_controls()
             self._hide_optimize_progress_ui()
-            
-            self._show_snackbar(f"优化失败: {str(e)}", error=True)
-    
+
+            self._show_snackbar(f"优化失败: {e!s}", error=True)
+
     def _disable_download_controls(self):
         """禁用下载设置页面的控件"""
         try:
             # 禁用按钮
-            if hasattr(self, 'open_folder_button') and self.open_folder_button:
+            if hasattr(self, "open_folder_button") and self.open_folder_button:
                 self.open_folder_button.disabled = True
-            if hasattr(self, 'refresh_stats_button') and self.refresh_stats_button:
+            if hasattr(self, "refresh_stats_button") and self.refresh_stats_button:
                 self.refresh_stats_button.disabled = True
-            if hasattr(self, 'clear_folder_button') and self.clear_folder_button:
+            if hasattr(self, "clear_folder_button") and self.clear_folder_button:
                 self.clear_folder_button.disabled = True
-            if hasattr(self, 'optimize_button') and self.optimize_button:
+            if hasattr(self, "optimize_button") and self.optimize_button:
                 self.optimize_button.disabled = True
-            
+
             # 禁用下拉框和输入框
-            if hasattr(self, '_download_location_dropdown') and self._download_location_dropdown:
+            if hasattr(self, "_download_location_dropdown") and self._download_location_dropdown:
                 self._download_location_dropdown.disabled = True
-            if hasattr(self, '_download_custom_path_field') and self._download_custom_path_field:
+            if hasattr(self, "_download_custom_path_field") and self._download_custom_path_field:
                 self._download_custom_path_field.disabled = True
-            
+
             # 刷新UI
-            if hasattr(self, 'page') and self.page:
+            if hasattr(self, "page") and self.page:
                 self.page.update()
         except Exception as e:
             logger.error(f"禁用控件时出错: {e}")
-    
+
     def _enable_download_controls(self):
         """启用下载设置页面的控件"""
         try:
             # 启用按钮
-            if hasattr(self, 'open_folder_button') and self.open_folder_button:
+            if hasattr(self, "open_folder_button") and self.open_folder_button:
                 self.open_folder_button.disabled = False
-            if hasattr(self, 'refresh_stats_button') and self.refresh_stats_button:
+            if hasattr(self, "refresh_stats_button") and self.refresh_stats_button:
                 self.refresh_stats_button.disabled = False
-            if hasattr(self, 'clear_folder_button') and self.clear_folder_button:
+            if hasattr(self, "clear_folder_button") and self.clear_folder_button:
                 self.clear_folder_button.disabled = False
-            if hasattr(self, 'optimize_button') and self.optimize_button:
+            if hasattr(self, "optimize_button") and self.optimize_button:
                 self.optimize_button.disabled = False
-            
+
             # 启用下拉框和输入框
-            if hasattr(self, '_download_location_dropdown') and self._download_location_dropdown:
+            if hasattr(self, "_download_location_dropdown") and self._download_location_dropdown:
                 self._download_location_dropdown.disabled = False
-            if hasattr(self, '_download_custom_path_field') and self._download_custom_path_field:
+            if hasattr(self, "_download_custom_path_field") and self._download_custom_path_field:
                 self._download_custom_path_field.disabled = False
-            
+
             # 刷新UI
-            if hasattr(self, 'page') and self.page:
+            if hasattr(self, "page") and self.page:
                 self.page.update()
         except Exception as e:
             logger.error(f"启用控件时出错: {e}")
-    
+
     def _show_optimize_progress_ui(self):
         """显示优化进度UI"""
         try:
@@ -6285,7 +6276,7 @@ class Pages:
                     progress_container.update()
         except Exception as e:
             logger.error(f"显示进度UI时出错: {e}")
-    
+
     def _hide_optimize_progress_ui(self):
         """隐藏优化进度UI"""
         try:
@@ -6298,18 +6289,18 @@ class Pages:
                     progress_container.update()
         except Exception as e:
             logger.error(f"隐藏进度UI时出错: {e}")
-    
+
     def _close_optimize_dialog(self):
         """关闭优化对话框并恢复UI状态"""
         # 重置优化状态
         self._is_optimizing = False
-        
+
         # 恢复下载设置页面的控件
         self._enable_download_controls()
         self._hide_optimize_progress_ui()
-        
+
         # 关闭对话框
-        if hasattr(self, '_optimize_dialog') and self._optimize_dialog:
+        if hasattr(self, "_optimize_dialog") and self._optimize_dialog:
             self._optimize_dialog.open = False
             self.page.close(self._optimize_dialog)
             self.page.update()
@@ -6652,7 +6643,7 @@ class Pages:
     def _ensure_generate_save_picker(self) -> None:
         if self._generate_save_picker is None:
             self._generate_save_picker = ft.FilePicker(
-                on_result=self._handle_generate_save_result
+                on_result=self._handle_generate_save_result,
             )
         if self._generate_save_picker not in self.page.overlay:
             self.page.overlay.append(self._generate_save_picker)
@@ -6714,7 +6705,7 @@ class Pages:
         if not download_folder_path:
             self._show_snackbar("尚未配置下载目录。", error=True)
             return
-        
+
         # 确保下载文件夹存在
         try:
             download_folder_path.mkdir(parents=True, exist_ok=True)
@@ -6774,7 +6765,7 @@ class Pages:
             return
         self._show_snackbar("已设置为壁纸。")
 
-    def _generate_make_favorite_payload(self) -> Dict[str, Any] | None:
+    def _generate_make_favorite_payload(self) -> dict[str, Any] | None:
         path = self._generate_last_file
         if not path or not path.exists():
             return None
@@ -6787,7 +6778,7 @@ class Pages:
         except Exception:
             timestamp = time.time()
         identifier = hashlib.sha1(
-            f"{path}-{timestamp}".encode("utf-8", "ignore")
+            f"{path}-{timestamp}".encode("utf-8", "ignore"),
         ).hexdigest()
         tags: list[str] = ["generation"]
         if self._generate_last_provider:
@@ -6819,7 +6810,7 @@ class Pages:
             if self._favorite_selected_folder not in {"__all__", "__default__"}
             else "default"
         )
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "folder_id": default_folder,
             "title": title,
             "description": "",
@@ -7125,7 +7116,7 @@ class Pages:
                     [self._ws_loading_indicator, self._ws_status_text],
                     spacing=8,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                )
+                ),
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
@@ -7219,7 +7210,7 @@ class Pages:
                     "在设置中管理" if has_records else "前往设置管理壁纸源",
                     icon=ft.Icons.OPEN_IN_NEW,
                     on_click=lambda _: self._ws_open_wallpaper_source_settings(),
-                )
+                ),
             ]
             placeholder = ft.Column(
                 [
@@ -7286,7 +7277,7 @@ class Pages:
 
         self._ws_update_source_tabs(records, preserve_selection=preserve_selection)
         active_record = self._ws_hierarchy.get(self._ws_active_source_id, {}).get(
-            "record"
+            "record",
         )
         self._ws_update_source_info(active_record)
         self._ws_update_primary_tabs(
@@ -7296,7 +7287,7 @@ class Pages:
         self._ws_update_fetch_button_state()
 
     def _ws_build_hierarchy(
-        self, records: list[WallpaperSourceRecord]
+        self, records: list[WallpaperSourceRecord],
     ) -> dict[str, Any]:
         hierarchy: dict[str, Any] = {}
         term = (self._ws_search_text or "").strip().lower()
@@ -7458,7 +7449,7 @@ class Pages:
             self._ws_source_info_container.update()
 
     def _ws_update_primary_tabs(
-        self, source_id: str | None, *, preserve_selection: bool
+        self, source_id: str | None, *, preserve_selection: bool,
     ) -> None:
         if not source_id or source_id not in self._ws_hierarchy:
             for container in (
@@ -7514,7 +7505,7 @@ class Pages:
             if not preserve_selection or self._ws_active_primary_key not in keys:
                 self._ws_active_primary_key = keys[0]
             self._ws_primary_tabs.selected_index = keys.index(
-                self._ws_active_primary_key
+                self._ws_active_primary_key,
             )
             self._ws_primary_tabs.data = {
                 "source_id": source_id,
@@ -7595,7 +7586,7 @@ class Pages:
             if not preserve_selection or self._ws_active_secondary_key not in keys:
                 self._ws_active_secondary_key = keys[0]
             self._ws_secondary_tabs.selected_index = keys.index(
-                self._ws_active_secondary_key
+                self._ws_active_secondary_key,
             )
             self._ws_secondary_tabs.data = {
                 "source_id": source_id,
@@ -7673,7 +7664,7 @@ class Pages:
             if not preserve_selection or self._ws_active_tertiary_key not in keys:
                 self._ws_active_tertiary_key = keys[0]
             self._ws_tertiary_tabs.selected_index = keys.index(
-                self._ws_active_tertiary_key
+                self._ws_active_tertiary_key,
             )
             self._ws_tertiary_tabs.data = {
                 "source_id": self._ws_active_source_id,
@@ -7770,7 +7761,7 @@ class Pages:
         self._ws_set_status(message, error=error)
 
     def _ws_select_leaf(
-        self, ref: WallpaperCategoryRef, *, force_refresh: bool
+        self, ref: WallpaperCategoryRef, *, force_refresh: bool,
     ) -> None:
         self._ws_active_category_id = ref.category_id
         self._ws_active_source_id = ref.source_id
@@ -7865,7 +7856,7 @@ class Pages:
                     [control.display for control in controls],
                     spacing=12,
                     tight=True,
-                )
+                ),
             )
 
         self._ws_param_container.content = ft.Container(
@@ -8001,7 +7992,7 @@ class Pages:
             key = option.key
             if getattr(option, "hidden", False):
                 normalized = self._ws_normalize_param_value(
-                    option, getattr(option, "default", None)
+                    option, getattr(option, "default", None),
                 )
                 cache_entry[key] = normalized
                 if normalized is not None:
@@ -8110,7 +8101,7 @@ class Pages:
                 (
                     entry
                     for entry in self._ws_hierarchy.get(source_id, {}).get(
-                        "primary_list", []
+                        "primary_list", [],
                     )
                     if entry["key"] == primary_key
                 ),
@@ -8155,7 +8146,7 @@ class Pages:
                 (
                     entry
                     for entry in self._ws_hierarchy.get(source_id, {}).get(
-                        "primary_list", []
+                        "primary_list", [],
                     )
                     if entry["key"] == primary_key
                 ),
@@ -8380,7 +8371,7 @@ class Pages:
                     size=14,
                     weight=ft.FontWeight.BOLD,
                     selectable=True,
-                )
+                ),
             )
         if item.description:
             info_blocks.append(
@@ -8388,7 +8379,7 @@ class Pages:
                     item.description,
                     size=12,
                     selectable=True,
-                )
+                ),
             )
         if item.copyright:
             info_blocks.append(
@@ -8397,7 +8388,7 @@ class Pages:
                     size=11,
                     color=ft.Colors.GREY,
                     selectable=True,
-                )
+                ),
             )
         if item.footer_text:
             info_blocks.append(
@@ -8406,7 +8397,7 @@ class Pages:
                     size=11,
                     color=ft.Colors.GREY,
                     selectable=False,
-                )
+                ),
             )
 
         actions: list[ft.Control] = [
@@ -8414,7 +8405,7 @@ class Pages:
                 "预览",
                 icon=ft.Icons.VISIBILITY,
                 on_click=lambda _, wid=item.id: self._ws_open_preview(wid),
-            )
+            ),
         ]
         if item.original_url:
             actions.append(
@@ -8422,7 +8413,7 @@ class Pages:
                     "打开原始链接",
                     icon=ft.Icons.OPEN_IN_NEW,
                     on_click=lambda _, url=item.original_url: self.page.launch_url(url),
-                )
+                ),
             )
 
         card_body = ft.Column(
@@ -8466,7 +8457,7 @@ class Pages:
             content=ft.Column(
                 [
                     ft.Icon(
-                        ft.Icons.IMAGE_NOT_SUPPORTED, size=48, color=ft.Colors.GREY
+                        ft.Icons.IMAGE_NOT_SUPPORTED, size=48, color=ft.Colors.GREY,
                     ),
                     ft.Text("预览不可用", size=12, color=ft.Colors.GREY),
                 ],
@@ -8485,7 +8476,7 @@ class Pages:
                 content=ft.Column(
                     [
                         ft.Icon(
-                            ft.Icons.IMAGE_SEARCH, size=72, color=ft.Colors.OUTLINE
+                            ft.Icons.IMAGE_SEARCH, size=72, color=ft.Colors.OUTLINE,
                         ),
                         ft.Text("未找到预览内容，请返回资源页面重新选择。", size=14),
                         ft.FilledButton(
@@ -8504,7 +8495,7 @@ class Pages:
             body_controls = [placeholder]
             if SHOW_WATERMARK:
                 body_controls = [
-                    ft.Stack([placeholder, build_watermark()], expand=True)
+                    ft.Stack([placeholder, build_watermark()], expand=True),
                 ]
 
             return ft.View(
@@ -8538,7 +8529,7 @@ class Pages:
         description_blocks: list[ft.Control] = []
         if item.title:
             description_blocks.append(
-                ft.Text(item.title, size=20, weight=ft.FontWeight.BOLD)
+                ft.Text(item.title, size=20, weight=ft.FontWeight.BOLD),
             )
         description_blocks.append(
             ft.Text(
@@ -8546,15 +8537,15 @@ class Pages:
                 size=12,
                 color=ft.Colors.GREY,
                 selectable=True,
-            )
+            ),
         )
         if item.description:
             description_blocks.append(
-                ft.Text(item.description, size=13, selectable=True)
+                ft.Text(item.description, size=13, selectable=True),
             )
         if item.copyright:
             description_blocks.append(
-                ft.Text(item.copyright, size=12, color=ft.Colors.GREY, selectable=True)
+                ft.Text(item.copyright, size=12, color=ft.Colors.GREY, selectable=True),
             )
         if item.local_path:
             description_blocks.append(
@@ -8563,7 +8554,7 @@ class Pages:
                     size=12,
                     color=ft.Colors.GREY,
                     selectable=True,
-                )
+                ),
             )
 
         actions: list[ft.Control] = [
@@ -8589,7 +8580,7 @@ class Pages:
                     "复制图片文件",
                     icon=ft.Icons.COPY_ALL,
                     on_click=lambda _: self.page.run_task(self._ws_copy_file, item.id),
-                )
+                ),
             )
         if item.original_url:
             actions.append(
@@ -8597,7 +8588,7 @@ class Pages:
                     "打开原始链接",
                     icon=ft.Icons.OPEN_IN_NEW,
                     on_click=lambda _: self.page.launch_url(item.original_url),
-                )
+                ),
             )
 
         footer_controls: list[ft.Control] = []
@@ -8608,7 +8599,7 @@ class Pages:
                     border_radius=8,
                     padding=12,
                     content=ft.Text(item.footer_text, size=12, selectable=True),
-                )
+                ),
             )
 
         content_column = ft.Column(
@@ -8654,12 +8645,12 @@ class Pages:
     ) -> ft.Control:
         if record is None:
             return ft.Icon(
-                ft.Icons.COLOR_LENS, size=size * 0.75, color=ft.Colors.PRIMARY
+                ft.Icons.COLOR_LENS, size=size * 0.75, color=ft.Colors.PRIMARY,
             )
         logo = (record.spec.logo or "").strip()
         if not logo:
             return ft.Icon(
-                ft.Icons.COLOR_LENS, size=size * 0.75, color=ft.Colors.PRIMARY
+                ft.Icons.COLOR_LENS, size=size * 0.75, color=ft.Colors.PRIMARY,
             )
         cached = self._ws_logo_cache.get(record.identifier)
         if cached is None:
@@ -8720,7 +8711,7 @@ class Pages:
             self._show_snackbar("图片文件不存在。", error=True)
             return
         success = await asyncio.to_thread(
-            copy_files_to_clipboard, [str(item.local_path)]
+            copy_files_to_clipboard, [str(item.local_path)],
         )
         if success:
             self._show_snackbar("已复制图片文件到剪贴板。")
@@ -8738,7 +8729,7 @@ class Pages:
             return
         self._open_favorite_editor(payload)
 
-    def _ws_make_favorite_payload(self, item: WallpaperItem) -> Dict[str, Any]:
+    def _ws_make_favorite_payload(self, item: WallpaperItem) -> dict[str, Any]:
         tags: list[str] = []
         if item.category_label:
             tags.append(item.category_label)
@@ -8780,7 +8771,7 @@ class Pages:
 
         title = item.title or (item.category_label or source_title)
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "folder_id": default_folder,
             "title": title,
             "description": item.description or "",
@@ -8872,12 +8863,12 @@ class Pages:
         self._ws_settings_list.controls.clear()
         if not records:
             self._ws_settings_list.controls.append(
-                ft.Text("尚未导入任何壁纸源。", size=12, color=ft.Colors.GREY)
+                ft.Text("尚未导入任何壁纸源。", size=12, color=ft.Colors.GREY),
             )
         else:
             for record in records:
                 self._ws_settings_list.controls.append(
-                    self._build_ws_settings_card(record)
+                    self._build_ws_settings_card(record),
                 )
         if self._ws_settings_summary_text is not None:
             enabled_count = sum(1 for record in records if record.enabled)
@@ -8962,7 +8953,7 @@ class Pages:
             label="启用",
             value=record.enabled,
             on_change=lambda e, rid=record.identifier: self._ws_toggle_source(
-                rid, bool(getattr(e.control, "value", False))
+                rid, bool(getattr(e.control, "value", False)),
             ),
         )
 
@@ -9073,7 +9064,7 @@ class Pages:
     def _ensure_ws_file_picker(self) -> None:
         if self._ws_file_picker is None:
             self._ws_file_picker = ft.FilePicker(
-                on_result=self._handle_ws_import_result
+                on_result=self._handle_ws_import_result,
             )
         if self._ws_file_picker not in self.page.overlay:
             self.page.overlay.append(self._ws_file_picker)
@@ -9132,11 +9123,11 @@ class Pages:
                                                     ),
                                                 ),
                                                 ft.TextSpan(
-                                                    "提供 ，图片内容责任由接口方承担"
+                                                    "提供 ，图片内容责任由接口方承担",
                                                 ),
                                             ],
                                         ),
-                                    ]
+                                    ],
                                 ),
                                 ft.Row(
                                     [
@@ -9144,8 +9135,8 @@ class Pages:
                                             "查看仓库",
                                             icon=ft.Icons.OPEN_IN_NEW,
                                             url="https://github.com/IntelliMarkets/Wallpaper_API_Index",
-                                        )
-                                    ]
+                                        ),
+                                    ],
                                 ),
                             ],
                             expand=True,
@@ -9210,7 +9201,7 @@ class Pages:
 
         # 镜像优先级设置（默认优先 / 镜像优先）
         current_pref = str(
-            app_config.get("im.mirror_preference", "default_first") or "default_first"
+            app_config.get("im.mirror_preference", "default_first") or "default_first",
         )
         self._im_mirror_pref_dropdown = ft.Dropdown(
             label="镜像优先级",
@@ -9233,7 +9224,7 @@ class Pages:
         )
 
         filter_section = ft.Column(
-            [filter_row, self._im_search_field], spacing=6, expand=False
+            [filter_row, self._im_search_field], spacing=6, expand=False,
         )
 
         content_column = ft.Column(
@@ -9294,7 +9285,7 @@ class Pages:
         self._refresh_im_ui()
 
     def _im_filtered_sources(
-        self, search_term: str
+        self, search_term: str,
     ) -> tuple[list[dict[str, Any]], str | None, int]:
         if not self._im_sources_by_category:
             return [], None, 0
@@ -9332,7 +9323,7 @@ class Pages:
         ]
         return filtered, resolved_category, len(base_sources)
 
-    def _im_source_matches(self, source: Dict[str, Any], term: str) -> bool:
+    def _im_source_matches(self, source: dict[str, Any], term: str) -> bool:
         term_lower = term.strip().lower()
         if not term_lower:
             return True
@@ -9380,7 +9371,7 @@ class Pages:
             f"https://gh-proxy.com/https://api.github.com/repos/{owner}/{repo}/tarball/{branch}",
         ]
         preference = str(
-            app_config.get("im.mirror_preference", "default_first") or "default_first"
+            app_config.get("im.mirror_preference", "default_first") or "default_first",
         )
         logger.info(f"使用镜像优先级设置：{preference}")
         if preference == "mirror_first":
@@ -9398,8 +9389,8 @@ class Pages:
             f"https://cdn.statically.io/gh/{owner}/{repo}/{branch}/{encoded_path}",
         ]
 
-    def _im_request_headers(self, *, binary: bool = False) -> Dict[str, str]:
-        headers: Dict[str, str] = {
+    def _im_request_headers(self, *, binary: bool = False) -> dict[str, str]:
+        headers: dict[str, str] = {
             "User-Agent": f"LittleTreeWallpaperNext/{BUILD_VERSION}",
         }
         token = os.environ.get("GITHUB_TOKEN")
@@ -9424,7 +9415,7 @@ class Pages:
         for candidate in trial_list:
             try:
                 async with session.get(
-                    candidate, headers=headers, timeout=timeout
+                    candidate, headers=headers, timeout=timeout,
                 ) as resp:
                     if resp.status == 200:
                         return await resp.read()
@@ -9463,7 +9454,7 @@ class Pages:
             return
         self._show_snackbar(f"{label}已复制")
 
-    def _build_im_source_card(self, source: Dict[str, Any]) -> ft.Control:
+    def _build_im_source_card(self, source: dict[str, Any]) -> ft.Control:
         friendly_name = (
             source.get("friendly_name") or source.get("file_name") or "未命名"
         )
@@ -9504,7 +9495,7 @@ class Pages:
                         ft.Column(
                             [
                                 ft.Text(
-                                    friendly_name, size=16, weight=ft.FontWeight.BOLD
+                                    friendly_name, size=16, weight=ft.FontWeight.BOLD,
                                 ),
                                 ft.Text(intro, size=12, color=ft.Colors.GREY),
                             ],
@@ -9514,7 +9505,7 @@ class Pages:
                     ],
                     spacing=8,
                 ),
-            ]
+            ],
         )
 
         # 右下角的打开按钮
@@ -9523,7 +9514,7 @@ class Pages:
                 "打开",
                 icon=ft.Icons.PLAY_ARROW,
                 on_click=lambda _=None, item=source: self._open_im_source_detail_page(
-                    item
+                    item,
                 ),
             ),
             alignment=ft.alignment.bottom_right,
@@ -9535,7 +9526,7 @@ class Pages:
             [
                 ft.Container(content_area, padding=16),
                 open_button,
-            ]
+            ],
         )
 
         return ft.Card(
@@ -9543,7 +9534,7 @@ class Pages:
             height=140,
         )
 
-    def _im_source_id(self, source: Dict[str, Any]) -> str:
+    def _im_source_id(self, source: dict[str, Any]) -> str:
         candidate = (
             source.get("path") or source.get("file_name") or source.get("friendly_name")
         )
@@ -9551,7 +9542,7 @@ class Pages:
             return candidate.strip()
         return f"source-{hashlib.sha1(json.dumps(source, sort_keys=True).encode('utf-8')).hexdigest()}"
 
-    def _open_im_source_detail_page(self, source: Dict[str, Any]) -> None:
+    def _open_im_source_detail_page(self, source: dict[str, Any]) -> None:
         self._im_active_source = source
         self._im_last_results = []
         if self.page is not None:
@@ -9663,7 +9654,7 @@ class Pages:
         self._im_result_status_text = ft.Text("尚未获取", size=12, color=ft.Colors.GREY)
         self._im_result_spinner = ft.ProgressRing(width=20, height=20, visible=False)
         self._im_result_container = ft.Column(
-            spacing=12, expand=True, scroll=ft.ScrollMode.AUTO
+            spacing=12, expand=True, scroll=ft.ScrollMode.AUTO,
         )
 
         main_content = ft.Column(
@@ -9686,7 +9677,7 @@ class Pages:
                                 spacing=12,
                                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                             ),
-                        ]
+                        ],
                     ),
                     padding=16,
                     bgcolor=self._bgcolor_surface_low,
@@ -9698,7 +9689,7 @@ class Pages:
                             ft.Row(
                                 [
                                     ft.Text(
-                                        "获取结果", size=16, weight=ft.FontWeight.W_500
+                                        "获取结果", size=16, weight=ft.FontWeight.W_500,
                                     ),
                                 ],
                                 alignment=ft.MainAxisAlignment.START,
@@ -9707,7 +9698,7 @@ class Pages:
                                 content=self._im_result_container,
                                 expand=True,
                             ),
-                        ]
+                        ],
                     ),
                     expand=True,
                     padding=16,
@@ -9765,7 +9756,7 @@ class Pages:
             self._im_result_status_text.update()
 
     def _build_im_parameter_controls(
-        self, source: Dict[str, Any]
+        self, source: dict[str, Any],
     ) -> list[_IMParameterControl]:
         parameters = (source.get("content") or {}).get("parameters") or []
         source_id = self._im_source_id(source)
@@ -9782,8 +9773,8 @@ class Pages:
 
     def _make_im_parameter_control(
         self,
-        param: Dict[str, Any],
-        cached: Dict[str, Any],
+        param: dict[str, Any],
+        cached: dict[str, Any],
         index: int,
     ) -> _IMParameterControl:
         param_type = str(param.get("type") or "string").lower()
@@ -9803,7 +9794,7 @@ class Pages:
         if param_type == "enum":
             values = param.get("value") or []
             friendly_values = param.get("friendly_value") or []
-            value_map: Dict[str, Any] = {}
+            value_map: dict[str, Any] = {}
             options: list[ft.dropdown.Option] = []
             for idx, raw in enumerate(values):
                 label = friendly_values[idx] if idx < len(friendly_values) else str(raw)
@@ -9872,11 +9863,11 @@ class Pages:
                 except ValueError:
                     raise ValueError("请输入合法的整数") from None
                 if param.get("min_value") is not None and value < int(
-                    param.get("min_value")
+                    param.get("min_value"),
                 ):
                     raise ValueError(f"最小值为 {param.get('min_value')}")
                 if param.get("max_value") is not None and value > int(
-                    param.get("max_value")
+                    param.get("max_value"),
                 ):
                     raise ValueError(f"最大值为 {param.get('max_value')}")
                 return value
@@ -9908,11 +9899,11 @@ class Pages:
                 except ValueError:
                     raise ValueError("请输入合法的数值") from None
                 if param.get("min_value") is not None and value < float(
-                    param.get("min_value")
+                    param.get("min_value"),
                 ):
                     raise ValueError(f"最小值为 {param.get('min_value')}")
                 if param.get("max_value") is not None and value > float(
-                    param.get("max_value")
+                    param.get("max_value"),
                 ):
                     raise ValueError(f"最大值为 {param.get('max_value')}")
                 return value
@@ -9991,7 +9982,7 @@ class Pages:
         apply_default(setter)
         return _IMParameterControl(param, field, field, getter, setter, key)
 
-    def _im_initial_param_value(self, param: Dict[str, Any], cached_value: Any) -> Any:
+    def _im_initial_param_value(self, param: dict[str, Any], cached_value: Any) -> Any:
         if cached_value not in (None, ""):
             return cached_value
         param_type = str(param.get("type") or "string").lower()
@@ -10028,8 +10019,8 @@ class Pages:
             return True
         return False
 
-    def _collect_im_parameters(self) -> list[tuple[Dict[str, Any], Any]]:
-        collected: list[tuple[Dict[str, Any], Any]] = []
+    def _collect_im_parameters(self) -> list[tuple[dict[str, Any], Any]]:
+        collected: list[tuple[dict[str, Any], Any]] = []
         errors = False
         current_cache: dict[str, Any] = {}
         for control in self._im_param_controls:
@@ -10060,9 +10051,9 @@ class Pages:
         return collected
 
     def _im_param_summary(
-        self, param_pairs: list[tuple[Dict[str, Any], Any]]
-    ) -> Dict[str, str]:
-        summary: Dict[str, str] = {}
+        self, param_pairs: list[tuple[dict[str, Any], Any]],
+    ) -> dict[str, str]:
+        summary: dict[str, str] = {}
         for param, value in param_pairs:
             label = param.get("friendly_name") or param.get("name") or "参数"
             summary[label] = self._im_format_value(value)
@@ -10070,9 +10061,9 @@ class Pages:
 
     def _build_im_request(
         self,
-        source: Dict[str, Any],
-        param_pairs: list[tuple[Dict[str, Any], Any]],
-    ) -> Dict[str, Any]:
+        source: dict[str, Any],
+        param_pairs: list[tuple[dict[str, Any], Any]],
+    ) -> dict[str, Any]:
         method = (source.get("func") or "GET").upper()
         raw_url = (source.get("link") or "").strip()
         if not raw_url:
@@ -10086,7 +10077,7 @@ class Pages:
             query_pairs.extend(existing_pairs)
 
         path_segments: list[str] = []
-        body_payload: Dict[str, Any] = {}
+        body_payload: dict[str, Any] = {}
         headers = (source.get("content") or {}).get("headers") or {}
 
         for param, value in param_pairs:
@@ -10115,9 +10106,8 @@ class Pages:
                         query_pairs.append((name, str(item)))
                 elif prepared_query is not None:
                     query_pairs.append((name, str(prepared_query)))
-            else:
-                if prepared_body is not None:
-                    body_payload[name] = prepared_body
+            elif prepared_body is not None:
+                body_payload[name] = prepared_body
 
         final_url = base_url
         if path_segments:
@@ -10136,7 +10126,7 @@ class Pages:
         }
 
     def _im_prepare_param_value(
-        self, param: Dict[str, Any], value: Any, *, as_query: bool
+        self, param: dict[str, Any], value: Any, *, as_query: bool,
     ) -> Any:
         split_str = param.get("split_str")
         if isinstance(value, list):
@@ -10210,12 +10200,12 @@ class Pages:
             return
 
         try:
-            all_images: list[Dict[str, Any]] = []
+            all_images: list[dict[str, Any]] = []
             # 统一进行多次获取以确保批量次数
             for i in range(batch_count):
                 self._set_im_status(f"正在执行第 {i + 1}/{batch_count} 次请求...")
                 result_payload = await self._fetch_im_source_result(
-                    self._im_active_source, request_info, param_pairs
+                    self._im_active_source, request_info, param_pairs,
                 )
                 images = result_payload.get("images", []) or []
                 if images:
@@ -10226,7 +10216,7 @@ class Pages:
             total_images = len(all_images)
             if total_images:
                 self._set_im_status(
-                    f"获取成功！共执行 {batch_count} 次请求，累计 {total_images} 张壁纸。"
+                    f"获取成功！共执行 {batch_count} 次请求，累计 {total_images} 张壁纸。",
                 )
             else:
                 self._set_im_status(
@@ -10249,14 +10239,14 @@ class Pages:
                 "image_count": total_images,
             }
             self._emit_im_source_event("resource.im_source.executed", event_payload)
-            
+
             # 发送执行完成事件（用于插件监听获取完成状态）
             self._emit_im_source_event("resource.im_source.executed", event_payload)
 
         except Exception as exc:  # pragma: no cover - network errors
             logger.error(f"执行图片源失败: {exc}")
             self._set_im_status(f"执行失败：{exc}", error=True)
-            
+
             # 合并失败信息到事件载荷中
             failed_event_payload = {
                 "success": False,
@@ -10275,7 +10265,7 @@ class Pages:
         finally:
             self._reset_im_execution_state()
 
-    def _supports_multiple_images(self, source: Dict[str, Any]) -> bool:
+    def _supports_multiple_images(self, source: dict[str, Any]) -> bool:
         """检查源是否支持一次返回多张图片"""
         # 这里可以添加逻辑判断源是否支持多图片
         # 目前默认为支持，后续可以基于源的配置来判断
@@ -10295,10 +10285,10 @@ class Pages:
 
     async def _fetch_im_source_result(
         self,
-        source: Dict[str, Any],
-        request_info: Dict[str, Any],
-        param_pairs: list[tuple[Dict[str, Any], Any]],
-    ) -> Dict[str, Any]:
+        source: dict[str, Any],
+        request_info: dict[str, Any],
+        param_pairs: list[tuple[dict[str, Any], Any]],
+    ) -> dict[str, Any]:
         timeout = aiohttp.ClientTimeout(total=90)
         method = request_info["method"]
         url = request_info["url"]
@@ -10321,7 +10311,7 @@ class Pages:
                     raise RuntimeError(f"HTTP {status}: {snippet}")
 
                 image_cfg = ((source.get("content") or {}).get("response") or {}).get(
-                    "image"
+                    "image",
                 ) or {}
                 response_type = (image_cfg.get("content_type") or "URL").upper()
                 content_type_main = (content_type or "").split(";")[0].lower()
@@ -10330,7 +10320,7 @@ class Pages:
                 binary_payload: bytes | None = None
 
                 if response_type == "BINARY" and not content_type_main.startswith(
-                    "application/json"
+                    "application/json",
                 ):
                     binary_payload = raw_bytes
                 else:
@@ -10360,14 +10350,14 @@ class Pages:
 
     async def _process_im_response(
         self,
-        source: Dict[str, Any],
-        request_info: Dict[str, Any],
-        param_pairs: list[tuple[Dict[str, Any], Any]],
+        source: dict[str, Any],
+        request_info: dict[str, Any],
+        param_pairs: list[tuple[dict[str, Any], Any]],
         payload: Any,
         binary_content: bytes | None,
-        headers: Dict[str, str],
+        headers: dict[str, str],
         content_type: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         response_cfg = (source.get("content") or {}).get("response") or {}
         image_cfg = response_cfg.get("image") or {}
         response_type = (image_cfg.get("content_type") or "URL").upper()
@@ -10375,7 +10365,7 @@ class Pages:
         timestamp = time.time()
         param_summary = self._im_param_summary(param_pairs)
 
-        images: list[Dict[str, Any]] = []
+        images: list[dict[str, Any]] = []
 
         if response_type == "BINARY":
             if not binary_content:
@@ -10491,7 +10481,7 @@ class Pages:
                     if not values:
                         continue
                     mapping = bool(
-                        item.get("one-to-one-mapping") or item.get("one_to_one_mapping")
+                        item.get("one-to-one-mapping") or item.get("one_to_one_mapping"),
                     )
                     if mapping:
                         for idx, value in enumerate(values):
@@ -10521,7 +10511,7 @@ class Pages:
             "timestamp": timestamp,
         }
 
-    def _im_storage_dir(self, source: Dict[str, Any]) -> Path:
+    def _im_storage_dir(self, source: dict[str, Any]) -> Path:
         slug = self._favorite_filename_slug(
             source.get("friendly_name") or source.get("file_name") or "intellimarkets",
             "intellimarkets",
@@ -10625,7 +10615,7 @@ class Pages:
                     traverse(current[token_value], index + 1)
             elif token_type == "index":
                 if isinstance(current, Sequence) and not isinstance(
-                    current, (str, bytes)
+                    current, (str, bytes),
                 ):
                     try:
                         traverse(current[token_value], index + 1)
@@ -10636,7 +10626,7 @@ class Pages:
                     for value in current.values():
                         traverse(value, index + 1)
                 elif isinstance(current, Sequence) and not isinstance(
-                    current, (str, bytes)
+                    current, (str, bytes),
                 ):
                     for value in current:
                         traverse(value, index + 1)
@@ -10648,7 +10638,7 @@ class Pages:
         flattened: list[Any] = []
         for value in values:
             if isinstance(value, Sequence) and not isinstance(
-                value, (str, bytes, bytearray)
+                value, (str, bytes, bytearray),
             ):
                 flattened.extend(self._im_flatten_image_values(value))
             else:
@@ -10674,7 +10664,7 @@ class Pages:
             return "、".join(filter(None, formatted))
         return str(value)
 
-    async def _update_im_batch_results_view(self, images: List[Dict[str, Any]]) -> None:
+    async def _update_im_batch_results_view(self, images: list[dict[str, Any]]) -> None:
         """更新批量获取结果视图，显示图片网格和操作按钮"""
         if self._im_result_container is None:
             return
@@ -10683,7 +10673,7 @@ class Pages:
 
         if not images:
             self._im_result_container.controls.append(
-                ft.Text("暂无图片结果。", size=14, color=ft.Colors.GREY)
+                ft.Text("暂无图片结果。", size=14, color=ft.Colors.GREY),
             )
         else:
             # 创建图片网格视图
@@ -10701,7 +10691,7 @@ class Pages:
         if self._im_result_container.page is not None:
             self._im_result_container.update()
 
-    def _build_im_image_card(self, image: Dict[str, Any]) -> ft.Control:
+    def _build_im_image_card(self, image: dict[str, Any]) -> ft.Control:
         """构建单个图片卡片，支持收藏、壁纸、下载等操作"""
         preview_base64 = image.get("preview_base64")
         local_path = image.get("local_path")
@@ -10740,7 +10730,7 @@ class Pages:
                     "收藏",
                     icon=ft.Icons.BOOKMARK_ADD,
                     on_click=lambda _, img_id=image_id: self._handle_im_add_favorite(
-                        img_id
+                        img_id,
                     ),
                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=6)),
                     expand=True,
@@ -10749,7 +10739,7 @@ class Pages:
                     "壁纸",
                     icon=ft.Icons.WALLPAPER,
                     on_click=lambda _, img_id=image_id: self.page.run_task(
-                        self._handle_im_set_wallpaper, img_id
+                        self._handle_im_set_wallpaper, img_id,
                     ),
                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=6)),
                     expand=True,
@@ -10758,7 +10748,7 @@ class Pages:
                     "下载",
                     icon=ft.Icons.DOWNLOAD,
                     on_click=lambda _, img_id=image_id: self._handle_im_download_image(
-                        img_id
+                        img_id,
                     ),
                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=6)),
                     expand=True,
@@ -10780,20 +10770,20 @@ class Pages:
             ft.PopupMenuItem(
                 text="复制图片",
                 on_click=lambda _, img_id=image_id: self.page.run_task(
-                    self._handle_im_copy_image, img_id
+                    self._handle_im_copy_image, img_id,
                 ),
             ),
             ft.PopupMenuItem(
                 text="复制文件",
                 on_click=lambda _, img_id=image_id: self.page.run_task(
-                    self._handle_im_copy_file, img_id
+                    self._handle_im_copy_file, img_id,
                 ),
             ),
             ft.Divider(),
             ft.PopupMenuItem(
                 text="打开原始链接",
                 on_click=lambda _, img_id=image_id: self._handle_im_open_original(
-                    img_id
+                    img_id,
                 ),
                 disabled=not original_url,
             ),
@@ -10803,7 +10793,7 @@ class Pages:
         more_menu_items.extend(plugin_menu_items)
 
         more_menu = ft.PopupMenuButton(
-            items=more_menu_items, icon=ft.Icons.MORE_VERT, tooltip="更多操作"
+            items=more_menu_items, icon=ft.Icons.MORE_VERT, tooltip="更多操作",
         )
 
         # 图片信息
@@ -10986,8 +10976,8 @@ class Pages:
         )
 
     def _get_plugin_im_menu_items(
-        self, image_id: str, image_data: Dict[str, Any]
-    ) -> List[ft.PopupMenuItem]:
+        self, image_id: str, image_data: dict[str, Any],
+    ) -> list[ft.PopupMenuItem]:
         """获取插件提供的IM壁纸源菜单项"""
         plugin_menu_items = []
 
@@ -11005,7 +10995,7 @@ class Pages:
                 # 暂时使用事件系统来查询插件
                 if self.event_bus:
                     menu_items = self._query_plugin_im_menu_items(
-                        plugin.identifier, image_id, image_data
+                        plugin.identifier, image_id, image_data,
                     )
                     if menu_items:
                         plugin_menu_items.extend(menu_items)
@@ -11015,8 +11005,8 @@ class Pages:
         return plugin_menu_items
 
     def _query_plugin_im_menu_items(
-        self, plugin_id: str, image_id: str, image_data: Dict[str, Any]
-    ) -> List[ft.PopupMenuItem]:
+        self, plugin_id: str, image_id: str, image_data: dict[str, Any],
+    ) -> list[ft.PopupMenuItem]:
         """查询特定插件的IM壁纸源菜单项"""
         # 这里可以实现具体的插件查询逻辑
         # 目前返回空列表，可以后续扩展
@@ -11029,7 +11019,7 @@ class Pages:
         if not download_folder_path:
             self._show_snackbar("尚未配置下载目录。", error=True)
             return
-        
+
         # 确保下载文件夹存在
         try:
             download_folder_path.mkdir(parents=True, exist_ok=True)
@@ -11037,12 +11027,12 @@ class Pages:
             logger.error(f"创建下载目录失败: {exc}")
             self._show_snackbar("创建下载目录失败。", error=True)
             return
-        
+
         def _copy() -> Path:
             target = self._generate_resolve_target_path(download_folder_path, file_name)
             shutil.copy2(file_path, target)
             return target
-        
+
         try:
             final_path = asyncio.to_thread(_copy)
             # 等待异步操作完成
@@ -11050,13 +11040,13 @@ class Pages:
         except Exception as exc:
             logger.error("下载失败: {error}", error=str(exc))
             self._show_snackbar("下载失败，请查看日志。", error=True)
-    
+
     async def _handle_download_complete(self, final_path_task) -> None:
         """处理下载完成"""
         try:
             final_path = await final_path_task
             self._show_snackbar(f"已下载到 {final_path}")
-            
+
             # 发送下载完成事件
             if self._im_active_source:
                 self._emit_im_source_event(
@@ -11074,8 +11064,8 @@ class Pages:
 
     def _build_im_result_card(
         self,
-        result: Dict[str, Any],
-        payload: Dict[str, Any],
+        result: dict[str, Any],
+        payload: dict[str, Any],
     ) -> ft.Control:
         preview_base64 = result.get("preview_base64")
         preview_control: ft.Control
@@ -11103,11 +11093,11 @@ class Pages:
         parameters = payload.get("parameters") or result.get("parameters") or {}
         if parameters:
             parameter_texts.append(
-                ft.Text("请求参数", size=12, weight=ft.FontWeight.W_500)
+                ft.Text("请求参数", size=12, weight=ft.FontWeight.W_500),
             )
             for key, value in parameters.items():
                 parameter_texts.append(
-                    ft.Text(f"{key}：{value}", size=12, selectable=True)
+                    ft.Text(f"{key}：{value}", size=12, selectable=True),
                 )
 
         detail_texts: list[ft.Control] = []
@@ -11157,7 +11147,7 @@ class Pages:
                     icon=ft.Icons.OPEN_IN_NEW,
                     tooltip="打开原始链接",
                     on_click=lambda _, url=original_url: self.page.launch_url(url),
-                )
+                ),
             )
 
         # 移除“打开所在文件夹”操作，按需保留其他操作
@@ -11187,10 +11177,10 @@ class Pages:
                     vertical_alignment=ft.CrossAxisAlignment.START,
                 ),
                 padding=12,
-            )
+            ),
         )
 
-    def _find_im_result(self, result_id: str | None) -> Dict[str, Any] | None:
+    def _find_im_result(self, result_id: str | None) -> dict[str, Any] | None:
         if result_id is None:
             return None
         for item in self._im_last_results:
@@ -11359,7 +11349,7 @@ class Pages:
 
     # 不再提供“打开所在文件夹”的行为
 
-    def _emit_im_source_event(self, event_name: str, payload: Dict[str, Any]) -> None:
+    def _emit_im_source_event(self, event_name: str, payload: dict[str, Any]) -> None:
         try:
             self._emit_resource_event(event_name, payload)
         except Exception as exc:  # pragma: no cover - event bus errors
@@ -11368,7 +11358,7 @@ class Pages:
     def _refresh_im_ui(self) -> None:
         search_term = (self._im_search_text or "").strip()
         filtered_sources, resolved_category, base_count = self._im_filtered_sources(
-            search_term
+            search_term,
         )
         match_count = len(filtered_sources)
         search_active = bool(search_term)
@@ -11402,7 +11392,7 @@ class Pages:
                 )
                 if self._im_last_updated:
                     formatted = time.strftime(
-                        "%Y-%m-%d %H:%M:%S", time.localtime(self._im_last_updated)
+                        "%Y-%m-%d %H:%M:%S", time.localtime(self._im_last_updated),
                     )
                     summary += f" · 更新于 {formatted}"
                 if search_active:
@@ -11416,8 +11406,8 @@ class Pages:
         if self._im_category_dropdown:
             options: list[ft.dropdown.Option] = [
                 ft.dropdown.Option(
-                    key=self._im_all_category_key, text=self._im_all_category_label
-                )
+                    key=self._im_all_category_key, text=self._im_all_category_label,
+                ),
             ]
             options.extend(
                 ft.dropdown.Option(key=name, text=name)
@@ -11446,31 +11436,30 @@ class Pages:
                             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         ),
                         padding=20,
-                    )
+                    ),
                 ]
             elif self._im_error and not self._im_sources_by_category:
                 self._im_sources_list.controls = [
                     ft.Container(
                         ft.Text(self._im_error, color=ft.Colors.ERROR),
                         padding=20,
-                    )
+                    ),
+                ]
+            elif filtered_sources:
+                self._im_sources_list.controls = [
+                    self._build_im_source_card(item) for item in filtered_sources
                 ]
             else:
-                if filtered_sources:
-                    self._im_sources_list.controls = [
-                        self._build_im_source_card(item) for item in filtered_sources
-                    ]
-                else:
-                    if self._im_sources_by_category:
-                        if search_active and base_count > 0:
-                            message = f'未找到与 "{display_term}" 匹配的图片源'
-                        else:
-                            message = "该分类暂无图片源"
+                if self._im_sources_by_category:
+                    if search_active and base_count > 0:
+                        message = f'未找到与 "{display_term}" 匹配的图片源'
                     else:
-                        message = "尚未加载图片源"
-                    self._im_sources_list.controls = [
-                        ft.Container(ft.Text(message), padding=20)
-                    ]
+                        message = "该分类暂无图片源"
+                else:
+                    message = "尚未加载图片源"
+                self._im_sources_list.controls = [
+                    ft.Container(ft.Text(message), padding=20),
+                ]
 
         if self.page:
             self.page.update()
@@ -11547,7 +11536,7 @@ class Pages:
                     # 专用于程序内部的 raw 镜像候选（不展示给用户）
                     raw_mirror_candidates = self._im_raw_mirrors(relative_path)
 
-                    source_info: Dict[str, Any] = {
+                    source_info: dict[str, Any] = {
                         "category": category_name,
                         "path": relative_path,
                         "file_name": file_name,
@@ -11577,7 +11566,7 @@ class Pages:
                 items.sort(
                     key=lambda item: (
                         item.get("friendly_name") or item.get("file_name") or ""
-                    ).lower()
+                    ).lower(),
                 )
 
             self._im_sources_by_category = categories
@@ -11602,26 +11591,26 @@ class Pages:
     # ------------------------------------------------------------------
     # favorite helpers
     # ------------------------------------------------------------------
-    def _favorite_folders(self) -> List[FavoriteFolder]:
+    def _favorite_folders(self) -> list[FavoriteFolder]:
         try:
             return self._favorite_manager.list_folders()
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error(f"加载收藏夹失败: {exc}")
             return []
 
-    def _favorite_tab_ids(self, folders: List[FavoriteFolder]) -> List[str]:
+    def _favorite_tab_ids(self, folders: list[FavoriteFolder]) -> list[str]:
         return ["__all__"] + [folder.id for folder in folders]
 
-    def _build_favorite_tabs_list(self, folders: List[FavoriteFolder]) -> List[ft.Tab]:
+    def _build_favorite_tabs_list(self, folders: list[FavoriteFolder]) -> list[ft.Tab]:
         self._favorite_item_localize_controls = {}
         self._favorite_item_wallpaper_buttons = {}
         self._favorite_item_export_buttons = {}
-        tabs: List[ft.Tab] = [
+        tabs: list[ft.Tab] = [
             ft.Tab(
                 text="全部",
                 icon=ft.Icons.ALL_INBOX,
                 content=self._build_favorite_folder_view("__all__"),
-            )
+            ),
         ]
         for folder in folders:
             icon = ft.Icons.STAR if folder.id == "default" else ft.Icons.FOLDER_SPECIAL
@@ -11630,7 +11619,7 @@ class Pages:
                     text=folder.name,
                     icon=icon,
                     content=self._build_favorite_folder_view(folder.id),
-                )
+                ),
             )
         return tabs
 
@@ -11688,7 +11677,7 @@ class Pages:
         return candidate
 
     def _favorite_default_asset_path(
-        self, item: FavoriteItem, source_path: Path
+        self, item: FavoriteItem, source_path: Path,
     ) -> Path:
         exports_dir = self._favorite_manager.localization_root().parent / "exports"
         exports_dir.mkdir(parents=True, exist_ok=True)
@@ -11815,7 +11804,7 @@ class Pages:
 
     def _build_favorite_folder_view(self, folder_id: str) -> ft.Control:
         items = self._favorite_manager.list_items(
-            None if folder_id in (None, "__all__") else folder_id
+            None if folder_id in (None, "__all__") else folder_id,
         )
         if not items:
             return ft.Container(
@@ -11943,7 +11932,7 @@ class Pages:
                         padding=ft.Padding(10, 4, 10, 4),
                         border_radius=ft.border_radius.all(12),
                         bgcolor=ft.Colors.with_opacity(
-                            0.08, ft.Colors.SECONDARY_CONTAINER
+                            0.08, ft.Colors.SECONDARY_CONTAINER,
                         ),
                     ),
                 )
@@ -11951,7 +11940,7 @@ class Pages:
         else:
             tag_controls = [ft.Text("未添加标签", size=11, color=ft.Colors.GREY)]
 
-        ai_controls: List[ft.Control] = []
+        ai_controls: list[ft.Control] = []
         if item.ai.suggested_tags:
             ai_controls.append(
                 ft.Text(
@@ -11960,11 +11949,11 @@ class Pages:
                     color=ft.Colors.SECONDARY,
                     max_lines=2,
                     overflow=ft.TextOverflow.ELLIPSIS,
-                )
+                ),
             )
         elif item.ai.status in {"pending", "running"}:
             ai_controls.append(
-                ft.Text("AI 正在分析…", size=11, color=ft.Colors.SECONDARY)
+                ft.Text("AI 正在分析…", size=11, color=ft.Colors.SECONDARY),
             )
         elif item.ai.status == "failed":
             ai_controls.append(ft.Text("AI 分析失败", size=11, color=ft.Colors.ERROR))
@@ -12004,7 +11993,7 @@ class Pages:
                     color=ft.Colors.GREY,
                     max_lines=1,
                     overflow=ft.TextOverflow.ELLIPSIS,
-                )
+                ),
             )
 
         localization = item.localization
@@ -12014,11 +12003,11 @@ class Pages:
                     "已本地化",
                     size=11,
                     color=getattr(ft.Colors, "GREEN_400", ft.Colors.GREEN),
-                )
+                ),
             )
         elif localization.status == "pending":
             info_column.controls.append(
-                ft.Text("正在本地化…", size=11, color=ft.Colors.SECONDARY)
+                ft.Text("正在本地化…", size=11, color=ft.Colors.SECONDARY),
             )
         elif localization.status == "failed":
             info_column.controls.append(
@@ -12026,11 +12015,11 @@ class Pages:
                     localization.message or "本地化失败",
                     size=11,
                     color=ft.Colors.ERROR,
-                )
+                ),
             )
         else:
             info_column.controls.append(
-                ft.Text("未本地化", size=11, color=ft.Colors.GREY)
+                ft.Text("未本地化", size=11, color=ft.Colors.GREY),
             )
 
         if ai_controls:
@@ -12046,7 +12035,7 @@ class Pages:
             icon=ft.Icons.DOWNLOAD_FOR_OFFLINE,
             tooltip="本地化此收藏",
             on_click=lambda _, item_id=item.id: self._handle_localize_single_item(
-                item_id
+                item_id,
             ),
         )
         if is_localized:
@@ -12078,7 +12067,7 @@ class Pages:
             icon=ft.Icons.WALLPAPER,
             tooltip="设为壁纸",
             on_click=lambda _, item_id=item.id: self._handle_set_favorite_wallpaper(
-                item_id
+                item_id,
             ),
             disabled=is_localizing,
         )
@@ -12086,14 +12075,14 @@ class Pages:
             icon=ft.Icons.UPLOAD_FILE,
             tooltip="导出此收藏",
             on_click=lambda _, item_id=item.id: self._handle_export_single_item(
-                item_id
+                item_id,
             ),
             disabled=is_localizing,
         )
         self._favorite_item_wallpaper_buttons[item.id] = set_wallpaper_button
         self._favorite_item_export_buttons[item.id] = export_button
 
-        action_buttons: List[ft.Control] = [
+        action_buttons: list[ft.Control] = [
             localization_stack,
             set_wallpaper_button,
             export_button,
@@ -12115,7 +12104,7 @@ class Pages:
                     icon=ft.Icons.OPEN_IN_NEW,
                     tooltip="打开来源链接",
                     on_click=lambda _, url=item.source.url: self.page.launch_url(url),
-                )
+                ),
             )
 
         actions_row = ft.Row(
@@ -12216,7 +12205,7 @@ class Pages:
 
         self._open_dialog(dialog)
 
-    def _parse_tag_input(self, raw: str) -> List[str]:
+    def _parse_tag_input(self, raw: str) -> list[str]:
         if not raw:
             return []
         normalized = raw.replace("，", ",").replace("、", ",")
@@ -12297,7 +12286,7 @@ class Pages:
     def _handle_localize_current_folder(self, _: ft.ControlEvent | None = None) -> None:
         folder_id = self._favorite_selected_folder
         items = self._favorite_manager.list_items(
-            None if folder_id in (None, "__all__") else folder_id
+            None if folder_id in (None, "__all__") else folder_id,
         )
         if not items:
             self._show_snackbar("当前视图没有可本地化的收藏。")
@@ -12397,7 +12386,7 @@ class Pages:
                 local_path = await self._ensure_favorite_local_copy(target_item)
                 if not local_path:
                     self._show_snackbar(
-                        "无法准备壁纸文件，请尝试先本地化。", error=True
+                        "无法准备壁纸文件，请尝试先本地化。", error=True,
                     )
                     return
                 await asyncio.to_thread(ltwapi.set_wallpaper, local_path)
@@ -12626,7 +12615,7 @@ class Pages:
                         path,
                     )
                     self._show_snackbar(
-                        f"导入完成：新增收藏夹 {folders} 个，收藏 {items} 条。"
+                        f"导入完成：新增收藏夹 {folders} 个，收藏 {items} 条。",
                     )
                     self._favorite_selected_folder = "__all__"
                     self._refresh_favorite_tabs()
@@ -12861,7 +12850,7 @@ class Pages:
             modal=True,
             title=ft.Text("删除收藏夹"),
             content=ft.Text(
-                f"确定要删除收藏夹“{folder.name}”吗？该收藏夹中的所有收藏将被移动到默认收藏夹。"
+                f"确定要删除收藏夹“{folder.name}”吗？该收藏夹中的所有收藏将被移动到默认收藏夹。",
             ),
             actions=[
                 ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
@@ -12880,7 +12869,7 @@ class Pages:
 
     def _open_favorite_editor(
         self,
-        payload: Dict[str, Any] | None,
+        payload: dict[str, Any] | None,
         item_id: str | None = None,
     ) -> None:
         if not payload:
@@ -12921,7 +12910,7 @@ class Pages:
 
         def _create_folder(_: ft.ControlEvent | None = None) -> None:
             self._open_new_folder_dialog(
-                on_created=lambda folder: _refresh_dropdown(folder.id)
+                on_created=lambda folder: _refresh_dropdown(folder.id),
             )
 
         title_field = ft.TextField(
@@ -13037,7 +13026,7 @@ class Pages:
 
         self._open_dialog(dialog)
 
-    def _make_current_wallpaper_payload(self) -> Dict[str, Any] | None:
+    def _make_current_wallpaper_payload(self) -> dict[str, Any] | None:
         path = self.wallpaper_path
         if not path:
             return None
@@ -13066,7 +13055,7 @@ class Pages:
             "extra": {"path": path},
         }
 
-    def _make_bing_favorite_payload(self) -> Dict[str, Any] | None:
+    def _make_bing_favorite_payload(self) -> dict[str, Any] | None:
         if not self.bing_wallpaper_url or not self.bing_wallpaper:
             return None
         identifier = self.bing_wallpaper.get("startdate") or self.bing_wallpaper_url
@@ -13089,7 +13078,7 @@ class Pages:
             "extra": {"bing": dict(self.bing_wallpaper)},
         }
 
-    def _make_spotlight_favorite_payload(self) -> Dict[str, Any] | None:
+    def _make_spotlight_favorite_payload(self) -> dict[str, Any] | None:
         if not self.spotlight_wallpaper or not self.spotlight_wallpaper_url:
             return None
         index = min(self.spotlight_current_index, len(self.spotlight_wallpaper) - 1)
@@ -13144,11 +13133,11 @@ class Pages:
                 modal=True,
                 title=ft.Text("获取Bing壁纸数据时出现问题"),
                 content=ft.Text(
-                    "你可以重试或手动下载壁纸后设置壁纸，若无法解决请联系开发者。"
+                    "你可以重试或手动下载壁纸后设置壁纸，若无法解决请联系开发者。",
                 ),
                 actions=[
                     ft.TextButton(
-                        "关闭", on_click=lambda e: setattr(dlg, "open", False)
+                        "关闭", on_click=lambda e: setattr(dlg, "open", False),
                     ),
                 ],
                 actions_alignment=ft.MainAxisAlignment.END,
@@ -13171,7 +13160,7 @@ class Pages:
                 )
 
             else:
-                setattr(dlg, "open", True)
+                dlg.open = True
                 logger.error("Bing 壁纸下载失败")
                 self._emit_bing_action("set_wallpaper", False)
 
@@ -13201,7 +13190,7 @@ class Pages:
                     ft.SnackBar(
                         ft.Text("当前没有可用的链接哦~"),
                         bgcolor=ft.Colors.ON_ERROR,
-                    )
+                    ),
                 )
                 self._emit_bing_action("copy_link", False)
                 return
@@ -13209,7 +13198,7 @@ class Pages:
             self.page.open(
                 ft.SnackBar(
                     ft.Text("链接已复制，快去分享吧~"),
-                )
+                ),
             )
             self._emit_bing_action("copy_link", True)
 
@@ -13229,7 +13218,7 @@ class Pages:
                     ft.SnackBar(
                         ft.Text("当前没有可用的壁纸资源~"),
                         bgcolor=ft.Colors.ON_ERROR,
-                    )
+                    ),
                 )
                 return
 
@@ -13266,11 +13255,11 @@ class Pages:
                         ft.SnackBar(
                             ft.Text("尚未配置下载目录，请在设置中配置。"),
                             bgcolor=ft.Colors.ON_ERROR,
-                        )
+                        ),
                     )
                     _reset_bing_ui()
                     return
-                
+
                 # 确保下载文件夹存在
                 try:
                     download_folder_path.mkdir(parents=True, exist_ok=True)
@@ -13280,13 +13269,13 @@ class Pages:
                         ft.SnackBar(
                             ft.Text("创建下载目录失败，请检查设置。"),
                             bgcolor=ft.Colors.ON_ERROR,
-                        )
+                        ),
                     )
                     _reset_bing_ui()
                     return
 
                 filename = _sanitize_filename(title, "Bing-Wallpaper") + ".jpg"
-                
+
                 try:
                     final_path = ltwapi.download_file(
                         self.bing_wallpaper_url,
@@ -13294,24 +13283,24 @@ class Pages:
                         filename,
                         progress_callback=progress_callback,
                     )
-                    
+
                     if final_path:
                         self._emit_download_completed("bing", "download", final_path)
                         self.page.open(
                             ft.SnackBar(
                                 ft.Text(f"已下载到 {final_path}"),
-                            )
+                            ),
                         )
                     else:
                         raise Exception("下载失败")
-                        
+
                 except Exception as exc:
                     logger.error("Bing 壁纸下载失败: {error}", error=str(exc))
                     self.page.open(
                         ft.SnackBar(
                             ft.Text("下载失败，请稍后再试~"),
                             bgcolor=ft.Colors.ON_ERROR,
-                        )
+                        ),
                     )
 
             _reset_bing_ui()
@@ -13348,7 +13337,7 @@ class Pages:
                     ft.SnackBar(
                         ft.Text("当前没有可用的壁纸资源~"),
                         bgcolor=ft.Colors.ON_ERROR,
-                    )
+                    ),
                 )
                 self._emit_bing_action(action, False)
                 return
@@ -13389,7 +13378,7 @@ class Pages:
                     ft.SnackBar(
                         ft.Text("下载失败，请稍后再试~"),
                         bgcolor=ft.Colors.ON_ERROR,
-                    )
+                    ),
                 )
                 self._emit_bing_action(action, False)
             else:
@@ -13399,7 +13388,7 @@ class Pages:
                         self.page.open(
                             ft.SnackBar(
                                 ft.Text("图片已复制，可直接粘贴~"),
-                            )
+                            ),
                         )
                         self._emit_bing_action(action, True)
                     else:
@@ -13407,7 +13396,7 @@ class Pages:
                             ft.SnackBar(
                                 ft.Text("复制图片失败，请稍后再试~"),
                                 bgcolor=ft.Colors.ON_ERROR,
-                            )
+                            ),
                         )
                         self._emit_bing_action(action, False)
                 elif action == "copy_file":
@@ -13415,7 +13404,7 @@ class Pages:
                         self.page.open(
                             ft.SnackBar(
                                 ft.Text("文件已复制到剪贴板~"),
-                            )
+                            ),
                         )
                         self._emit_bing_action(action, True)
                     else:
@@ -13423,7 +13412,7 @@ class Pages:
                             ft.SnackBar(
                                 ft.Text("复制文件失败，请稍后再试~"),
                                 bgcolor=ft.Colors.ON_ERROR,
-                            )
+                            ),
                         )
                         self._emit_bing_action(action, False)
 
@@ -13442,7 +13431,7 @@ class Pages:
         def _disable_copy_button():
             nonlocal copy_menu, copy_button
             copy_menu.disabled = True
-            setattr(copy_button, "bgcolor", ft.Colors.OUTLINE_VARIANT)
+            copy_button.bgcolor = ft.Colors.OUTLINE_VARIANT
             copy_button.content.controls[0].color = ft.Colors.OUTLINE
             copy_button.content.controls[1].color = ft.Colors.OUTLINE
             self.page.update()
@@ -13450,7 +13439,7 @@ class Pages:
         def _enable_copy_button():
             nonlocal copy_menu, copy_button
             copy_menu.disabled = False
-            setattr(copy_button, "bgcolor", ft.Colors.SECONDARY_CONTAINER)
+            copy_button.bgcolor = ft.Colors.SECONDARY_CONTAINER
             copy_button.content.controls[0].color = ft.Colors.ON_SECONDARY_CONTAINER
             copy_button.content.controls[1].color = ft.Colors.ON_SECONDARY_CONTAINER
             self.page.update()
@@ -13474,7 +13463,7 @@ class Pages:
             "收藏",
             icon=ft.Icons.STAR,
             on_click=lambda _: self._open_favorite_editor(
-                self._make_bing_favorite_payload()
+                self._make_bing_favorite_payload(),
             ),
         )
         # 下载按钮 - 两个独立按钮
@@ -13491,7 +13480,7 @@ class Pages:
             border_radius=50,
             on_click=lambda _: _handle_bing_download("download"),
         )
-        
+
         save_as_button = ft.Container(
             content=ft.Row(
                 controls=[
@@ -13551,7 +13540,7 @@ class Pages:
                     copy_menu,
                 ],
                 *extra_actions,
-            ]
+            ],
         )
 
         return ft.Container(
@@ -13574,17 +13563,17 @@ class Pages:
                                         [
                                             ft.TextButton("测验", icon=ft.Icons.LAUNCH),
                                             ft.TextButton("详情", icon=ft.Icons.LAUNCH),
-                                        ]
+                                        ],
                                     ),
                                 ],
                                 spacing=6,
                             ),
-                        ]
+                        ],
                     ),
                     actions_row,
                     bing_loading_info,
                     bing_pb,
-                ]
+                ],
             ),
             padding=16,
         )
@@ -13644,7 +13633,7 @@ class Pages:
                     ft.SnackBar(
                         ft.Text("当前壁纸缺少下载链接，暂时无法复制~"),
                         bgcolor=ft.Colors.ON_ERROR,
-                    )
+                    ),
                 )
                 self._emit_spotlight_action("copy_link", False)
                 return
@@ -13652,7 +13641,7 @@ class Pages:
             self.page.open(
                 ft.SnackBar(
                     ft.Text("壁纸链接已复制，快去分享吧~"),
-                )
+                ),
             )
             self._emit_spotlight_action("copy_link", True)
 
@@ -13674,7 +13663,7 @@ class Pages:
                     ft.SnackBar(
                         ft.Text("未找到壁纸地址，暂时无法下载~"),
                         bgcolor=ft.Colors.ON_ERROR,
-                    )
+                    ),
                 )
                 self._emit_spotlight_action(normalized_action, False)
                 return
@@ -13716,7 +13705,7 @@ class Pages:
             handled = False
             if success:
                 self._emit_download_completed(
-                    "spotlight", normalized_action, wallpaper_path
+                    "spotlight", normalized_action, wallpaper_path,
                 )
             if success and action == "set":
                 try:
@@ -13724,7 +13713,7 @@ class Pages:
                     self.page.open(
                         ft.SnackBar(
                             ft.Text("壁纸设置成功啦~ (๑•̀ㅂ•́)و✧"),
-                        )
+                        ),
                     )
                 except Exception as exc:
                     logger.error(f"设置壁纸失败: {exc}")
@@ -13742,21 +13731,21 @@ class Pages:
                     try:
                         # 确保下载文件夹存在
                         download_folder_path.mkdir(parents=True, exist_ok=True)
-                        
+
                         # 复制文件到配置的下载位置
                         import shutil
                         final_path = download_folder_path / filename
                         shutil.copy2(wallpaper_path, final_path)
-                        
+
                         # 删除缓存文件
                         wallpaper_path.unlink()
-                        
+
                         self.page.open(
                             ft.SnackBar(
                                 ft.Text(f"壁纸下载完成，已保存到 {final_path}"),
-                            )
+                            ),
                         )
-                        
+
                         self._emit_download_completed("spotlight", "download", final_path)
                     except Exception as exc:
                         logger.error(f"复制文件到下载目录失败: {exc}")
@@ -13764,7 +13753,7 @@ class Pages:
                             ft.SnackBar(
                                 ft.Text("下载完成，但保存到配置目录失败"),
                                 bgcolor=ft.Colors.ON_ERROR,
-                            )
+                            ),
                         )
                         # 如果复制失败，仍然使用缓存文件路径
                         final_path = wallpaper_path
@@ -13774,9 +13763,9 @@ class Pages:
                     self.page.open(
                         ft.SnackBar(
                             ft.Text("壁纸下载完成，但未配置下载位置"),
-                        )
+                        ),
                     )
-                
+
                 handled = True
                 self._emit_spotlight_action(
                     normalized_action,
@@ -13788,7 +13777,7 @@ class Pages:
                 self._ensure_spotlight_save_picker()
                 filename = _sanitize_filename(
                     spotlight.get("title"),
-                    f"Windows-Spotlight-{self.spotlight_current_index + 1}"
+                    f"Windows-Spotlight-{self.spotlight_current_index + 1}",
                 ) + ".jpg"
                 self._spotlight_save_picker.save_file(file_name=filename)
                 handled = True
@@ -13798,7 +13787,7 @@ class Pages:
                     self.page.open(
                         ft.SnackBar(
                             ft.Text("图片已复制，可直接粘贴~"),
-                        )
+                        ),
                     )
                     self._emit_spotlight_action(normalized_action, True)
                 else:
@@ -13807,7 +13796,7 @@ class Pages:
                         ft.SnackBar(
                             ft.Text("复制图片失败，请稍后再试~"),
                             bgcolor=ft.Colors.ON_ERROR,
-                        )
+                        ),
                     )
                     self._emit_spotlight_action(normalized_action, False)
             elif success and action == "copy_file":
@@ -13816,7 +13805,7 @@ class Pages:
                     self.page.open(
                         ft.SnackBar(
                             ft.Text("文件已复制到剪贴板~"),
-                        )
+                        ),
                     )
                     self._emit_spotlight_action(normalized_action, True)
                 else:
@@ -13825,7 +13814,7 @@ class Pages:
                         ft.SnackBar(
                             ft.Text("复制文件失败，请稍后再试~"),
                             bgcolor=ft.Colors.ON_ERROR,
-                        )
+                        ),
                     )
                     self._emit_spotlight_action(normalized_action, False)
 
@@ -13835,7 +13824,7 @@ class Pages:
                     ft.SnackBar(
                         ft.Text("下载失败，请稍后再试~"),
                         bgcolor=ft.Colors.ON_ERROR,
-                    )
+                    ),
                 )
                 self._emit_spotlight_action(normalized_action, False)
 
@@ -13864,7 +13853,7 @@ class Pages:
             if copy_menu:
                 copy_menu.disabled = True
             if copy_button:
-                setattr(copy_button, "bgcolor", ft.Colors.OUTLINE_VARIANT)
+                copy_button.bgcolor = ft.Colors.OUTLINE_VARIANT
                 copy_button.disabled = True
             if copy_icon:
                 copy_icon.color = ft.Colors.OUTLINE
@@ -13877,7 +13866,7 @@ class Pages:
             if copy_menu:
                 copy_menu.disabled = False
             if copy_button:
-                setattr(copy_button, "bgcolor", ft.Colors.SECONDARY_CONTAINER)
+                copy_button.bgcolor = ft.Colors.SECONDARY_CONTAINER
                 copy_button.disabled = False
             if copy_icon:
                 copy_icon.color = ft.Colors.ON_SECONDARY_CONTAINER
@@ -13889,13 +13878,13 @@ class Pages:
             return self._build_spotlight_loading_indicator()
         if not self.spotlight_wallpaper_url:
             return ft.Container(
-                ft.Text("Windows 聚焦壁纸加载失败，请稍后再试～"), padding=16
+                ft.Text("Windows 聚焦壁纸加载失败，请稍后再试～"), padding=16,
             )
         title = ft.Text()
         description = ft.Text(size=12)
         copy_rights = ft.Text(size=12, color=ft.Colors.GREY)
         info_button = ft.FilledTonalButton(
-            "了解详情", icon=ft.Icons.INFO, disabled=True
+            "了解详情", icon=ft.Icons.INFO, disabled=True,
         )
         set_button = ft.FilledTonalButton(
             "设为壁纸",
@@ -13906,7 +13895,7 @@ class Pages:
             "收藏",
             icon=ft.Icons.STAR,
             on_click=lambda _: self._open_favorite_editor(
-                self._make_spotlight_favorite_payload()
+                self._make_spotlight_favorite_payload(),
             ),
         )
         # Windows聚焦下载按钮 - 两个独立按钮
@@ -13923,7 +13912,7 @@ class Pages:
             border_radius=50,
             on_click=lambda e: _handle_download("download"),
         )
-        
+
         spotlight_save_as_button = ft.Container(
             content=ft.Row(
                 controls=[
@@ -13938,7 +13927,7 @@ class Pages:
             on_click=lambda e: _handle_download("save_as"),
         )
         copy_icon = ft.Icon(
-            ft.Icons.COPY, color=ft.Colors.ON_SECONDARY_CONTAINER, size=17
+            ft.Icons.COPY, color=ft.Colors.ON_SECONDARY_CONTAINER, size=17,
         )
         copy_text = ft.Text("复制", color=ft.Colors.ON_SECONDARY_CONTAINER)
         copy_button = ft.Container(
@@ -13993,7 +13982,7 @@ class Pages:
 
         _update_details(0)
         extra_spotlight_actions = self._build_plugin_actions(
-            self.spotlight_action_factories
+            self.spotlight_action_factories,
         )
         spotlight_actions_row = ft.Row(
             [
@@ -14005,7 +13994,7 @@ class Pages:
                     copy_menu,
                 ],
                 *extra_spotlight_actions,
-            ]
+            ],
         )
 
         return ft.Container(
@@ -14031,7 +14020,7 @@ class Pages:
                     spotlight_actions_row,
                     spotlight_loading_info,
                     spotlight_pb,
-                ]
+                ],
             ),
             padding=16,
         )
@@ -14231,7 +14220,7 @@ class Pages:
     def _ensure_sniff_save_picker(self) -> None:
         if self._sniff_save_picker is None:
             self._sniff_save_picker = ft.FilePicker(
-                on_result=self._handle_sniff_directory_result
+                on_result=self._handle_sniff_directory_result,
             )
         if self._sniff_save_picker not in self.page.overlay:
             self.page.overlay.append(self._sniff_save_picker)
@@ -14421,7 +14410,7 @@ class Pages:
             controls=[
                 image_control,
                 ft.Container(
-                    alignment=ft.alignment.top_right, padding=8, content=check_badge
+                    alignment=ft.alignment.top_right, padding=8, content=check_badge,
                 ),
             ],
             expand=True,
@@ -14483,7 +14472,7 @@ class Pages:
             return
         self._sniff_open_batch_favorite_dialog(images)
 
-    def _sniff_make_favorite_payload(self, image: SniffedImage) -> Dict[str, Any]:
+    def _sniff_make_favorite_payload(self, image: SniffedImage) -> dict[str, Any]:
         favorite_source = FavoriteSource(
             type="sniff",
             identifier=image.id,
@@ -14544,13 +14533,13 @@ class Pages:
 
         def _create_folder(_: ft.ControlEvent | None = None) -> None:
             self._open_new_folder_dialog(
-                on_created=lambda folder: _refresh_dropdown(folder.id)
+                on_created=lambda folder: _refresh_dropdown(folder.id),
             )
 
         _refresh_dropdown(initial_folder)
 
         status_text = ft.Text(
-            f"将添加 {len(images)} 张图片到收藏。", size=12, color=ft.Colors.GREY
+            f"将添加 {len(images)} 张图片到收藏。", size=12, color=ft.Colors.GREY,
         )
 
         def _submit(_: ft.ControlEvent | None = None) -> None:
@@ -14583,7 +14572,7 @@ class Pages:
             self._close_dialog()
             if created_count and created_count != len(images):
                 self._show_snackbar(
-                    f"已收藏 {len(images)} 张图片，其中 {created_count} 张为新项目。"
+                    f"已收藏 {len(images)} 张图片，其中 {created_count} 张为新项目。",
                 )
             else:
                 self._show_snackbar(f"已收藏 {len(images)} 张图片。")
@@ -14648,7 +14637,7 @@ class Pages:
         self._sniff_task_start("正在复制文件…")
         try:
             cached_paths = await asyncio.gather(
-                *[self._sniff_service.ensure_cached(image) for image in images]
+                *[self._sniff_service.ensure_cached(image) for image in images],
             )
             path_strings = [str(path) for path in cached_paths]
             success = await asyncio.to_thread(copy_files_to_clipboard, path_strings)
@@ -14745,7 +14734,7 @@ class Pages:
         self.page.run_task(self._sniff_save_to_directory, target_dir, selected)
 
     async def _sniff_save_to_directory(
-        self, directory: Path, images: Sequence[SniffedImage]
+        self, directory: Path, images: Sequence[SniffedImage],
     ) -> None:
         self._sniff_task_start("正在保存图片…")
         try:
@@ -15022,18 +15011,18 @@ class Pages:
                 ft.Text("测试和调试", size=30),
                 ft.Text("这里是测试和调试专用区域"),
                 ft.Button(
-                    "打开初次运行向导", on_click=lambda _: self.page.go("/first-run")
+                    "打开初次运行向导", on_click=lambda _: self.page.go("/first-run"),
                 ),
                 ft.Button(
-                    "添加启动项", on_click=lambda _: StartupManager().enable_startup()
+                    "添加启动项", on_click=lambda _: StartupManager().enable_startup(),
                 ),
                 ft.Button(
-                    "移除启动项", on_click=lambda _: StartupManager().disable_startup()
+                    "移除启动项", on_click=lambda _: StartupManager().disable_startup(),
                 ),
                 ft.Button(
                     "显示启动项状态",
                     on_click=lambda _: self._show_snackbar(
-                        f"启动项状态: {'已启用' if StartupManager().is_startup_enabled() else '未启用'}"
+                        f"启动项状态: {'已启用' if StartupManager().is_startup_enabled() else '未启用'}",
                     ),
                 ),
             ],
@@ -15067,7 +15056,7 @@ class Pages:
             content=ft.Column(
                 [
                     ft.Text(
-                        "为遵守相关法律法规，我们不会向法律禁止地区和未成年人提供此类内容。继续之前，请确认以下事项："
+                        "为遵守相关法律法规，我们不会向法律禁止地区和未成年人提供此类内容。继续之前，请确认以下事项：",
                     ),
                     adult_cb,
                     legal_cb,
@@ -15082,7 +15071,7 @@ class Pages:
         self._open_dialog(self._confirm_nsfw_dialog)
 
     def _refresh_theme_profiles(
-        self, *, initial: bool = False, show_feedback: bool = False
+        self, *, initial: bool = False, show_feedback: bool = False,
     ) -> None:
         if self._theme_list_handler is None:
             if not initial and show_feedback:
@@ -15099,7 +15088,7 @@ class Pages:
                 self._show_snackbar("刷新主题列表失败。", error=True)
             return
 
-        profiles: list[Dict[str, Any]] | None = None
+        profiles: list[dict[str, Any]] | None = None
         message: str | None = None
         if isinstance(result, PluginOperationResult):
             message = result.message
@@ -15120,7 +15109,7 @@ class Pages:
             self._theme_profiles = []
             self._render_theme_cards()
 
-    def _find_theme_profile(self, identifier: str | None) -> Dict[str, Any] | None:
+    def _find_theme_profile(self, identifier: str | None) -> dict[str, Any] | None:
         if not identifier:
             return None
         for profile in self._theme_profiles:
@@ -15130,8 +15119,8 @@ class Pages:
 
     @staticmethod
     def _theme_preview_text(
-        text: Optional[str], limit: int = 80
-    ) -> tuple[str, Optional[str]]:
+        text: str | None, limit: int = 80,
+    ) -> tuple[str, str | None]:
         if not isinstance(text, str) or not text.strip():
             return "暂无简介", None
         clean = text.strip()
@@ -15177,7 +15166,7 @@ class Pages:
         if wrap.page is not None and self.page is not None:
             self.page.update()
 
-    def _build_theme_card(self, profile: Dict[str, Any]) -> ft.Control | None:
+    def _build_theme_card(self, profile: dict[str, Any]) -> ft.Control | None:
         identifier = str(profile.get("id") or "").strip()
         if not identifier:
             return None
@@ -15220,7 +15209,7 @@ class Pages:
         ]
         if isinstance(author, str) and author.strip():
             name_column_controls.append(
-                ft.Text(f"作者：{author.strip()}", size=12, color=ft.Colors.GREY)
+                ft.Text(f"作者：{author.strip()}", size=12, color=ft.Colors.GREY),
             )
 
         name_column = ft.Column(
@@ -15300,7 +15289,7 @@ class Pages:
                 "详情",
                 icon=ft.Icons.INFO_OUTLINE,
                 on_click=lambda _=None, pid=identifier: self._open_theme_detail_dialog(
-                    pid
+                    pid,
                 ),
             ),
         ]
@@ -15311,9 +15300,9 @@ class Pages:
                     "访问主页",
                     icon=ft.Icons.OPEN_IN_NEW,
                     on_click=lambda _=None, url=website.strip(): self.page.launch_url(
-                        url
+                        url,
                     ),
-                )
+                ),
             )
 
         body_controls.append(ft.Container(expand=True))
@@ -15322,7 +15311,7 @@ class Pages:
                 spacing=8,
                 run_spacing=8,
                 controls=actions,
-            )
+            ),
         )
 
         bgcolor = (
@@ -15406,7 +15395,7 @@ class Pages:
                     details.strip(),
                     selectable=True,
                     auto_follow_links=True,
-                )
+                ),
             )
 
         if info_lines:
@@ -15418,7 +15407,7 @@ class Pages:
                     ],
                     spacing=4,
                     tight=True,
-                )
+                ),
             )
 
         actions: list[ft.Control] = [
@@ -15432,7 +15421,7 @@ class Pages:
                     "打开网站",
                     icon=ft.Icons.OPEN_IN_NEW,
                     on_click=lambda _=None, url=website.strip(): self.page.launch_url(
-                        url
+                        url,
                     ),
                 ),
             )
@@ -15448,7 +15437,7 @@ class Pages:
                     "应用此主题",
                     icon=ft.Icons.CHECK_CIRCLE,
                     on_click=_apply_and_close,
-                )
+                ),
             )
 
         dialog = ft.AlertDialog(
@@ -15466,7 +15455,7 @@ class Pages:
     def _ensure_theme_file_picker(self) -> None:
         if self._theme_file_picker is None:
             self._theme_file_picker = ft.FilePicker(
-                on_result=self._handle_theme_import_result
+                on_result=self._handle_theme_import_result,
             )
         if self._theme_file_picker not in self.page.overlay:
             self.page.overlay.append(self._theme_file_picker)
@@ -15529,18 +15518,18 @@ class Pages:
                     "导入主题 (.json)",
                     icon=ft.Icons.UPLOAD_FILE,
                     on_click=self._open_theme_import_picker,
-                )
+                ),
             )
             controls_row.append(
                 ft.TextButton(
                     "打开主题目录",
                     icon=ft.Icons.FOLDER_OPEN,
                     on_click=self._open_theme_directory,
-                )
+                ),
             )
 
         actions_wrap = ft.Row(
-            spacing=8, run_spacing=8, controls=controls_row, wrap=True
+            spacing=8, run_spacing=8, controls=controls_row, wrap=True,
         )
 
         helper_text = ft.Text(
@@ -15550,7 +15539,7 @@ class Pages:
         )
 
         cards_wrap = ft.Row(
-            spacing=12, run_spacing=12, wrap=True, scroll=ft.ScrollMode.AUTO
+            spacing=12, run_spacing=12, wrap=True, scroll=ft.ScrollMode.AUTO,
         )
         self._theme_cards_wrap = cards_wrap
         self._render_theme_cards()
@@ -15560,7 +15549,7 @@ class Pages:
                 controls=[actions_wrap, helper_text, cards_wrap],
                 spacing=12,
                 tight=True,
-            )
+            ),
         ]
 
     def build_settings_view(self):
@@ -15640,14 +15629,14 @@ class Pages:
                                     "IntelliMarkets用户协议",
                                     icon=ft.Icons.OPEN_IN_NEW,
                                     on_click=lambda _: self.page.launch_url(
-                                        "https://github.com/SRInternet-Studio/Wallpaper-generator/blob/NEXT-PREVIEW/DISCLAIMER.md"
+                                        "https://github.com/SRInternet-Studio/Wallpaper-generator/blob/NEXT-PREVIEW/DISCLAIMER.md",
                                     ),
                                 ),
                                 ft.Button(
                                     "pollinations.ai 用户协议",
                                     icon=ft.Icons.OPEN_IN_NEW,
                                     on_click=lambda _: self.page.launch_url(
-                                        "https://enter.pollinations.ai/terms"
+                                        "https://enter.pollinations.ai/terms",
                                     ),
                                 ),
                             ],
@@ -15798,7 +15787,7 @@ class Pages:
                         "已启用主题配置，建议将“界面主题”设置为“跟随系统/主题”，否则可能与主题配色冲突。",
                         size=12,
                     ),
-                ]
+                ],
             )
             if use_custom_theme_profile
             else None
@@ -15860,7 +15849,7 @@ class Pages:
                         on_click=lambda _: setattr(spoon_sheet, "open", True)
                         or self.page.update(),
                     ),
-                ]
+                ],
             ),
             ft.Row(
                 controls=[
@@ -15868,7 +15857,7 @@ class Pages:
                         "查看许可证",
                         icon=ft.Icons.OPEN_IN_NEW,
                         on_click=lambda _: self.page.launch_url(
-                            "https://www.gnu.org/licenses/agpl-3.0.html"
+                            "https://www.gnu.org/licenses/agpl-3.0.html",
                         ),
                     ),
                     ft.TextButton(
@@ -15881,14 +15870,14 @@ class Pages:
                         "查看用户协议",
                         icon=ft.Icons.OPEN_IN_NEW,
                         on_click=lambda _: self.page.launch_url(
-                            "https://docs.zsxiaoshu.cn/terms/wallpaper/user_agreement/"
+                            "https://docs.zsxiaoshu.cn/terms/wallpaper/user_agreement/",
                         ),
                     ),
                     ft.TextButton(
                         "查看二次开发协议",
                         icon=ft.Icons.OPEN_IN_NEW,
                         on_click=lambda _: self.page.launch_url(
-                            "https://docs.zsxiaoshu.cn/terms/wallpaper/secondary_development_agreement/"
+                            "https://docs.zsxiaoshu.cn/terms/wallpaper/secondary_development_agreement/",
                         ),
                     ),
                     ft.TextButton(
@@ -15897,7 +15886,7 @@ class Pages:
                         on_click=lambda _: setattr(third_party_sheet, "open", True)
                         or self.page.update(),
                     ),
-                ]
+                ],
             ),
         )
 
@@ -16176,15 +16165,15 @@ class Pages:
                             entry.note,
                             color=ft.Colors.SECONDARY,
                             size=12,
-                        )
+                        ),
                     )
                 conflict_cards.append(
                     ft.Card(
                         content=ft.Container(
                             ft.Column(card_elements, spacing=8, tight=True),
                             padding=20,
-                        )
-                    )
+                        ),
+                    ),
                 )
 
         continue_button_label = "忽略并继续" if has_conflict else "继续"
@@ -16210,10 +16199,10 @@ class Pages:
                         continue_button_label,
                         icon=ft.Icons.CHECK_CIRCLE,
                         on_click=lambda _: self.page.go(self._conflict_next_route),
-                    )
+                    ),
                 ],
                 alignment=ft.MainAxisAlignment.CENTER,
-            )
+            ),
         )
 
         return ft.View(
@@ -16257,7 +16246,7 @@ class Pages:
         """确保Bing保存文件选择器已初始化"""
         if self._bing_save_picker is None:
             self._bing_save_picker = ft.FilePicker(
-                on_result=self._handle_bing_save_result
+                on_result=self._handle_bing_save_result,
             )
             if self._bing_save_picker not in self.page.overlay:
                 self.page.overlay.append(self._bing_save_picker)
@@ -16266,7 +16255,7 @@ class Pages:
         """处理Bing另存为结果"""
         if not event.files:
             return
-        
+
         file_path = event.files[0].path
         if not file_path:
             return
@@ -16285,31 +16274,31 @@ class Pages:
                 filename,
                 progress_callback=progress_callback,
             )
-            
+
             if final_path:
                 self._emit_download_completed("bing", "save_as", final_path)
                 self.page.open(
                     ft.SnackBar(
                         ft.Text(f"已保存到 {final_path}"),
-                    )
+                    ),
                 )
             else:
                 raise Exception("下载失败")
-                
+
         except Exception as exc:
             logger.error("Bing 壁纸另存为失败: {error}", error=str(exc))
             self.page.open(
                 ft.SnackBar(
                     ft.Text("另存为失败，请稍后再试~"),
                     bgcolor=ft.Colors.ON_ERROR,
-                )
+                ),
             )
 
     def _ensure_spotlight_save_picker(self) -> None:
         """确保Windows聚焦保存文件选择器已初始化"""
         if self._spotlight_save_picker is None:
             self._spotlight_save_picker = ft.FilePicker(
-                on_result=self._handle_spotlight_save_result
+                on_result=self._handle_spotlight_save_result,
             )
             if self._spotlight_save_picker not in self.page.overlay:
                 self.page.overlay.append(self._spotlight_save_picker)
@@ -16318,7 +16307,7 @@ class Pages:
         """处理Windows聚焦另存为结果"""
         if not event.files:
             return
-        
+
         file_path = event.files[0].path
         if not file_path:
             return
@@ -16331,7 +16320,7 @@ class Pages:
                 else {}
             )
             url = spotlight.get("url")
-            
+
             if not url:
                 raise Exception("未找到壁纸地址")
 
@@ -16346,22 +16335,22 @@ class Pages:
                 filename,
                 progress_callback=progress_callback,
             )
-            
+
             if final_path:
                 self._emit_download_completed("spotlight", "save_as", final_path)
                 self.page.open(
                     ft.SnackBar(
                         ft.Text(f"已保存到 {final_path}"),
-                    )
+                    ),
                 )
             else:
                 raise Exception("下载失败")
-                
+
         except Exception as exc:
             logger.error("Windows 聚焦壁纸另存为失败: {error}", error=str(exc))
             self.page.open(
                 ft.SnackBar(
                     ft.Text("另存为失败，请稍后再试~"),
                     bgcolor=ft.Colors.ON_ERROR,
-                )
+                ),
             )

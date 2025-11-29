@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from loguru import logger
 
-from config import DEFAULT_CONFIG, save_config_file, get_config_file
-
 from app.paths import CONFIG_DIR
+from config import DEFAULT_CONFIG, get_config_file, save_config_file
 
 
 class SettingsStore:
@@ -24,7 +23,7 @@ class SettingsStore:
 
     def __init__(self, path: Path = CONFIG_DIR / "config.json") -> None:
         self._path = path
-        self._data: Dict[str, Any] = dict(get_config_file(path))
+        self._data: dict[str, Any] = dict(get_config_file(path))
         self._load()
 
     @property
@@ -93,7 +92,7 @@ class SettingsStore:
             return
 
         parts = key.split(".")
-        cur: Dict[str, Any] = self._data
+        cur: dict[str, Any] = self._data
         for part in parts[:-1]:
             if part not in cur or not isinstance(cur[part], dict):
                 cur[part] = {}
@@ -105,7 +104,7 @@ class SettingsStore:
         self._data = dict(DEFAULT_CONFIG)
         self.save()
 
-    def as_dict(self) -> Dict[str, Any]:
+    def as_dict(self) -> dict[str, Any]:
         return dict(self._data)
 
 

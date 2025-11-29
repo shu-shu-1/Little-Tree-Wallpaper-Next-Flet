@@ -6,10 +6,10 @@ import platform
 import subprocess
 from pathlib import Path
 
-from loguru import logger
 import flet as ft
+from loguru import logger
 
-from .constants import SHOW_WATERMARK, BUILD_VERSION
+from .constants import BUILD_VERSION, SHOW_WATERMARK
 
 
 def build_watermark(
@@ -19,7 +19,6 @@ def build_watermark(
     margin_rb: tuple[int, int] = (12, 12),
 ):
     """构建一个右下角的测试版水印。"""
-
     if not SHOW_WATERMARK:
         return ft.Container()
 
@@ -66,7 +65,7 @@ def copy_image_to_clipboard(image_path: Path) -> bool:
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-STA", "-Command", script],
-            capture_output=True,
+            check=False, capture_output=True,
             text=True,
         )
     except FileNotFoundError:
@@ -78,7 +77,7 @@ def copy_image_to_clipboard(image_path: Path) -> bool:
 
     if result.returncode != 0:
         logger.error(
-            "复制图片失败：{}".format(result.stderr.strip() or result.stdout.strip())
+            f"复制图片失败：{result.stderr.strip() or result.stdout.strip()}",
         )
         return False
     return True
@@ -105,7 +104,7 @@ def copy_files_to_clipboard(paths: list[str]) -> bool:
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command", script],
-            capture_output=True,
+            check=False, capture_output=True,
             text=True,
         )
     except FileNotFoundError:
@@ -117,7 +116,7 @@ def copy_files_to_clipboard(paths: list[str]) -> bool:
 
     if result.returncode != 0:
         logger.error(
-            "复制文件失败：{}".format(result.stderr.strip() or result.stdout.strip())
+            f"复制文件失败：{result.stderr.strip() or result.stdout.strip()}",
         )
         return False
     return True

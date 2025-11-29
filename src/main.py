@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 #
@@ -19,13 +18,11 @@ import flet as ft
 
 from app import Application
 
-
 _START_HIDDEN = any(arg.lower() in {"/hide", "--hide"} for arg in sys.argv[1:])
 
 
 def main(page: ft.Page) -> None:
     """Delegate to the modular :class:`Application`."""
-
     Application(start_hidden=_START_HIDDEN)(page)
 
 
@@ -34,11 +31,11 @@ if __name__ == "__main__":
         ft.app(target=main)
     except Exception as e:
         # 获取完整的异常信息包括堆栈跟踪
-        error_message = f"发生错误: {str(e)}\n\n详细信息:\n{traceback.format_exc()}"
+        error_message = f"发生错误: {e!s}\n\n详细信息:\n{traceback.format_exc()}"
         try:
             with open("crush.log", "a", encoding="utf-8") as f:
                 f.write(error_message + "\n")
         except Exception:
             pass
-        
+
 

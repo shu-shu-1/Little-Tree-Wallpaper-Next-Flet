@@ -1,41 +1,5 @@
 """Plugin infrastructure exports."""
 
-from .base import (
-    AppNavigationView,
-    AppRouteView,
-    Plugin,
-    PluginContext,
-    PluginManifest,
-    PluginService,
-    PluginSettingsPage,
-    PluginSettingsTab,
-    PluginKind,
-    PluginDependencySpec,
-)
-from .manager import PluginManager, PluginImportResult
-from .permissions import (
-    KNOWN_PERMISSIONS,
-    PluginPermission,
-    PermissionState,
-    ensure_permission_states,
-    normalize_permission_state,
-)
-from .operations import PluginOperationResult, PluginPermissionError
-from .runtime import PluginRuntimeInfo, PluginStatus
-from .events import PluginEventBus, PluginEvent, EventDefinition, CORE_EVENT_DEFINITIONS
-from .favorites_api import FavoriteService
-from .data import (
-    GlobalDataAccess,
-    GlobalDataEntry,
-    GlobalDataNamespace,
-    GlobalDataSnapshot,
-    GlobalDataStore,
-    GlobalDataError,
-    NamespaceNotFound,
-    NamespaceOwnershipError,
-    NamespaceRegistrationError,
-    PermissionDenied,
-)
 from app.favorites import (
     FavoriteAIInfo,
     FavoriteAIResult,
@@ -46,48 +10,85 @@ from app.favorites import (
     FavoriteSource,
 )
 
+from .base import (
+    AppNavigationView,
+    AppRouteView,
+    Plugin,
+    PluginContext,
+    PluginDependencySpec,
+    PluginKind,
+    PluginManifest,
+    PluginService,
+    PluginSettingsPage,
+    PluginSettingsTab,
+)
+from .data import (
+    GlobalDataAccess,
+    GlobalDataEntry,
+    GlobalDataError,
+    GlobalDataNamespace,
+    GlobalDataSnapshot,
+    GlobalDataStore,
+    NamespaceNotFound,
+    NamespaceOwnershipError,
+    NamespaceRegistrationError,
+    PermissionDenied,
+)
+from .events import CORE_EVENT_DEFINITIONS, EventDefinition, PluginEvent, PluginEventBus
+from .favorites_api import FavoriteService
+from .manager import PluginImportResult, PluginManager
+from .operations import PluginOperationResult, PluginPermissionError
+from .permissions import (
+    KNOWN_PERMISSIONS,
+    PermissionState,
+    PluginPermission,
+    ensure_permission_states,
+    normalize_permission_state,
+)
+from .runtime import PluginRuntimeInfo, PluginStatus
+
 __all__ = [
+    "CORE_EVENT_DEFINITIONS",
+    "KNOWN_PERMISSIONS",
     "AppNavigationView",
     "AppRouteView",
-    "Plugin",
-    "PluginContext",
-    "PluginManifest",
-    "PluginService",
-    "PluginSettingsPage",
-    "PluginSettingsTab",
-    "PluginManager",
-    "PluginImportResult",
-    "PluginKind",
-    "PluginDependencySpec",
-    "PluginPermission",
-    "PermissionState",
-    "KNOWN_PERMISSIONS",
-    "ensure_permission_states",
-    "normalize_permission_state",
-    "PluginOperationResult",
-    "PluginPermissionError",
-    "PluginRuntimeInfo",
-    "PluginStatus",
-    "PluginEventBus",
-    "PluginEvent",
     "EventDefinition",
-    "CORE_EVENT_DEFINITIONS",
-    "GlobalDataAccess",
-    "GlobalDataEntry",
-    "GlobalDataNamespace",
-    "GlobalDataSnapshot",
-    "GlobalDataStore",
-    "GlobalDataError",
-    "NamespaceNotFound",
-    "NamespaceOwnershipError",
-    "NamespaceRegistrationError",
-    "PermissionDenied",
-    "FavoriteService",
     "FavoriteAIInfo",
     "FavoriteAIResult",
     "FavoriteCollection",
     "FavoriteFolder",
     "FavoriteItem",
     "FavoriteManager",
+    "FavoriteService",
     "FavoriteSource",
+    "GlobalDataAccess",
+    "GlobalDataEntry",
+    "GlobalDataError",
+    "GlobalDataNamespace",
+    "GlobalDataSnapshot",
+    "GlobalDataStore",
+    "NamespaceNotFound",
+    "NamespaceOwnershipError",
+    "NamespaceRegistrationError",
+    "PermissionDenied",
+    "PermissionState",
+    "Plugin",
+    "PluginContext",
+    "PluginDependencySpec",
+    "PluginEvent",
+    "PluginEventBus",
+    "PluginImportResult",
+    "PluginKind",
+    "PluginManager",
+    "PluginManifest",
+    "PluginOperationResult",
+    "PluginPermission",
+    "PluginPermissionError",
+    "PluginRuntimeInfo",
+    "PluginService",
+    "PluginSettingsPage",
+    "PluginSettingsTab",
+    "PluginStatus",
+    "ensure_permission_states",
+    "normalize_permission_state",
 ]

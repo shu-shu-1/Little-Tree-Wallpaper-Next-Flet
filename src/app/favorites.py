@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Favorite management subsystem for Little Tree Wallpaper Next."""
 
 from __future__ import annotations
@@ -11,11 +10,12 @@ import shutil
 import tempfile
 import time
 import uuid
-from zipfile import ZIP_DEFLATED, ZipFile
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
-from typing import Any, Awaitable, Dict, List, Protocol, Sequence, Tuple, Union, Literal
+from typing import Any, Literal, Protocol, Union
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from loguru import logger
 
@@ -32,7 +32,7 @@ EXPORT_DATA_FILENAME = "favorites.json"
 class FavoriteClassifier(Protocol):
     """Callable interface used to plug in AI-assisted classification."""
 
-    def __call__(self, item: "FavoriteItem") -> ClassifierResult:  # pragma: no cover - Protocol signature
+    def __call__(self, item: FavoriteItem) -> ClassifierResult:  # pragma: no cover - Protocol signature
         ...
 
 
@@ -46,9 +46,9 @@ class FavoriteSource:
     url: str | None = None
     preview_url: str | None = None
     local_path: str | None = None
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "type": self.type,
             "identifier": self.identifier,
@@ -60,7 +60,7 @@ class FavoriteSource:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any] | None) -> "FavoriteSource":
+    def from_dict(cls, data: dict[str, Any] | None) -> FavoriteSource:
         if not data:
             return cls()
         return cls(
@@ -79,12 +79,12 @@ class FavoriteAIInfo:
     """Stores AI metadata for a favorite entry."""
 
     status: Literal["idle", "pending", "running", "completed", "failed"] = "idle"
-    suggested_tags: List[str] = field(default_factory=list)
+    suggested_tags: list[str] = field(default_factory=list)
     suggested_folder_id: str | None = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     updated_at: float | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
             "suggested_tags": list(self.suggested_tags),
@@ -94,7 +94,7 @@ class FavoriteAIInfo:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any] | None) -> "FavoriteAIInfo":
+    def from_dict(cls, data: dict[str, Any] | None) -> FavoriteAIInfo:
         if not data:
             return cls()
         info = cls()
@@ -118,7 +118,7 @@ class FavoriteLocalizationInfo:
     checksum: str | None = None
     file_size: int | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
             "local_path": self.local_path,
@@ -130,7 +130,7 @@ class FavoriteLocalizationInfo:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any] | None) -> "FavoriteLocalizationInfo":
+    def from_dict(cls, data: dict[str, Any] | None) -> FavoriteLocalizationInfo:
         if not data:
             return cls()
         info = cls()
@@ -159,7 +159,7 @@ class FavoriteItem:
     folder_id: str
     title: str
     description: str = ""
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     source: FavoriteSource = field(default_factory=FavoriteSource)
     preview_url: str | None = None
     local_path: str | None = None
@@ -167,9 +167,9 @@ class FavoriteItem:
     updated_at: float = field(default_factory=time.time)
     ai: FavoriteAIInfo = field(default_factory=FavoriteAIInfo)
     localization: FavoriteLocalizationInfo = field(default_factory=FavoriteLocalizationInfo)
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "folder_id": self.folder_id,
@@ -187,7 +187,7 @@ class FavoriteItem:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "FavoriteItem":
+    def from_dict(cls, data: dict[str, Any]) -> FavoriteItem:
         return cls(
             id=str(data.get("id")),
             folder_id=str(data.get("folder_id", "default")),
@@ -218,9 +218,9 @@ class FavoriteFolder:
     order: int = 0
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
@@ -232,7 +232,7 @@ class FavoriteFolder:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "FavoriteFolder":
+    def from_dict(cls, data: dict[str, Any]) -> FavoriteFolder:
         return cls(
             id=str(data.get("id")),
             name=str(data.get("name", "收藏夹")),
@@ -253,7 +253,7 @@ class FavoriteAIResult:
 
     tags: Sequence[str] = field(default_factory=list)
     folder_id: str | None = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -261,9 +261,9 @@ class FavoriteCollection:
     """Serialized representation of the favorites database."""
 
     version: int = 1
-    folders: Dict[str, FavoriteFolder] = field(default_factory=dict)
-    items: Dict[str, FavoriteItem] = field(default_factory=dict)
-    folder_order: List[str] = field(default_factory=list)
+    folders: dict[str, FavoriteFolder] = field(default_factory=dict)
+    items: dict[str, FavoriteItem] = field(default_factory=dict)
+    folder_order: list[str] = field(default_factory=list)
 
     def ensure_default_folder(self) -> FavoriteFolder:
         folder = self.folders.get("default")
@@ -281,7 +281,7 @@ class FavoriteCollection:
         return folder
 
     def _normalize_orders(self) -> None:
-        cleaned_order: List[str] = []
+        cleaned_order: list[str] = []
         for folder_id in self.folder_order:
             if folder_id in self.folders and folder_id not in cleaned_order:
                 cleaned_order.append(folder_id)
@@ -294,7 +294,7 @@ class FavoriteCollection:
             if folder:
                 folder.order = index
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "version": self.version,
             "folders": {fid: folder.to_dict() for fid, folder in self.folders.items()},
@@ -303,7 +303,7 @@ class FavoriteCollection:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "FavoriteCollection":
+    def from_dict(cls, data: dict[str, Any]) -> FavoriteCollection:
         collection = cls()
         collection.version = int(data.get("version", 1))
         folders = data.get("folders", {})
@@ -369,7 +369,7 @@ class FavoriteManager:
     # ------------------------------------------------------------------
     # folder ops
     # ------------------------------------------------------------------
-    def list_folders(self) -> List[FavoriteFolder]:
+    def list_folders(self) -> list[FavoriteFolder]:
         with self._lock:
             folders = [
                 self._collection.folders[fid]
@@ -388,7 +388,7 @@ class FavoriteManager:
         name: str,
         *,
         description: str = "",
-        metadata: Dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> FavoriteFolder:
         normalized_name = name.strip() or "未命名收藏夹"
         metadata = metadata or {}
@@ -475,8 +475,8 @@ class FavoriteManager:
                 hasher.update(chunk)
         return hasher.hexdigest()
 
-    def _sanitize_import_item_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        sanitized: Dict[str, Any] = dict(payload or {})
+    def _sanitize_import_item_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        sanitized: dict[str, Any] = dict(payload or {})
         sanitized["local_path"] = None
 
         source_dict = dict(sanitized.get("source") or {})
@@ -619,7 +619,7 @@ class FavoriteManager:
         include_assets: bool = True,
         *,
         item_ids: Sequence[str] | None = None,
-    ) -> tuple[Dict[str, Any], list[tuple[Path, str]]]:
+    ) -> tuple[dict[str, Any], list[tuple[Path, str]]]:
         item_ids_set = {str(iid) for iid in item_ids} if item_ids else None
         with self._lock:
             if item_ids_set is None:
@@ -636,7 +636,7 @@ class FavoriteManager:
                 selected_folder_ids_list = []
                 selected_folder_ids_set: set[str] = set()
 
-            item_payload: Dict[str, Dict[str, Any]] = {}
+            item_payload: dict[str, dict[str, Any]] = {}
             asset_plan: list[tuple[Path, str]] = []
             planned_assets: set[tuple[str, str]] = set()
             timestamp = time.time()
@@ -719,7 +719,7 @@ class FavoriteManager:
                 if fid in selected_folder_ids_set
             ]
             metadata_folders = sorted(selected_folder_ids_set)
-            export_data: Dict[str, Any] = {
+            export_data: dict[str, Any] = {
                 "package_version": EXPORT_PACKAGE_VERSION,
                 "app_version": BUILD_VERSION,
                 "exported_at": timestamp,
@@ -738,7 +738,7 @@ class FavoriteManager:
     def _build_export_package(
         self,
         target_path: Path,
-        export_data: Dict[str, Any],
+        export_data: dict[str, Any],
         asset_plan: list[tuple[Path, str]],
     ) -> Path:
         target_path = Path(target_path)
@@ -830,9 +830,9 @@ class FavoriteManager:
             package_version = int(payload.get("package_version", 1))
             exported_at = payload.get("exported_at")
             include_assets_flag = bool(payload.get("include_assets", False))
-            folders_data: Dict[str, Dict[str, Any]] = payload.get("folders", {}) or {}
-            items_data_raw: Dict[str, Dict[str, Any]] = payload.get("items", {}) or {}
-            sanitized_items: Dict[str, Dict[str, Any]] = {}
+            folders_data: dict[str, dict[str, Any]] = payload.get("folders", {}) or {}
+            items_data_raw: dict[str, dict[str, Any]] = payload.get("items", {}) or {}
+            sanitized_items: dict[str, dict[str, Any]] = {}
             for original_id, raw_item in items_data_raw.items():
                 if isinstance(raw_item, dict):
                     sanitized_items[str(original_id)] = self._sanitize_import_item_payload(raw_item)
@@ -842,8 +842,8 @@ class FavoriteManager:
 
             created_folders = 0
             imported_items = 0
-            folder_mapping: Dict[str, str] = {}
-            item_mapping: Dict[str, str] = {}
+            folder_mapping: dict[str, str] = {}
+            item_mapping: dict[str, str] = {}
 
             with self._lock:
                 for original_id, folder_dict in folders_data.items():
@@ -961,7 +961,7 @@ class FavoriteManager:
     # ------------------------------------------------------------------
     # item ops
     # ------------------------------------------------------------------
-    def _normalize_tags(self, tags: Sequence[str] | None) -> List[str]:
+    def _normalize_tags(self, tags: Sequence[str] | None) -> list[str]:
         if not tags:
             return []
         cleaned = []
@@ -980,7 +980,7 @@ class FavoriteManager:
         self._collection.ensure_default_folder()
         return "default"
 
-    def list_items(self, folder_id: str | None = None) -> List[FavoriteItem]:
+    def list_items(self, folder_id: str | None = None) -> list[FavoriteItem]:
         with self._lock:
             items = list(self._collection.items.values())
             if folder_id and folder_id != "__all__":
@@ -1013,12 +1013,12 @@ class FavoriteManager:
         title: str,
         description: str = "",
         tags: Sequence[str] | None = None,
-        source: FavoriteSource | Dict[str, Any] | None = None,
+        source: FavoriteSource | dict[str, Any] | None = None,
         preview_url: str | None = None,
         local_path: str | None = None,
-        extra: Dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
         merge_tags: bool = True,
-    ) -> Tuple[FavoriteItem, bool]:
+    ) -> tuple[FavoriteItem, bool]:
         resolved_source = (
             source
             if isinstance(source, FavoriteSource)
@@ -1087,7 +1087,7 @@ class FavoriteManager:
         description: str = "",
         tags: Sequence[str] | None = None,
         source_title: str | None = None,
-        extra: Dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
         merge_tags: bool = True,
     ) -> tuple[FavoriteItem, bool]:
         resolved = Path(path).expanduser().resolve()
@@ -1140,7 +1140,7 @@ class FavoriteManager:
         title: str | None = None,
         description: str | None = None,
         tags: Sequence[str] | None = None,
-        extra: Dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> bool:
         with self._lock:
             item = self._collection.items.get(item_id)
@@ -1226,11 +1226,11 @@ class FavoriteManager:
 __all__ = [
     "FavoriteAIInfo",
     "FavoriteAIResult",
+    "FavoriteClassifier",
     "FavoriteCollection",
     "FavoriteFolder",
     "FavoriteItem",
+    "FavoriteLocalizationInfo",
     "FavoriteManager",
     "FavoriteSource",
-    "FavoriteClassifier",
-    "FavoriteLocalizationInfo",
 ]

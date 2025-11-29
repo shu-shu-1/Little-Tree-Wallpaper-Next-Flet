@@ -2,59 +2,60 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import flet as ft
 from loguru import logger
 
 import ltwapi
 
-from .constants import BUILD_VERSION, MODE, FIRST_RUN_MARKER_VERSION
+from .conflicts import StartupConflict, detect_conflicts
+from .constants import BUILD_VERSION, FIRST_RUN_MARKER_VERSION, MODE
+from .core.pages import Pages
+from .first_run import should_show_first_run
+from .ipc import IPCService
 from .paths import (
     CACHE_DIR,
     CONFIG_DIR,
     DATA_DIR,
-    ICO_PATH,
     HITO_FONT_PATH,
+    ICO_PATH,
     PLUGINS_DIR,
     UI_FONT_PATH,
 )
 from .plugins import (
+    CORE_EVENT_DEFINITIONS,
+    KNOWN_PERMISSIONS,
     AppNavigationView,
     AppRouteView,
+    FavoriteService,
+    GlobalDataAccess,
+    GlobalDataStore,
+    PermissionState,
     Plugin,
     PluginContext,
-    PluginManifest,
-    PluginManager,
-    PluginSettingsPage,
-    FavoriteService,
-    KNOWN_PERMISSIONS,
     PluginEventBus,
-    CORE_EVENT_DEFINITIONS,
-    GlobalDataStore,
-    GlobalDataAccess,
     PluginImportResult,
-    PermissionState,
+    PluginManager,
+    PluginManifest,
+    PluginOperationResult,
+    PluginSettingsPage,
     ensure_permission_states,
     normalize_permission_state,
-    PluginOperationResult,
 )
 from .plugins.config import PluginConfigStore
-from .core.pages import Pages
-from .ipc import IPCService
-from .ui_utils import build_watermark
 from .settings import SettingsStore
 from .theme import ThemeManager
 from .tray import TrayIcon
-from .first_run import should_show_first_run
-from .conflicts import StartupConflict, detect_conflicts
+from .ui_utils import build_watermark
 
 app_config = SettingsStore()
 
-_AUTO_GRANTED_PERMISSIONS: Set[str] = {
+_AUTO_GRANTED_PERMISSIONS: set[str] = {
     "theme_read",
     "theme_apply",
 }
@@ -63,7 +64,7 @@ _AUTO_GRANTED_PERMISSIONS: Set[str] = {
 class ApplicationPluginService:
     """High-level plugin lifecycle helper exposed to privileged UI."""
 
-    def __init__(self, app: "Application") -> None:
+    def __init__(self, app: Application) -> None:
         self._app = app
 
     def list_plugins(self):
@@ -86,7 +87,7 @@ class ApplicationPluginService:
         return self._app._plugin_manager.import_plugin(source_path)
 
     def update_permission(
-        self, identifier: str, permission: str, allowed: bool | PermissionState | None
+        self, identifier: str, permission: str, allowed: bool | PermissionState | None,
     ) -> None:
         state = normalize_permission_state(allowed)
         self._app._set_permission_state(identifier, permission, state)
@@ -111,7 +112,7 @@ class _PermissionPromptRequest:
     plugin_id: str
     permission: str
     on_granted: Callable[[], PluginOperationResult]
-    on_denied: Optional[Callable[[], PluginOperationResult]] = None
+    on_denied: Callable[[], PluginOperationResult] | None = None
     result: PluginOperationResult | None = None
     completion: Event = field(default_factory=Event, repr=False)
     message: str | None = None
@@ -135,18 +136,18 @@ class Application:
         self._data_store = GlobalDataStore(self._resolve_permission)
         self._register_core_events()
         self._page: ft.Page | None = None
-        self._plugin_contexts: Dict[str, PluginContext] = {}
-        self._permission_prompt_queue: List[_PermissionPromptRequest] = []
+        self._plugin_contexts: dict[str, PluginContext] = {}
+        self._permission_prompt_queue: list[_PermissionPromptRequest] = []
         self._permission_prompt_active: bool = False
         self._permission_dialog: ft.AlertDialog | None = None
-        self._route_registry: Dict[str, AppRouteView] = {}
-        self._navigation_views: List[AppNavigationView] = []
-        self._navigation_index: Dict[str, int] = {}
+        self._route_registry: dict[str, AppRouteView] = {}
+        self._navigation_views: list[AppNavigationView] = []
+        self._navigation_index: dict[str, int] = {}
         self._navigation_container: ft.Container | None = None
         self._navigation_rail: ft.NavigationRail | None = None
         self._core_pages: Pages | None = None
         self._ipc_service = IPCService()
-        self._ipc_plugin_subscriptions: Dict[str, Set[str]] = {}
+        self._ipc_plugin_subscriptions: dict[str, set[str]] = {}
         self._reload_required = False
         self._start_hidden = start_hidden
         self._first_run_pending = False
@@ -209,20 +210,20 @@ class Application:
         self._navigation_rail = None
         self._core_pages = None
 
-        route_views: Dict[str, AppRouteView] = {}
-        startup_hooks: List[Callable[[], None]] = []
+        route_views: dict[str, AppRouteView] = {}
+        startup_hooks: list[Callable[[], None]] = []
         initial_route: str = "/"
         self._plugin_contexts = {}
 
-        bing_action_factories: List[Callable[[], ft.Control]] = []
-        spotlight_action_factories: List[Callable[[], ft.Control]] = []
-        settings_pages: List[PluginSettingsPage] = []
+        bing_action_factories: list[Callable[[], ft.Control]] = []
+        spotlight_action_factories: list[Callable[[], ft.Control]] = []
+        settings_pages: list[PluginSettingsPage] = []
 
         self._event_bus.clear_all()
         self._register_core_events()
 
-        navigation_registry: Dict[str, List[AppNavigationView]] = {}
-        navigation_plugin_order: List[str] = []
+        navigation_registry: dict[str, list[AppNavigationView]] = {}
+        navigation_plugin_order: list[str] = []
 
         def _register_navigation(plugin_id: str, view: AppNavigationView) -> None:
             if plugin_id not in navigation_registry:
@@ -257,9 +258,9 @@ class Application:
 
         def make_path_factory(
             root: Path,
-        ) -> Callable[[str, Tuple[str, ...], bool], Path]:
+        ) -> Callable[[str, tuple[str, ...], bool], Path]:
             def factory(
-                plugin_id: str, segments: Tuple[str, ...], create: bool = False
+                plugin_id: str, segments: tuple[str, ...], create: bool = False,
             ) -> Path:
                 base = root / "plugins" / plugin_id
                 target = base if not segments else base.joinpath(*segments)
@@ -356,12 +357,12 @@ class Application:
             )
             context._switch_home_handler = (
                 lambda navigation_id, pid=manifest.identifier: self._switch_home(
-                    pid, navigation_id
+                    pid, navigation_id,
                 )
             )
             context._open_settings_handler = (
                 lambda tab_id, pid=manifest.identifier: self._open_settings_tab(
-                    pid, tab_id
+                    pid, tab_id,
                 )
             )
             context._set_wallpaper_handler = (
@@ -369,17 +370,17 @@ class Application:
             )
             context._ipc_broadcast_handler = (
                 lambda channel, payload, pid=manifest.identifier: self._ipc_broadcast(
-                    pid, channel, payload
+                    pid, channel, payload,
                 )
             )
             context._ipc_subscribe_handler = (
                 lambda channel, pid=manifest.identifier: self._ipc_subscribe(
-                    pid, channel
+                    pid, channel,
                 )
             )
             context._ipc_unsubscribe_handler = (
                 lambda subscription_id, pid=manifest.identifier: self._ipc_unsubscribe(
-                    pid, subscription_id
+                    pid, subscription_id,
                 )
             )
             context._theme_list_handler = (
@@ -387,7 +388,7 @@ class Application:
             )
             context._theme_apply_handler = (
                 lambda profile, pid=manifest.identifier: self._set_theme_profile(
-                    pid, profile
+                    pid, profile,
                 )
             )
             if self._plugin_manager.is_builtin(manifest.identifier):
@@ -399,7 +400,7 @@ class Application:
         self._plugin_manager.activate_all(build_context)
         self._extract_core_pages()
 
-        navigation_views: List[AppNavigationView] = []
+        navigation_views: list[AppNavigationView] = []
         for plugin_id in navigation_plugin_order:
             if self._plugin_manager.is_builtin(plugin_id):
                 navigation_views.extend(navigation_registry.get(plugin_id, []))
@@ -427,10 +428,10 @@ class Application:
         ]
 
         content_container = ft.Container(
-            expand=True, content=navigation_views[0].content
+            expand=True, content=navigation_views[0].content,
         )
         self._theme_manager.apply_component_style(
-            "navigation_container", content_container
+            "navigation_container", content_container,
         )
         self._navigation_container = content_container
 
@@ -510,12 +511,12 @@ class Application:
                 "设置",
                 icon=ft.Icons.SETTINGS,
                 on_click=open_settings,
-            )
+            ),
         )
 
         appbar = ft.AppBar(
             leading=ft.Image(
-                str(ICO_PATH), width=24, height=24, fit=ft.ImageFit.CONTAIN
+                str(ICO_PATH), width=24, height=24, fit=ft.ImageFit.CONTAIN,
             ),
             title=ft.Text("小树壁纸 Next - Flet"),
             bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
@@ -542,7 +543,7 @@ class Application:
 
         page.on_route_change = route_change
         page.go(
-            initial_route if MODE == "TEST" and initial_route == "/" else initial_route
+            initial_route if MODE == "TEST" and initial_route == "/" else initial_route,
         )
 
         for hook in startup_hooks:
@@ -584,7 +585,7 @@ class Application:
 
     def is_reload_required(self) -> bool:
         logger.debug(
-            "应用程序检查是否需要重新加载: {state}", state=self._reload_required
+            "应用程序检查是否需要重新加载: {state}", state=self._reload_required,
         )
         return self._reload_required
 
@@ -602,7 +603,7 @@ class Application:
             page.theme.font_family = font_family
 
     def _set_permission_state(
-        self, plugin_id: str, permission: str, state: PermissionState
+        self, plugin_id: str, permission: str, state: PermissionState,
     ) -> None:
         self._plugin_manager.update_permission(plugin_id, permission, state)
         runtime = self._plugin_manager.get_runtime(plugin_id)
@@ -631,7 +632,7 @@ class Application:
         plugin_id: str,
         permission: str,
         on_granted: Callable[[], PluginOperationResult],
-        on_denied: Optional[Callable[[], PluginOperationResult]] = None,
+        on_denied: Callable[[], PluginOperationResult] | None = None,
         *,
         message: str | None = None,
     ) -> PluginOperationResult:
@@ -660,7 +661,7 @@ class Application:
             self._dequeue_permission_prompt()
         request.completion.wait()
         return request.result or PluginOperationResult.failed(
-            "permission_prompt_cancelled", "权限请求已取消。"
+            "permission_prompt_cancelled", "权限请求已取消。",
         )
 
     def _prompt_permission_state(
@@ -696,11 +697,11 @@ class Application:
         def _granted() -> PluginOperationResult:
             if self._page is None:
                 return PluginOperationResult.failed(
-                    "page_unavailable", "页面尚未初始化。"
+                    "page_unavailable", "页面尚未初始化。",
                 )
             if target_route != "/" and target_route not in self._route_registry:
                 return PluginOperationResult.failed(
-                    "route_not_found", f"未注册路由 {target_route}。"
+                    "route_not_found", f"未注册路由 {target_route}。",
                 )
             self._page.go(target_route)
             return PluginOperationResult.ok(message=f"已跳转到 {target_route}")
@@ -713,29 +714,29 @@ class Application:
         def _granted() -> PluginOperationResult:
             if not nav_id:
                 return PluginOperationResult.failed(
-                    "invalid_argument", "导航标识不能为空。"
+                    "invalid_argument", "导航标识不能为空。",
                 )
             if self._navigation_rail is None or self._navigation_container is None:
                 return PluginOperationResult.failed(
-                    "navigation_unavailable", "导航尚未初始化。"
+                    "navigation_unavailable", "导航尚未初始化。",
                 )
             index = self._navigation_index.get(nav_id)
             if index is None:
                 return PluginOperationResult.failed(
-                    "navigation_not_found", f"未找到导航 {nav_id}。"
+                    "navigation_not_found", f"未找到导航 {nav_id}。",
                 )
             self._navigation_rail.selected_index = index
             self._navigation_container.content = self._navigation_views[index].content
             if self._page:
                 self._page.update()
             return PluginOperationResult.ok(
-                message=f"已切换到导航 {self._navigation_views[index].label}"
+                message=f"已切换到导航 {self._navigation_views[index].label}",
             )
 
         return self._ensure_permission(plugin_id, "app_home", _granted)
 
     def _open_settings_tab(
-        self, plugin_id: str, tab_id: str | int
+        self, plugin_id: str, tab_id: str | int,
     ) -> PluginOperationResult:
         # Accept numeric index or string identifier
         desired_index: int | None = None
@@ -753,7 +754,7 @@ class Application:
             pages = self._core_pages or self._extract_core_pages()
             if pages is None:
                 return PluginOperationResult.failed(
-                    "settings_unavailable", "设置页面尚未加载。"
+                    "settings_unavailable", "设置页面尚未加载。",
                 )
             if desired_index is not None:
                 # If tabs are not initialized yet, Pages.select_settings_tab handles pending state
@@ -761,13 +762,12 @@ class Application:
                     pages.select_settings_tab_index(desired_index)
                 except Exception:
                     return PluginOperationResult.failed(
-                        "invalid_argument", f"未知的设置索引 {tab_id}。"
+                        "invalid_argument", f"未知的设置索引 {tab_id}。",
                     )
-            else:
-                if not desired_tab or not pages.select_settings_tab(desired_tab):
-                    return PluginOperationResult.failed(
-                        "invalid_argument", f"未知的设置标签 {tab_id}。"
-                    )
+            elif not desired_tab or not pages.select_settings_tab(desired_tab):
+                return PluginOperationResult.failed(
+                    "invalid_argument", f"未知的设置标签 {tab_id}。",
+                )
             if self._page:
                 self._page.go("/settings")
             return PluginOperationResult.ok(message=f"已切换到设置标签 {tab_id}")
@@ -780,13 +780,13 @@ class Application:
         def _granted() -> PluginOperationResult:
             if not target_path:
                 return PluginOperationResult.failed(
-                    "invalid_argument", "壁纸路径不能为空。"
+                    "invalid_argument", "壁纸路径不能为空。",
                 )
             try:
                 ltwapi.set_wallpaper(target_path)
             except FileNotFoundError:
                 return PluginOperationResult.failed(
-                    "file_not_found", f"找不到壁纸文件 {target_path}。"
+                    "file_not_found", f"找不到壁纸文件 {target_path}。",
                 )
             except Exception as exc:  # pragma: no cover - external API safety
                 logger.error("设置壁纸失败: {error}", error=str(exc))
@@ -796,14 +796,14 @@ class Application:
         return self._ensure_permission(plugin_id, "wallpaper_control", _granted)
 
     def _ipc_broadcast(
-        self, plugin_id: str, channel: str, payload: Dict[str, Any]
+        self, plugin_id: str, channel: str, payload: dict[str, Any],
     ) -> PluginOperationResult:
         channel_name = channel.strip()
 
         def _granted() -> PluginOperationResult:
             if not channel_name:
                 return PluginOperationResult.failed(
-                    "invalid_argument", "频道标识不能为空。"
+                    "invalid_argument", "频道标识不能为空。",
                 )
             if payload is None:
                 coerced = {}
@@ -825,11 +825,11 @@ class Application:
         def _granted() -> PluginOperationResult:
             if not channel_name:
                 return PluginOperationResult.failed(
-                    "invalid_argument", "频道标识不能为空。"
+                    "invalid_argument", "频道标识不能为空。",
                 )
             subscription = self._ipc_service.subscribe(channel_name)
             self._ipc_plugin_subscriptions.setdefault(plugin_id, set()).add(
-                subscription.subscription_id
+                subscription.subscription_id,
             )
             return PluginOperationResult.ok(
                 data=subscription,
@@ -839,7 +839,7 @@ class Application:
         return self._ensure_permission(plugin_id, "ipc_broadcast", _granted)
 
     def _ipc_unsubscribe(
-        self, plugin_id: str, subscription_id: str
+        self, plugin_id: str, subscription_id: str,
     ) -> PluginOperationResult:
         subscription_key = subscription_id.strip()
 
@@ -847,7 +847,7 @@ class Application:
             records = self._ipc_plugin_subscriptions.get(plugin_id)
             if not records or subscription_key not in records:
                 return PluginOperationResult.failed(
-                    "subscription_not_found", "未找到对应的订阅。"
+                    "subscription_not_found", "未找到对应的订阅。",
                 )
             self._ipc_service.unsubscribe(subscription_key)
             records.discard(subscription_key)
@@ -864,32 +864,32 @@ class Application:
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error("获取主题列表失败: {error}", error=str(exc))
                 return PluginOperationResult.failed(
-                    "theme_list_failed", "无法读取主题列表。"
+                    "theme_list_failed", "无法读取主题列表。",
                 )
             return PluginOperationResult.ok(data=profiles, message="主题列表已获取。")
 
         return self._ensure_permission(plugin_id, "theme_read", _granted)
 
     def _set_theme_profile(
-        self, plugin_id: str, profile: str
+        self, plugin_id: str, profile: str,
     ) -> PluginOperationResult:
         selection = (profile or "").strip()
 
         def _granted() -> PluginOperationResult:
             if not selection:
                 return PluginOperationResult.failed(
-                    "invalid_argument", "主题标识不能为空。"
+                    "invalid_argument", "主题标识不能为空。",
                 )
             try:
                 result = self._theme_manager.set_profile(selection)
             except FileNotFoundError:
                 return PluginOperationResult.failed(
-                    "theme_not_found", f"未找到主题 {selection}。"
+                    "theme_not_found", f"未找到主题 {selection}。",
                 )
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error("应用主题失败: {error}", error=str(exc))
                 return PluginOperationResult.failed(
-                    "theme_apply_failed", "无法应用所选主题。"
+                    "theme_apply_failed", "无法应用所选主题。",
                 )
 
             message = "主题已应用。"
@@ -927,7 +927,7 @@ class Application:
                             "theme_apply",
                         ):
                             context.permissions.setdefault(
-                                perm, PermissionState.GRANTED
+                                perm, PermissionState.GRANTED,
                             )
 
                         def ensure(_perm: str, ctx=context) -> None:
@@ -1037,7 +1037,7 @@ class Application:
         for request in self._permission_prompt_queue:
             if request.result is None:
                 request.result = PluginOperationResult.failed(
-                    "permission_prompt_cancelled", reason
+                    "permission_prompt_cancelled", reason,
                 )
                 request.completion.set()
         self._permission_prompt_queue.clear()
