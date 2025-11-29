@@ -1,4 +1,81 @@
-"""Core page implementations for Little Tree Wallpaper Next."""
+# -*- coding: utf-8 -*-
+# SPDX-FileCopyrightText: 2025 Little Tree Studio <studio@zsxiaoshu.cn>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+"""
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                -++-                                                
+                                               +%%%%#.                                              
+                                              *%#%%%%#:                                             
+                                             *%#%%%%%%#:                                            
+                                           .*%#%%%%%%%%%:                                           
+                                          .#%#%%%%%%%%%%%-                                          
+                                         .#%#%%%%%%%%%%%%%-                                         
+                                        :#%#%%%%%%%%%%%%%%%=                                        
+                                       :#%#%%%%%%%%%%%%%%##*=                                       
+                                      :##############%%%#****=                                      
+                                     -##############%##*******=                                     
+                                    -################**********+                                    
+                                   =###############*************+                                   
+                                  =##############****************+.                                 
+                                 =#############*******************+.                                
+                                +############*******************+===.                               
+                               +###########*******************+==-===.                              
+                              *##########*******************+=--===--=.                             
+                            .*#########******************+==--==-------.                            
+                           .*#######*******************+==-==-----------.                           
+                          .*######******************+==-====-------------:                          
+                         :*#*#*******************++==-===-----------------:                         
+                        :**********************+=======--------------------:                        
+                       :********************++========----------------------:                       
+                      :*******************+===========-----------------------:                      
+                     -*****************++=============------------------------:                     
+                    :***************++===============---------------------------                    
+                    .+***********++===================-------------------------:                    
+                      .::::::::::::::::::::::.:------:........................                      
+                                               ::::::.                                              
+                                               ------:                                              
+                                               ------.                                              
+                                               ------.                                              
+                                               ------:                                              
+                                               ------:                                              
+                                              .------:                                              
+                                               :....:                                               
+
+🌳 Little Tree Wallpaper Next Flet
+Little Tree Studio
+https://github.com/shu-shu-1/Little-Tree-Wallpaper-Next-Flet
+
+================================================================================
+
+Module Name: [module_name]
+
+Copyright (C) 2024 Little Tree Studio <studio@zsxiaoshu.cn>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+Project Information:
+    - Official Website: https://wp.zsxiaoshu.cn/
+    - Repository: https://github.com/shu-shu-1/Little-Tree-Wallpaper-Next-Flet
+    - Issue Tracker: https://github.com/shu-shu-1/Little-Tree-Wallpaper-Next-Flet/issues
+
+Module Description:
+    Core page implementations for Little Tree Wallpaper Next.
+"""
 
 from __future__ import annotations
 
@@ -179,10 +256,12 @@ class Pages:
         self.bing_wallpaper = None
         self.bing_wallpaper_url = None
         self.bing_loading = True
+        self.bing_error: str | None = None
         self.spotlight_loading = True
         self.spotlight_wallpaper_url = None
         self.spotlight_wallpaper = list()
         self.spotlight_current_index = 0
+        self.spotlight_error: str | None = None
 
         self.bing_action_factories = (
             bing_action_factories if bing_action_factories is not None else []
@@ -330,6 +409,12 @@ class Pages:
         self._im_result_status_text: ft.Text | None = None
         self._im_result_spinner: ft.ProgressRing | None = None
         self._im_running: bool = False
+        self._im_fetch_task: asyncio.Task | None = None
+        self._im_notice_dismissed_key = "im.notice_dismissed"
+        self._im_info_visible: bool = not bool(
+            app_config.get(self._im_notice_dismissed_key, False),
+        )
+        self._im_info_card: ft.Control | None = None
         self._im_last_results: list[dict[str, Any]] = []
 
         self._wallpaper_source_manager = WallpaperSourceManager()
@@ -2705,7 +2790,7 @@ class Pages:
                 dense=True,
             )
             prompt_field = ft.TextField(
-                label="提示词",
+                label="提示词(英文)",
                 value=config.get("prompt") or "",
                 multiline=True,
                 min_lines=2,
@@ -4338,12 +4423,14 @@ class Pages:
         payload = self._bing_payload_data()
         payload["data_id"] = self._bing_data_id
         payload["namespace"] = "resource.bing"
+        payload["error"] = self.bing_error
         return payload
 
     def _spotlight_event_payload(self) -> dict[str, Any]:
         payload = self._spotlight_payload_data()
         payload["data_id"] = self._spotlight_data_id
         payload["namespace"] = "resource.spotlight"
+        payload["error"] = self.spotlight_error
         return payload
 
     def _emit_bing_action(
@@ -4587,44 +4674,80 @@ class Pages:
         self.page.update()
 
     async def _load_bing_wallpaper(self):
-        try:
-            self.bing_wallpaper = await ltwapi.get_bing_wallpaper_async()
-            base = self.bing_wallpaper.get("url")
-            if base:
+        max_attempts = 3
+        last_error: Exception | None = None
+        self.bing_wallpaper = None
+        self.bing_wallpaper_url = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self.bing_wallpaper = await ltwapi.get_bing_wallpaper_async()
+                base = self.bing_wallpaper.get("url")
+                if not base:
+                    raise RuntimeError("Bing 响应缺少壁纸地址")
                 self.bing_wallpaper_url = f"https://www.bing.com{base}".replace(
                     "1920x1080", "UHD",
                 )
-        except Exception:
-            self.bing_wallpaper_url = None
-        finally:
-            self.bing_loading = False
-            self._publish_bing_data()
-            self._emit_resource_event(
-                "resource.bing.updated", self._bing_event_payload(),
+                self.bing_error = None
+                break
+            except Exception as exc:
+                self.bing_wallpaper = None
+                self.bing_wallpaper_url = None
+                last_error = exc
+                self.bing_error = str(exc)
+                if attempt < max_attempts:
+                    await asyncio.sleep(1.5)
+        else:
+            logger.error(
+                "Bing 壁纸加载失败，已重试 {count} 次: {error}",
+                count=max_attempts,
+                error=last_error,
             )
-            self._refresh_bing_tab()
+        self.bing_loading = False
+        self._publish_bing_data()
+        self._emit_resource_event(
+            "resource.bing.updated", self._bing_event_payload(),
+        )
+        self._refresh_bing_tab()
 
     async def _load_spotlight_wallpaper(self):
-        try:
-            self.spotlight_wallpaper = await ltwapi.get_spotlight_wallpaper_async()
-            if self.spotlight_wallpaper and len(self.spotlight_wallpaper) > 0:
-                self.spotlight_loading = self.spotlight_wallpaper
+        max_attempts = 3
+        last_error: Exception | None = None
+        self.spotlight_wallpaper = []
+        self.spotlight_wallpaper_url = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self.spotlight_wallpaper = await ltwapi.get_spotlight_wallpaper_async()
+                if not self.spotlight_wallpaper:
+                    raise RuntimeError("Windows 聚焦接口未返回任何壁纸")
                 self.spotlight_current_index = 0
-            if self.spotlight_loading:
                 self.spotlight_wallpaper_url = [
-                    item["url"] for item in self.spotlight_wallpaper
+                    item.get("url")
+                    for item in self.spotlight_wallpaper
+                    if isinstance(item, dict) and item.get("url")
                 ]
-
-        except Exception as e:
-            self.spotlight_wallpaper_url = None
-            logger.error(f"加载 Windows 聚焦壁纸失败: {e}")
-        finally:
-            self.spotlight_loading = False
-            self._publish_spotlight_data()
-            self._emit_resource_event(
-                "resource.spotlight.updated", self._spotlight_event_payload(),
+                if not self.spotlight_wallpaper_url:
+                    raise RuntimeError("Windows 聚焦接口缺少壁纸地址")
+                self.spotlight_error = None
+                break
+            except Exception as exc:
+                self.spotlight_wallpaper = []
+                self.spotlight_wallpaper_url = None
+                last_error = exc
+                self.spotlight_error = str(exc)
+                if attempt < max_attempts:
+                    await asyncio.sleep(1.5)
+        else:
+            logger.error(
+                "加载 Windows 聚焦壁纸失败，已重试 {count} 次: {error}",
+                count=max_attempts,
+                error=last_error,
             )
-            self._refresh_spotlight_tab()
+        self.spotlight_loading = False
+        self._publish_spotlight_data()
+        self._emit_resource_event(
+            "resource.spotlight.updated", self._spotlight_event_payload(),
+        )
+        self._refresh_spotlight_tab()
 
     def _refresh_bing_tab(self):
         for tab in self.resource_tabs.tabs:
@@ -5282,7 +5405,7 @@ class Pages:
 
         return ft.Column(
             controls=[
-                ft.Text("主页内容", size=18, weight=ft.FontWeight.BOLD),
+                ft.Text("主页内容", size=20, weight=ft.FontWeight.BOLD),
                 self._home_source_dropdown,
                 ft.Text(
                     "选择主页语句来源，并配置附加信息显示。",
@@ -5641,7 +5764,7 @@ class Pages:
 
         return ft.Column(
             controls=[
-                ft.Text("开机与后台", size=18, weight=ft.FontWeight.BOLD),
+                ft.Text("开机与后台", size=20, weight=ft.FontWeight.BOLD),
                 ft.Text(
                     "配置应用在 Windows 中的开机启动行为，并在启动后立刻执行一次壁纸更换。",
                     size=12,
@@ -6325,7 +6448,7 @@ class Pages:
                     content=self._build_im_page(),
                 ),
                 ft.Tab(
-                    text="其他",
+                    text="壁纸源",
                     icon=ft.Icons.SUBJECT,
                     content=self._build_wallpaper_source_tab(),
                 ),
@@ -6908,7 +7031,7 @@ class Pages:
         encoded_prompt = quote_plus(prompt)
         request_url = f"{base_url}{encoded_prompt}"
         if params:
-            request_url = f"{request_url}?{urlencode(params)}"
+            request_url = f"{request_url}?{urlencode(params)}&nologo=true"
         cache_token = str(int(time.time() * 1000))
         cache_suffix = f"cb={cache_token}"
         request_url = (
@@ -8614,7 +8737,7 @@ class Pages:
             scroll=ft.ScrollMode.AUTO,
         )
 
-        preview_body = ft.Container(content_column, expand=True, padding=16)
+        preview_body = ft.Container(content_column, expand=True)
 
         if SHOW_WATERMARK:
             body = ft.Stack([preview_body, build_watermark()], expand=True)
@@ -9098,7 +9221,28 @@ class Pages:
         self._ws_refresh_settings_list()
         self._ws_recompute_ui(preserve_selection=False)
 
-    def _build_im_page(self):
+    def _dismiss_im_info_card(self, _: ft.ControlEvent | None = None) -> None:
+        if not self._im_info_visible:
+            return
+        self._im_info_visible = False
+        app_config.set(self._im_notice_dismissed_key, True)
+        if self._im_info_card is not None:
+            self._im_info_card.visible = False
+            if self._im_info_card.page is not None:
+                self._im_info_card.update()
+        self._im_info_card = None
+
+    def _build_im_info_card(self) -> ft.Control | None:
+        if not self._im_info_visible:
+            self._im_info_card = None
+            return None
+
+        close_button = ft.IconButton(
+            icon=ft.Icons.CLOSE,
+            tooltip="关闭提示",
+            on_click=self._dismiss_im_info_card,
+        )
+
         info_card = ft.Card(
             content=ft.Container(
                 ft.Column(
@@ -9136,11 +9280,13 @@ class Pages:
                                             icon=ft.Icons.OPEN_IN_NEW,
                                             url="https://github.com/IntelliMarkets/Wallpaper_API_Index",
                                         ),
+                                        close_button,
                                     ],
                                 ),
                             ],
                             expand=True,
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            vertical_alignment=ft.CrossAxisAlignment.START,
                         ),
                     ],
                 ),
@@ -9148,6 +9294,12 @@ class Pages:
                 expand=True,
             ),
         )
+
+        self._im_info_card = info_card
+        return info_card
+
+    def _build_im_page(self):
+        info_card = self._build_im_info_card()
 
         self._im_loading_indicator = ft.ProgressRing(width=22, height=22, visible=False)
         self._im_status_text = ft.Text("正在初始化 IntelliMarkets 图片源…", size=12)
@@ -9227,9 +9379,11 @@ class Pages:
             [filter_row, self._im_search_field], spacing=6, expand=False,
         )
 
-        content_column = ft.Column(
-            controls=[
-                info_card,
+        content_controls: list[ft.Control] = []
+        if info_card is not None:
+            content_controls.append(info_card)
+        content_controls.extend(
+            [
                 status_row,
                 filter_section,
                 ft.Container(
@@ -9237,6 +9391,10 @@ class Pages:
                     expand=True,
                 ),
             ],
+        )
+
+        content_column = ft.Column(
+            controls=content_controls,
             expand=True,
             spacing=12,
         )
@@ -9248,6 +9406,18 @@ class Pages:
             padding=5,
             expand=True,
         )
+
+    async def _reload_bing_wallpaper(self) -> None:
+        self.bing_loading = True
+        self.bing_error = None
+        self._refresh_bing_tab()
+        await self._load_bing_wallpaper()
+
+    async def _reload_spotlight_wallpaper(self) -> None:
+        self.spotlight_loading = True
+        self.spotlight_error = None
+        self._refresh_spotlight_tab()
+        await self._load_spotlight_wallpaper()
 
     def _on_im_category_change(self, event: ft.ControlEvent) -> None:
         selected = (
@@ -9543,6 +9713,7 @@ class Pages:
         return f"source-{hashlib.sha1(json.dumps(source, sort_keys=True).encode('utf-8')).hexdigest()}"
 
     def _open_im_source_detail_page(self, source: dict[str, Any]) -> None:
+        self._cancel_im_fetch_task()
         self._im_active_source = source
         self._im_last_results = []
         if self.page is not None:
@@ -9648,7 +9819,7 @@ class Pages:
         self._im_run_button = ft.FilledButton(
             "获取壁纸",
             icon=ft.Icons.DOWNLOAD,
-            on_click=lambda _: self.page.run_task(self._execute_im_source_batch),
+            on_click=lambda _: self._start_im_batch_execution(),
         )
 
         self._im_result_status_text = ft.Text("尚未获取", size=12, color=ft.Colors.GREY)
@@ -9744,6 +9915,8 @@ class Pages:
 
     def _close_im_detail_page(self) -> None:
         """关闭IM壁纸源详情页面"""
+        self._cancel_im_fetch_task()
+        self._im_last_results = []
         if self.page is not None:
             self.page.go("/")
 
@@ -10154,9 +10327,40 @@ class Pages:
             return [self._im_format_scalar(item, as_query=as_query) for item in value]
         return json.dumps(value, ensure_ascii=False)
 
+    def _start_im_batch_execution(self) -> None:
+        if self.page is None:
+            return
+        if self._im_running:
+            return
+        self._cancel_im_fetch_task()
+        task = self.page.run_task(self._execute_im_source_batch)
+        self._im_fetch_task = task
+        if task is not None:
+            task.add_done_callback(self._on_im_fetch_task_done)
+
+    def _cancel_im_fetch_task(self) -> None:
+        task = self._im_fetch_task
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        self._im_fetch_task = None
+        self._reset_im_execution_state()
+
+    def _on_im_fetch_task_done(self, task: asyncio.Task[Any]) -> None:
+        if self._im_fetch_task is task:
+            self._im_fetch_task = None
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except Exception:
+            pass
+
     async def _execute_im_source_batch(self) -> None:
         """批量执行 IM 壁纸源获取，支持执行 1-10 次请求"""
-        if self._im_active_source is None:
+        active_source = self._im_active_source
+        if active_source is None:
             self._show_snackbar("请先选择图片源。", error=True)
             return
         if self._im_running:
@@ -10192,7 +10396,7 @@ class Pages:
             return
 
         try:
-            request_info = self._build_im_request(self._im_active_source, param_pairs)
+            request_info = self._build_im_request(active_source, param_pairs)
         except Exception as exc:
             logger.error(f"构建请求失败: {exc}")
             self._set_im_status(f"构建请求失败：{exc}", error=True)
@@ -10203,14 +10407,21 @@ class Pages:
             all_images: list[dict[str, Any]] = []
             # 统一进行多次获取以确保批量次数
             for i in range(batch_count):
+                if self._im_active_source is not active_source:
+                    return
                 self._set_im_status(f"正在执行第 {i + 1}/{batch_count} 次请求...")
                 result_payload = await self._fetch_im_source_result(
-                    self._im_active_source, request_info, param_pairs,
+                    active_source, request_info, param_pairs,
                 )
                 images = result_payload.get("images", []) or []
                 if images:
                     all_images.extend(images)
+                if self._im_active_source is not active_source:
+                    return
                 await asyncio.sleep(0.8)  # 增加间隔时间，避免请求过于频繁
+
+            if self._im_active_source is not active_source:
+                return
 
             self._im_last_results = all_images
             total_images = len(all_images)
@@ -10230,7 +10441,7 @@ class Pages:
             # 发送事件
             event_payload = {
                 "success": True,
-                "source": self._im_active_source,
+                "source": active_source,
                 "request": request_info,
                 "images": [image.get("local_path") for image in all_images],
                 "timestamp": time.time(),
@@ -10243,6 +10454,10 @@ class Pages:
             # 发送执行完成事件（用于插件监听获取完成状态）
             self._emit_im_source_event("resource.im_source.executed", event_payload)
 
+        except asyncio.CancelledError:
+            if self._im_active_source is active_source:
+                self._set_im_status("获取已取消")
+            raise
         except Exception as exc:  # pragma: no cover - network errors
             logger.error(f"执行图片源失败: {exc}")
             self._set_im_status(f"执行失败：{exc}", error=True)
@@ -10250,13 +10465,13 @@ class Pages:
             # 合并失败信息到事件载荷中
             failed_event_payload = {
                 "success": False,
-                "source": self._im_active_source,
+                "source": active_source,
                 "request": request_info,
                 "error": str(exc),
                 "timestamp": time.time(),
                 # 添加批量获取相关的额外信息
-                "source_id": self._im_source_id(self._im_active_source) if self._im_active_source else None,
-                "source_name": self._im_active_source.get("friendly_name", "未知源") if self._im_active_source else "未知源",
+                "source_id": self._im_source_id(active_source) if active_source else None,
+                "source_name": active_source.get("friendly_name", "未知源") if active_source else "未知源",
                 "results": [],
                 "fetch_count": 0,
                 "requested_count": batch_count,
@@ -11150,7 +11365,7 @@ class Pages:
                 ),
             )
 
-        # 移除“打开所在文件夹”操作，按需保留其他操作
+
 
         info_column = ft.Column(
             [
@@ -13447,7 +13662,27 @@ class Pages:
         if self.bing_loading:
             return self._build_bing_loading_indicator()
         if not self.bing_wallpaper_url:
-            return ft.Container(ft.Text("Bing 壁纸加载失败，请稍后再试～"), padding=16)
+            message = "Bing 壁纸加载失败，请稍后再试～"
+            if self.bing_error:
+                message = f"Bing 壁纸加载失败：{self.bing_error}"
+            return ft.Container(
+                ft.Column(
+                    [
+                        ft.Text(message, selectable=True),
+                        ft.TextButton(
+                            "重试",
+                            icon=ft.Icons.REFRESH,
+                            on_click=lambda _: self.page.run_task(
+                                self._reload_bing_wallpaper,
+                            ),
+                        ),
+                    ],
+                    spacing=12,
+                    alignment=ft.MainAxisAlignment.START,
+                    horizontal_alignment=ft.CrossAxisAlignment.START,
+                ),
+                padding=16,
+            )
         title = self.bing_wallpaper.get("title", "Bing 每日壁纸")
         desc = self.bing_wallpaper.get("copyright", "")
         bing_loading_info = ft.Text("正在获取信息……")
@@ -13877,8 +14112,26 @@ class Pages:
         if self.spotlight_loading:
             return self._build_spotlight_loading_indicator()
         if not self.spotlight_wallpaper_url:
+            message = "Windows 聚焦壁纸加载失败，请稍后再试～"
+            if self.spotlight_error:
+                message = f"Windows 聚焦壁纸加载失败：{self.spotlight_error}"
             return ft.Container(
-                ft.Text("Windows 聚焦壁纸加载失败，请稍后再试～"), padding=16,
+                ft.Column(
+                    [
+                        ft.Text(message, selectable=True),
+                        ft.TextButton(
+                            "重试",
+                            icon=ft.Icons.REFRESH,
+                            on_click=lambda _: self.page.run_task(
+                                self._reload_spotlight_wallpaper,
+                            ),
+                        ),
+                    ],
+                    spacing=12,
+                    alignment=ft.MainAxisAlignment.START,
+                    horizontal_alignment=ft.CrossAxisAlignment.START,
+                ),
+                padding=16,
             )
         title = ft.Text()
         description = ft.Text(size=12)

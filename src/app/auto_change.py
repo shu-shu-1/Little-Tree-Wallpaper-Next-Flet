@@ -1238,9 +1238,9 @@ def _normalize_bing_url(url: str) -> str:
 def _build_ai_url(provider: str, prompt: str, params: dict[str, str]) -> str:
     encoded_prompt = quote_plus(prompt)
     if provider == "pollinations":
-        base = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+        base = f"https://image.pollinations.ai/prompt/{encoded_prompt}&nologo=true"
     else:
-        base = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+        base = f"https://image.pollinations.ai/prompt/{encoded_prompt}&nologo=true"
     if not params:
         return base
     suffix = "&".join(f"{key}={quote_plus(value)}" for key, value in params.items())

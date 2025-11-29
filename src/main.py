@@ -1,14 +1,81 @@
-#
-# SPDX-License-Identifier: AGPL-3.0-only
-#
-# File: main.py
-# Project: Little Tree Wallpaper Next
-# Description: Thin entry point delegating to the modular application bootstrap.
-#
-# Little Tree Wallpaper Next is a free and open-source program released under the
-# GNU Affero General Public License Version 3, 19 November 2007.
-# 如果你对该代码做出任何修改或使用了本项目的任何代码，必须开源你的程序代码，并保留 小树壁纸 的版权声明。
+# -*- coding: utf-8 -*-
+# SPDX-FileCopyrightText: 2025 Little Tree Studio <studio@zsxiaoshu.cn>
+# SPDX-License-Identifier: AGPL-3.0-or-later
 
+"""
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                -++-                                                
+                                               +%%%%#.                                              
+                                              *%#%%%%#:                                             
+                                             *%#%%%%%%#:                                            
+                                           .*%#%%%%%%%%%:                                           
+                                          .#%#%%%%%%%%%%%-                                          
+                                         .#%#%%%%%%%%%%%%%-                                         
+                                        :#%#%%%%%%%%%%%%%%%=                                        
+                                       :#%#%%%%%%%%%%%%%%##*=                                       
+                                      :##############%%%#****=                                      
+                                     -##############%##*******=                                     
+                                    -################**********+                                    
+                                   =###############*************+                                   
+                                  =##############****************+.                                 
+                                 =#############*******************+.                                
+                                +############*******************+===.                               
+                               +###########*******************+==-===.                              
+                              *##########*******************+=--===--=.                             
+                            .*#########******************+==--==-------.                            
+                           .*#######*******************+==-==-----------.                           
+                          .*######******************+==-====-------------:                          
+                         :*#*#*******************++==-===-----------------:                         
+                        :**********************+=======--------------------:                        
+                       :********************++========----------------------:                       
+                      :*******************+===========-----------------------:                      
+                     -*****************++=============------------------------:                     
+                    :***************++===============---------------------------                    
+                    .+***********++===================-------------------------:                    
+                      .::::::::::::::::::::::.:------:........................                      
+                                               ::::::.                                              
+                                               ------:                                              
+                                               ------.                                              
+                                               ------.                                              
+                                               ------:                                              
+                                               ------:                                              
+                                              .------:                                              
+                                               :....:                                               
+
+🌳 Little Tree Wallpaper Next Flet
+Little Tree Studio
+https://github.com/shu-shu-1/Little-Tree-Wallpaper-Next-Flet
+
+================================================================================
+
+Module Name: [module_name]
+
+Copyright (C) 2024 Little Tree Studio <studio@zsxiaoshu.cn>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+Project Information:
+    - Official Website: https://wp.zsxiaoshu.cn/
+    - Repository: https://github.com/shu-shu-1/Little-Tree-Wallpaper-Next-Flet
+    - Issue Tracker: https://github.com/shu-shu-1/Little-Tree-Wallpaper-Next-Flet/issues
+
+Module Description:
+    Thin entry point delegating to the modular application bootstrap.
+"""
 from __future__ import annotations
 
 import sys
