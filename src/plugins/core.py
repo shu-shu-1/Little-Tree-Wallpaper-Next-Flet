@@ -49,6 +49,15 @@ class CorePlugin(Plugin):
         if isinstance(metadata_profiles, list):
             theme_profiles = metadata_profiles
 
+        raw_theme_lock = context.metadata.get("theme_lock")
+        theme_lock_active = False
+        theme_lock_reason = None
+        theme_lock_profile = None
+        if isinstance(raw_theme_lock, dict):
+            theme_lock_active = bool(raw_theme_lock.get("active"))
+            theme_lock_reason = raw_theme_lock.get("reason")
+            theme_lock_profile = raw_theme_lock.get("stored_profile")
+
         first_run_required_version = context.metadata.get("first_run_required_version")
         try:
             first_run_required_version = (
@@ -76,6 +85,9 @@ class CorePlugin(Plugin):
             theme_list_handler=context.list_themes,
             theme_apply_handler=context.set_theme_profile,
             theme_profiles=theme_profiles,
+            theme_lock_active=theme_lock_active,
+            theme_lock_reason=theme_lock_reason,
+            theme_lock_profile=theme_lock_profile,
             first_run_required_version=first_run_required_version,
             first_run_pending=first_run_pending,
             first_run_next_route="/",

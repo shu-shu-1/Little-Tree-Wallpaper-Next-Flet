@@ -94,7 +94,7 @@ import tarfile
 import time
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dc_replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, quote, quote_plus, urlencode
@@ -166,6 +166,7 @@ from app.wallpaper_sources import (
     WallpaperSourceManager,
     WallpaperSourceRecord,
 )
+from app.source_parser import SourceSpec
 
 app_config = SettingsStore()
 
@@ -214,6 +215,9 @@ class Pages:
         theme_list_handler: Callable[[], PluginOperationResult] | None = None,
         theme_apply_handler: Callable[[str], PluginOperationResult] | None = None,
         theme_profiles: list[dict[str, Any]] | None = None,
+        theme_lock_active: bool = False,
+        theme_lock_reason: str | None = None,
+        theme_lock_profile: str | None = None,
         first_run_required_version: int | None = None,
         first_run_pending: bool = False,
         first_run_next_route: str = "/",
@@ -321,6 +325,9 @@ class Pages:
         self._theme_profiles: list[dict[str, Any]] = list(theme_profiles or [])
         self._theme_cards_wrap: ft.Row | None = None
         self._theme_detail_dialog: ft.AlertDialog | None = None
+        self._theme_locked = bool(theme_lock_active)
+        self._theme_lock_reason = (theme_lock_reason or "").strip()
+        self._theme_lock_profile = theme_lock_profile
         try:
             self._first_run_required_version = (
                 int(first_run_required_version)
@@ -452,6 +459,11 @@ class Pages:
         self._ws_search_text: str = ""
         self._ws_hierarchy: dict[str, Any] = {}
         self._ws_logo_cache: dict[str, tuple[str, bool]] = {}
+        self._ws_category_icon_cache: dict[str, tuple[str, bool]] = {}
+        self._ws_merge_display: bool = bool(
+            app_config.get("wallpaper.sources.merge_display", False),
+        )
+        self._ws_merge_mode_dropdown: ft.Dropdown | None = None
         self._ws_updating_ui: bool = False
         self._ws_param_controls: list[_WSParameterControl] = []
         self._ws_param_cache: dict[str, dict[str, Any]] = {}
@@ -7289,20 +7301,20 @@ class Pages:
             return
 
         records = self._wallpaper_source_manager.enabled_records()
+        has_records = bool(records)
 
         if self._ws_search_field is not None:
-            self._ws_search_field.disabled = not bool(records)
+            self._ws_search_field.disabled = not has_records
             if self._ws_search_field.page is not None:
                 self._ws_search_field.update()
 
         self._ws_hierarchy = self._ws_build_hierarchy(records)
-        available_ids = [
-            record.identifier
-            for record in records
-            if record.identifier in self._ws_hierarchy
+        available_ids = list(self._ws_hierarchy.keys())
+        display_records: list[WallpaperSourceRecord] = [
+            self._ws_hierarchy[identifier]["record"]
+            for identifier in available_ids
+            if isinstance(self._ws_hierarchy[identifier].get("record"), WallpaperSourceRecord)
         ]
-
-        has_records = bool(records)
         if not available_ids:
             self._ws_active_source_id = None
             self._ws_active_primary_key = None
@@ -7398,7 +7410,7 @@ class Pages:
         if not preserve_selection or self._ws_active_source_id not in available_ids:
             self._ws_active_source_id = available_ids[0]
 
-        self._ws_update_source_tabs(records, preserve_selection=preserve_selection)
+        self._ws_update_source_tabs(display_records, preserve_selection=preserve_selection)
         active_record = self._ws_hierarchy.get(self._ws_active_source_id, {}).get(
             "record",
         )
@@ -7412,78 +7424,278 @@ class Pages:
     def _ws_build_hierarchy(
         self, records: list[WallpaperSourceRecord],
     ) -> dict[str, Any]:
+        if self._ws_merge_display:
+            return self._ws_build_merged_hierarchy(records)
+        return self._ws_build_split_hierarchy(records)
+
+    def _ws_build_split_hierarchy(
+        self, records: list[WallpaperSourceRecord],
+    ) -> dict[str, Any]:
         hierarchy: dict[str, Any] = {}
         term = (self._ws_search_text or "").strip().lower()
         for record in records:
             refs = self._wallpaper_source_manager.category_refs(record.identifier)
-            primary_map: dict[str, dict[str, Any]] = {}
-            primary_list: list[dict[str, Any]] = []
-            for ref in refs:
-                if term and not any(term in token for token in ref.search_tokens):
-                    continue
-                category = ref.category
-                primary_label = category.category or ref.source_name or ref.label
-                if not primary_label:
-                    primary_label = record.spec.name
-                primary_key = f"{record.identifier}:{primary_label}"
-                primary_entry = primary_map.get(primary_key)
-                if primary_entry is None:
-                    primary_entry = {
-                        "key": primary_key,
-                        "label": primary_label,
-                        "secondary_list": [],
-                        "secondary_map": {},
-                    }
-                    primary_map[primary_key] = primary_entry
-                    primary_list.append(primary_entry)
-
-                secondary_key = category.subcategory or _WS_DEFAULT_KEY
-                secondary_label = category.subcategory or "全部"
-                secondary_map = primary_entry["secondary_map"]
-                secondary_entry = secondary_map.get(secondary_key)
-                if secondary_entry is None:
-                    secondary_entry = {
-                        "key": secondary_key,
-                        "label": secondary_label
-                        if secondary_key != _WS_DEFAULT_KEY
-                        else "全部",
-                        "tertiary_list": [],
-                        "tertiary_map": {},
-                    }
-                    secondary_map[secondary_key] = secondary_entry
-                    primary_entry["secondary_list"].append(secondary_entry)
-
-                tertiary_key = category.subsubcategory or _WS_DEFAULT_KEY
-                tertiary_label = category.subsubcategory or (
-                    category.subcategory or ref.label
-                )
-                tertiary_map = secondary_entry["tertiary_map"]
-                tertiary_entry = tertiary_map.get(tertiary_key)
-                if tertiary_entry is None:
-                    label = (
-                        tertiary_label
-                        if tertiary_key != _WS_DEFAULT_KEY
-                        else (category.subcategory or ref.label)
-                    )
-                    tertiary_entry = {
-                        "key": tertiary_key,
-                        "label": label,
-                        "refs": [],
-                    }
-                    tertiary_map[tertiary_key] = tertiary_entry
-                    secondary_entry["tertiary_list"].append(tertiary_entry)
-                tertiary_entry["refs"].append(ref)
-
+            filtered_refs = self._ws_filter_refs(refs, term)
+            if not filtered_refs:
+                continue
+            primary_list = self._ws_build_primary_entries(
+                filtered_refs,
+                key_prefix=record.identifier,
+                fallback_source_name=record.spec.name,
+            )
             if primary_list:
-                for entry in primary_list:
-                    entry.pop("secondary_map", None)
-                    for secondary_entry in entry["secondary_list"]:
-                        secondary_entry.pop("tertiary_map", None)
                 hierarchy[record.identifier] = {
                     "record": record,
                     "primary_list": primary_list,
                 }
         return hierarchy
+
+    def _ws_build_merged_hierarchy(
+        self, records: list[WallpaperSourceRecord],
+    ) -> dict[str, Any]:
+        term = (self._ws_search_text or "").strip().lower()
+        grouped: dict[str, dict[str, Any]] = {}
+        order_index = {record.identifier: index for index, record in enumerate(records)}
+        merge_priority = self._ws_merge_priority_map(records)
+        for record in records:
+            refs = self._wallpaper_source_manager.category_refs(record.identifier)
+            for ref in refs:
+                if term and not any(term in token for token in ref.search_tokens):
+                    continue
+                primary_label = ref.category.category or ref.source_name or record.spec.name
+                label = primary_label or record.spec.name or "未分类"
+                group = grouped.setdefault(
+                    label,
+                    {"label": label, "refs": []},
+                )
+                group["refs"].append(ref)
+
+        for bucket in grouped.values():
+            refs = bucket.get("refs", []) or []
+            icon_counts = self._ws_count_icons_by_source(refs)
+            bucket["refs"] = self._ws_apply_merged_icon_preference(
+                refs,
+                icon_counts,
+                order_index,
+                merge_priority,
+            )
+
+        hierarchy: dict[str, Any] = {}
+        for label, bucket in sorted(grouped.items(), key=lambda item: item[0].lower()):
+            refs = bucket["refs"]
+            if not refs:
+                continue
+            primary_list = self._ws_build_primary_entries(
+                refs,
+                key_prefix="",
+                fallback_source_name=label,
+            )
+            if not primary_list:
+                continue
+            merged_record = self._ws_create_merged_record(label, refs)
+            hierarchy[merged_record.identifier] = {
+                "record": merged_record,
+                "primary_list": primary_list,
+            }
+        return hierarchy
+
+    def _ws_category_key(self, ref: WallpaperCategoryRef) -> tuple[str, str, str, str, str]:
+        cat = ref.category
+        return (
+            cat.id or "",
+            cat.name or "",
+            cat.category or "",
+            cat.subcategory or "",
+            cat.subsubcategory or "",
+        )
+
+    def _ws_count_icons_by_source(self, refs: list[WallpaperCategoryRef]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        seen: dict[str, set[tuple[str, str, str, str, str]]] = {}
+        for ref in refs:
+            if not ref.category.icon:
+                continue
+            source_seen = seen.setdefault(ref.source_id, set())
+            key = self._ws_category_key(ref)
+            if key in source_seen:
+                continue
+            source_seen.add(key)
+            counts[ref.source_id] = counts.get(ref.source_id, 0) + 1
+        return counts
+
+    def _ws_merge_priority_map(self, records: list[WallpaperSourceRecord]) -> dict[str, int]:
+        priorities: dict[str, int] = {}
+        for record in records:
+            priority_value = 0
+            config = record.spec.config if isinstance(record.spec.config, dict) else {}
+            merge_cfg = config.get("merge") if isinstance(config, dict) else {}
+            raw_priority = merge_cfg.get("priority") if isinstance(merge_cfg, dict) else None
+            try:
+                if raw_priority is not None:
+                    priority_value = int(raw_priority)
+            except (TypeError, ValueError):
+                priority_value = 0
+            priorities[record.identifier] = priority_value
+        return priorities
+
+    def _ws_apply_merged_icon_preference(
+        self,
+        refs: list[WallpaperCategoryRef],
+        icon_counts: dict[str, int],
+        order_index: dict[str, int],
+        merge_priority: dict[str, int],
+    ) -> list[WallpaperCategoryRef]:
+        grouped: dict[tuple[str, str, str, str, str], list[WallpaperCategoryRef]] = {}
+        for ref in refs:
+            grouped.setdefault(self._ws_category_key(ref), []).append(ref)
+
+        resolved: list[WallpaperCategoryRef] = []
+        for key, group in grouped.items():
+            candidates = [ref for ref in group if ref.category.icon]
+            if not candidates:
+                resolved.extend(group)
+                continue
+
+            def _score(ref: WallpaperCategoryRef) -> tuple[int, int]:
+                return (
+                    merge_priority.get(ref.source_id, 0),
+                    icon_counts.get(ref.source_id, 0),
+                    order_index.get(ref.source_id, 0),
+                )
+
+            winner = max(candidates, key=_score)
+            icon_value = winner.category.icon
+            for ref in group:
+                if ref.category.icon == icon_value:
+                    resolved.append(ref)
+                    continue
+                resolved.append(
+                    dc_replace(
+                        ref,
+                        category=dc_replace(ref.category, icon=icon_value),
+                    ),
+                )
+        return resolved
+
+    def _ws_filter_refs(
+        self, refs: list[WallpaperCategoryRef], term: str,
+    ) -> list[WallpaperCategoryRef]:
+        if not term:
+            return list(refs)
+        return [ref for ref in refs if any(term in token for token in ref.search_tokens)]
+
+    def _ws_build_primary_entries(
+        self,
+        refs: list[WallpaperCategoryRef],
+        *,
+        key_prefix: str,
+        fallback_source_name: str | None,
+    ) -> list[dict[str, Any]]:
+        primary_map: dict[str, dict[str, Any]] = {}
+        primary_list: list[dict[str, Any]] = []
+        for ref in refs:
+            category = ref.category
+            primary_label = category.category or ref.source_name or fallback_source_name or ref.label
+            key_parts: list[str] = []
+            if key_prefix:
+                key_parts.append(key_prefix)
+            key_parts.append(primary_label or ref.source_id)
+            primary_key = ":".join(key_parts)
+            primary_entry = primary_map.get(primary_key)
+            if primary_entry is None:
+                primary_entry = {
+                    "key": primary_key,
+                    "label": primary_label or fallback_source_name or "其他",
+                    "secondary_list": [],
+                    "secondary_map": {},
+                }
+                primary_map[primary_key] = primary_entry
+                primary_list.append(primary_entry)
+
+            secondary_key = category.subcategory or _WS_DEFAULT_KEY
+            secondary_label = category.subcategory or "全部"
+            secondary_map = primary_entry["secondary_map"]
+            secondary_entry = secondary_map.get(secondary_key)
+            if secondary_entry is None:
+                secondary_entry = {
+                    "key": secondary_key,
+                    "label": secondary_label if secondary_key != _WS_DEFAULT_KEY else "全部",
+                    "tertiary_list": [],
+                    "tertiary_map": {},
+                }
+                secondary_map[secondary_key] = secondary_entry
+                primary_entry["secondary_list"].append(secondary_entry)
+
+            tertiary_key = category.subsubcategory or _WS_DEFAULT_KEY
+            tertiary_label = category.subsubcategory or (category.subcategory or ref.label)
+            tertiary_map = secondary_entry["tertiary_map"]
+            tertiary_entry = tertiary_map.get(tertiary_key)
+            if tertiary_entry is None:
+                tertiary_entry = {
+                    "key": tertiary_key,
+                    "label": tertiary_label if tertiary_key != _WS_DEFAULT_KEY else (category.subcategory or ref.label),
+                    "refs": [],
+                }
+                tertiary_map[tertiary_key] = tertiary_entry
+                secondary_entry["tertiary_list"].append(tertiary_entry)
+            tertiary_entry["refs"].append(ref)
+
+        result: list[dict[str, Any]] = []
+        for entry in primary_list:
+            entry.pop("secondary_map", None)
+            entry["secondary_list"] = [
+                secondary_entry
+                for secondary_entry in entry["secondary_list"]
+                if secondary_entry.get("tertiary_list")
+            ]
+            for secondary_entry in entry["secondary_list"]:
+                secondary_entry.pop("tertiary_map", None)
+                secondary_entry["tertiary_list"] = [
+                    tertiary_entry
+                    for tertiary_entry in secondary_entry["tertiary_list"]
+                    if tertiary_entry.get("refs")
+                ]
+            if entry["secondary_list"]:
+                result.append(entry)
+        return result
+
+    def _ws_create_merged_record(
+        self,
+        label: str,
+        refs: list[WallpaperCategoryRef],
+    ) -> WallpaperSourceRecord:
+        unique_sources = sorted({ref.source_id for ref in refs})
+        category_keys = sorted({
+            f"{ref.category.category}|{ref.category.subcategory}|{ref.category.subsubcategory}|{ref.category.id}"
+            for ref in refs
+        })
+        identifier_seed = "|".join([label or "", *unique_sources, *category_keys])
+        slug = hashlib.sha1(identifier_seed.encode("utf-8", "ignore")).hexdigest()[:10]
+        identifier = f"merged::{slug}"
+        description = f"合并视图，包含 {len(unique_sources)} 个壁纸源"
+        spec = SourceSpec(
+            scheme="littletree_wallpaper_source_v3",
+            identifier=identifier,
+            name=label or "未分类",
+            version="合并视图",
+            description=description,
+        )
+        unique_categories: dict[str, Any] = {}
+        for ref in refs:
+            cat = ref.category
+            cat_key = f"{cat.id}|{cat.name}|{cat.category}|{cat.subcategory}|{cat.subsubcategory}"
+            unique_categories[cat_key] = cat
+        spec.categories = list(unique_categories.values())
+        spec.config["merged_sources"] = unique_sources
+        pseudo_path = Path(f"merged_{slug}")
+        merged_record = WallpaperSourceRecord(
+            identifier=identifier,
+            spec=spec,
+            path=pseudo_path,
+            origin="builtin",
+            enabled=True,
+        )
+        return merged_record
 
     def _ws_update_source_tabs(
         self,
@@ -7500,10 +7712,48 @@ class Pages:
         if not available_records:
             return
         self._ws_updating_ui = True
-        self._ws_source_tabs.tabs = [
-            ft.Tab(text=f"{record.spec.name} ({len(record.spec.categories)})")
-            for record in available_records
-        ]
+        tabs: list[ft.Tab] = []
+        for record in available_records:
+            category_count = len(record.spec.categories)
+            logo_control = ft.Container(
+                content=self._ws_build_logo_control(record, size=26),
+                width=28,
+                height=28,
+                alignment=ft.alignment.center,
+            )
+            label_column = ft.Column(
+                [
+                    ft.Text(
+                        record.spec.name,
+                        size=13,
+                        weight=ft.FontWeight.W_600,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                    ft.Text(
+                        f"{category_count} 个分类",
+                        size=11,
+                        color=ft.Colors.ON_SURFACE_VARIANT,
+                    ),
+                ],
+                spacing=0,
+                tight=True,
+                expand=True,
+            )
+            tab_row = ft.Row(
+                [logo_control, label_column],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+            tabs.append(
+                ft.Tab(
+                    text=record.spec.name,
+                    tab_content=ft.Container(
+                        content=tab_row,
+                        padding=ft.padding.symmetric(horizontal=4, vertical=6),
+                    ),
+                ),
+            )
+        self._ws_source_tabs.tabs = tabs
         if not preserve_selection or self._ws_active_source_id not in keys:
             self._ws_active_source_id = keys[0]
         selected_index = keys.index(self._ws_active_source_id)
@@ -7527,13 +7777,20 @@ class Pages:
                 self._ws_source_info_container.update()
             return
         spec = record.spec
-        origin_label = "内置" if record.origin == "builtin" else "用户导入"
+        if record.identifier.startswith("merged::"):
+            origin_label = "合并视图"
+            merged_sources = spec.config.get("merged_sources", []) if isinstance(spec.config, dict) else []
+            merged_count = len(merged_sources)
+            summary_text = (
+                f"{origin_label} · 汇总 {merged_count} 个壁纸源 · {len(spec.categories)} 个分类"
+            )
+        else:
+            origin_label = "内置" if record.origin == "builtin" else "用户导入"
+            summary_text = (
+                f"{origin_label} · 版本 {spec.version} · {len(spec.apis)} 个接口 · {len(spec.categories)} 个分类"
+            )
         detail_preview = spec.details or spec.description or spec.name
-        summary = ft.Text(
-            f"{origin_label} · 版本 {spec.version} · {len(spec.apis)} 个接口 · {len(spec.categories)} 个分类",
-            size=12,
-            color=ft.Colors.GREY,
-        )
+        summary = ft.Text(summary_text, size=12, color=ft.Colors.GREY)
         info_column = ft.Column(
             [
                 ft.Text(spec.name, size=18, weight=ft.FontWeight.BOLD),
@@ -7847,7 +8104,7 @@ class Pages:
                 on_change=self._ws_on_leaf_tab_change,
             )
         self._ws_updating_ui = True
-        self._ws_leaf_tabs.tabs = [ft.Tab(text=ref.label) for ref in refs]
+        self._ws_leaf_tabs.tabs = [self._ws_build_leaf_tab(ref) for ref in refs]
         max_index = len(refs) - 1
         if not preserve_selection or self._ws_active_leaf_index > max_index:
             self._ws_active_leaf_index = 0
@@ -7862,6 +8119,31 @@ class Pages:
             self._ws_leaf_container.update()
         self._ws_select_leaf(refs[self._ws_active_leaf_index], force_refresh=False)
         self._ws_update_fetch_button_state()
+
+    def _ws_build_leaf_tab(self, ref: WallpaperCategoryRef) -> ft.Tab:
+        icon_control = self._ws_build_category_icon_control(ref.category.icon, size=20)
+        if icon_control is None:
+            return ft.Tab(text=ref.label)
+        tab_row = ft.Row(
+            [
+                ft.Container(
+                    content=icon_control,
+                    width=24,
+                    height=24,
+                    alignment=ft.alignment.center,
+                ),
+                ft.Text(ref.label, overflow=ft.TextOverflow.ELLIPSIS),
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        return ft.Tab(
+            text=ref.label,
+            tab_content=ft.Container(
+                content=tab_row,
+                padding=ft.padding.symmetric(horizontal=4, vertical=6),
+            ),
+        )
 
     def _ws_update_fetch_button_state(self) -> None:
         has_category = bool(self._ws_active_category_id)
@@ -7887,7 +8169,8 @@ class Pages:
         self, ref: WallpaperCategoryRef, *, force_refresh: bool,
     ) -> None:
         self._ws_active_category_id = ref.category_id
-        self._ws_active_source_id = ref.source_id
+        if not self._ws_merge_display:
+            self._ws_active_source_id = ref.source_id
         self._ws_active_leaf_index = (
             getattr(self._ws_leaf_tabs, "selected_index", 0)
             if self._ws_leaf_tabs is not None
@@ -8801,6 +9084,42 @@ class Pages:
             )
         return ft.Icon(ft.Icons.COLOR_LENS, size=size * 0.75, color=ft.Colors.PRIMARY)
 
+    def _ws_build_category_icon_control(
+        self,
+        icon: str | None,
+        *,
+        size: int = 20,
+    ) -> ft.Control | None:
+        if not icon:
+            return None
+        cached = self._ws_category_icon_cache.get(icon)
+        if cached is None:
+            lower = icon.lower()
+            if lower.startswith("data:") or lower.startswith("image;base64"):
+                _, _, payload = icon.partition(",")
+                self._ws_category_icon_cache[icon] = (payload.strip(), True)
+            else:
+                self._ws_category_icon_cache[icon] = (icon, False)
+            cached = self._ws_category_icon_cache.get(icon)
+        if cached is None:
+            return None
+        payload, is_base64 = cached
+        if is_base64 and payload:
+            return ft.Image(
+                src_base64=payload,
+                width=size,
+                height=size,
+                fit=ft.ImageFit.CONTAIN,
+            )
+        if payload:
+            return ft.Image(
+                src=payload,
+                width=size,
+                height=size,
+                fit=ft.ImageFit.CONTAIN,
+            )
+        return None
+
     def _ws_find_item(self, item_id: str) -> WallpaperItem | None:
         return self._ws_item_index.get(item_id)
 
@@ -9015,7 +9334,7 @@ class Pages:
                 ft.Row(
                     [
                         ft.FilledButton(
-                            "导入 TOML",
+                            "导入 LTWS",
                             icon=ft.Icons.UPLOAD_FILE,
                             on_click=lambda _: self._open_ws_import_picker(),
                         ),
@@ -9037,15 +9356,32 @@ class Pages:
             color=ft.Colors.GREY,
         )
         description_text = ft.Text(
-            "支持 Little Tree Wallpaper Source Protocol v2.0",
+            "支持 Little Tree Wallpaper Source Protocol v3.0 (.ltws)",
             size=12,
             color=ft.Colors.GREY,
+        )
+
+        display_mode_dropdown = ft.Dropdown(
+            label="显示模式",
+            value="merge" if self._ws_merge_display else "split",
+            options=[
+                ft.DropdownOption(key="split", text="按壁纸源分组"),
+                ft.DropdownOption(key="merge", text="合并所有分类"),
+            ],
+            width=220,
+            on_change=self._ws_on_merge_mode_change,
+        )
+        self._ws_merge_mode_dropdown = display_mode_dropdown
+        display_mode_row = ft.Row(
+            [display_mode_dropdown],
+            alignment=ft.MainAxisAlignment.START,
         )
 
         return ft.Column(
             [
                 header,
                 description_text,
+                display_mode_row,
                 self._ws_settings_summary_text,
                 ft.Container(
                     content=self._ws_settings_list,
@@ -9147,6 +9483,23 @@ class Pages:
         self._ws_refresh_settings_list()
         self._ws_recompute_ui(preserve_selection=False)
 
+    def _ws_on_merge_mode_change(self, event: ft.ControlEvent) -> None:
+        raw_value = getattr(event.control, "value", "split")
+        merge = str(raw_value) == "merge"
+        if merge == self._ws_merge_display:
+            return
+        self._ws_merge_display = merge
+        app_config.set("wallpaper.sources.merge_display", merge)
+        self._ws_cached_results.clear()
+        self._ws_item_index.clear()
+        self._ws_active_source_id = None
+        self._ws_active_primary_key = None
+        self._ws_active_secondary_key = None
+        self._ws_active_tertiary_key = None
+        self._ws_active_leaf_index = 0
+        self._ws_active_category_id = None
+        self._ws_recompute_ui(preserve_selection=False)
+
     def _ws_confirm_remove(self, record: WallpaperSourceRecord) -> None:
         def _confirm(_: ft.ControlEvent | None = None) -> None:
             self._close_dialog()
@@ -9199,7 +9552,7 @@ class Pages:
             self._ws_file_picker.pick_files(
                 allow_multiple=False,
                 file_type=ft.FilePickerFileType.CUSTOM,
-                allowed_extensions=["toml"],
+                allowed_extensions=["ltws"],
             )
 
     def _handle_ws_import_result(self, event: ft.FilePickerResultEvent) -> None:
@@ -15326,6 +15679,14 @@ class Pages:
     def _refresh_theme_profiles(
         self, *, initial: bool = False, show_feedback: bool = False,
     ) -> None:
+        if self._theme_locked:
+            if show_feedback:
+                self._show_snackbar(
+                    self._theme_lock_reason or "当前已锁定主题配置。",
+                    error=True,
+                )
+            self._render_theme_cards()
+            return
         if self._theme_list_handler is None:
             if not initial and show_feedback:
                 self._show_snackbar("主题接口不可用。", error=True)
@@ -15369,6 +15730,16 @@ class Pages:
             if str(profile.get("id")) == identifier:
                 return profile
         return None
+
+    def _theme_profile_display_name(self, identifier: str | None) -> str:
+        if not identifier or identifier.strip().lower() in {"default", "system"}:
+            return "默认主题"
+        profile = self._find_theme_profile(identifier)
+        if profile:
+            name = profile.get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        return identifier
 
     @staticmethod
     def _theme_preview_text(
@@ -15531,11 +15902,17 @@ class Pages:
             profile.get("website") if isinstance(profile.get("website"), str) else None
         )
 
+        apply_disabled = is_active or self._theme_locked
         actions: list[ft.Control] = [
             ft.FilledButton(
                 "应用",
                 icon=ft.Icons.CHECK_CIRCLE,
-                disabled=is_active,
+                disabled=apply_disabled,
+                tooltip=(
+                    self._theme_lock_reason or "当前已锁定主题配置。"
+                    if self._theme_locked
+                    else None
+                ),
                 on_click=lambda _=None, pid=identifier: self._apply_theme_profile(pid),
             ),
             ft.OutlinedButton(
@@ -15586,6 +15963,12 @@ class Pages:
     def _apply_theme_profile(self, identifier: str) -> None:
         if self._theme_apply_handler is None:
             self._show_snackbar("主题应用接口不可用。", error=True)
+            return
+        if self._theme_locked:
+            self._show_snackbar(
+                self._theme_lock_reason or "当前已锁定主题配置。",
+                error=True,
+            )
             return
         try:
             result = self._theme_apply_handler(identifier)
@@ -15715,6 +16098,9 @@ class Pages:
             self.page.update()
 
     def _open_theme_import_picker(self, _: ft.ControlEvent | None = None) -> None:
+        if self._theme_locked:
+            self._show_snackbar(self._theme_lock_reason or "当前已锁定主题配置。", error=True)
+            return
         if self._theme_manager is None:
             self._show_snackbar("主题目录不可用。", error=True)
             return
@@ -15727,6 +16113,9 @@ class Pages:
             )
 
     def _handle_theme_import_result(self, event: ft.FilePickerResultEvent) -> None:
+        if self._theme_locked:
+            self._show_snackbar(self._theme_lock_reason or "当前已锁定主题配置。", error=True)
+            return
         if self._theme_manager is None or not event.files:
             return
         file = event.files[0]
@@ -15746,6 +16135,9 @@ class Pages:
         self._refresh_theme_profiles(initial=True)
 
     def _open_theme_directory(self, _: ft.ControlEvent | None = None) -> None:
+        if self._theme_locked:
+            self._show_snackbar(self._theme_lock_reason or "当前已锁定主题配置。", error=True)
+            return
         if self._theme_manager is None:
             self._show_snackbar("主题目录不可用。", error=True)
             return
@@ -15757,39 +16149,83 @@ class Pages:
             self._show_snackbar("无法打开主题目录。", error=True)
 
     def _build_theme_settings_controls(self) -> list[ft.Control]:
-        refresh_button = ft.IconButton(
-            icon=ft.Icons.REFRESH,
-            tooltip="刷新",
-            on_click=self._handle_refresh_theme_list,
-        )
-
-        controls_row: list[ft.Control] = [refresh_button]
-
-        if self._theme_manager is not None:
-            controls_row.append(
-                ft.FilledButton(
-                    "导入主题 (.json)",
-                    icon=ft.Icons.UPLOAD_FILE,
-                    on_click=self._open_theme_import_picker,
+        notice: ft.Control | None = None
+        if self._theme_locked:
+            original_label = self._theme_profile_display_name(self._theme_lock_profile)
+            notice_lines: list[ft.Control] = [
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.EVENT, color=ft.Colors.GREY),
+                        ft.Text(
+                            "12月13日国家公祭日，已暂停主题导入与切换。",
+                            size=13,
+                            color=ft.Colors.GREY,
+                        ),
+                    ],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Text(
+                    f"原主题：{original_label}",
+                    size=12,
+                    color=ft.Colors.GREY,
+                ),
+            ]
+            if self._theme_lock_reason:
+                notice_lines.append(
+                    ft.Text(
+                        self._theme_lock_reason,
+                        size=12,
+                        color=ft.Colors.GREY,
+                    ),
+                )
+            notice = ft.Container(
+                bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                padding=ft.padding.all(12),
+                border_radius=ft.border_radius.all(12),
+                content=ft.Column(
+                    notice_lines,
+                    spacing=6,
+                    tight=True,
                 ),
             )
-            controls_row.append(
-                ft.TextButton(
-                    "打开主题目录",
-                    icon=ft.Icons.FOLDER_OPEN,
-                    on_click=self._open_theme_directory,
-                ),
+
+        actions_wrap: ft.Row | None = None
+        helper_text: ft.Text | None = None
+        if not self._theme_locked:
+            refresh_button = ft.IconButton(
+                icon=ft.Icons.REFRESH,
+                tooltip="刷新",
+                on_click=self._handle_refresh_theme_list,
             )
 
-        actions_wrap = ft.Row(
-            spacing=8, run_spacing=8, controls=controls_row, wrap=True,
-        )
+            controls_row: list[ft.Control] = [refresh_button]
 
-        helper_text = ft.Text(
-            "选择下方卡片可查看主题详情，点击“应用”即可生效。",
-            size=12,
-            color=ft.Colors.GREY,
-        )
+            if self._theme_manager is not None:
+                controls_row.append(
+                    ft.FilledButton(
+                        "导入主题 (.json)",
+                        icon=ft.Icons.UPLOAD_FILE,
+                        on_click=self._open_theme_import_picker,
+                    ),
+                )
+                controls_row.append(
+                    ft.TextButton(
+                        "打开主题目录",
+                        icon=ft.Icons.FOLDER_OPEN,
+                        on_click=self._open_theme_directory,
+                    ),
+                )
+
+            actions_wrap = ft.Row(
+                spacing=8, run_spacing=8, controls=controls_row, wrap=True,
+            )
+
+            helper_text = ft.Text(
+                "选择下方卡片可查看主题详情，点击“应用”即可生效。",
+                size=12,
+                color=ft.Colors.GREY,
+            )
 
         cards_wrap = ft.Row(
             spacing=12, run_spacing=12, wrap=True, scroll=ft.ScrollMode.AUTO,
@@ -15797,9 +16233,18 @@ class Pages:
         self._theme_cards_wrap = cards_wrap
         self._render_theme_cards()
 
+        controls: list[ft.Control] = []
+        if notice is not None:
+            controls.append(notice)
+        if actions_wrap is not None:
+            controls.append(actions_wrap)
+        if helper_text is not None:
+            controls.append(helper_text)
+        controls.append(cards_wrap)
+
         return [
             ft.Column(
-                controls=[actions_wrap, helper_text, cards_wrap],
+                controls=controls,
                 spacing=12,
                 tight=True,
             ),
@@ -16024,6 +16469,12 @@ class Pages:
             ],
             on_change=self._change_theme_mode,
             width=220,
+            disabled=self._theme_locked,
+            tooltip=(
+                self._theme_lock_reason or "当前已锁定主题配置。"
+                if self._theme_locked
+                else None
+            ),
         )
 
         # 提示：当使用非默认主题配置时，建议将界面主题设为“跟随系统/主题”
@@ -16032,8 +16483,9 @@ class Pages:
         )
         use_custom_theme_profile = current_theme_profile != "default"
 
-        reminder_text = (
-            ft.Row(
+        reminder_text = None
+        if use_custom_theme_profile and not self._theme_locked:
+            reminder_text = ft.Row(
                 [
                     ft.Icon(ft.Icons.INFO, size=15),
                     ft.Text(
@@ -16042,9 +16494,14 @@ class Pages:
                     ),
                 ],
             )
-            if use_custom_theme_profile
-            else None
-        )
+
+        theme_lock_tip = None
+        if self._theme_locked:
+            theme_lock_tip = ft.Text(
+                self._theme_lock_reason or "主题设置已锁定。",
+                size=12,
+                color=ft.Colors.GREY,
+            )
 
         theme_controls = self._build_theme_settings_controls()
         theme_section = ft.Column(
@@ -16068,6 +16525,7 @@ class Pages:
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     *([reminder_text] if reminder_text else []),
+                    *([theme_lock_tip] if theme_lock_tip else []),
                 ],
                 spacing=8,
             ),
@@ -16482,6 +16940,12 @@ class Pages:
         )
 
     def _change_theme_mode(self, e: ft.ControlEvent) -> None:
+        if self._theme_locked:
+            self._show_snackbar(
+                self._theme_lock_reason or "当前已锁定主题配置。",
+                error=True,
+            )
+            return
         value = e.control.value
         if value == "dark":
             self.page.theme_mode = ft.ThemeMode.DARK

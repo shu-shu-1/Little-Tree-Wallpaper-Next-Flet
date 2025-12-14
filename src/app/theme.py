@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,66 @@ DEFAULT_THEME_DATA: dict[str, Any] = {
     "components": {},
 }
 
+MONO_THEME_DATA: dict[str, Any] = {
+    "schema_version": 1,
+    "name": "Black & White",
+    "description": "高对比度黑白主题，使用种子色自适应深浅模式。",
+    "details": "仅使用黑白基调，保留 Material 3 适配。",
+    "author": "Little Tree Studio",
+    "website": "",
+    "logo": "",
+    "palette": {
+        "mode": "custom",
+        "preferred_mode": "system",
+        "use_material3": True,
+        "color_scheme": {
+            "primary": "#1a1a1a",
+            "on_primary": "#f8f8f8",
+            "primary_container": "#e4e4e4",
+            "on_primary_container": "#1a1a1a",
+            "secondary": "#2a2a2a",
+            "on_secondary": "#f6f6f6",
+            "secondary_container": "#e8e8e8",
+            "on_secondary_container": "#1c1c1c",
+            "tertiary": "#3a3a3a",
+            "on_tertiary": "#f4f4f4",
+            "tertiary_container": "#ededed",
+            "on_tertiary_container": "#202020",
+            "error": "#5a5a5a",
+            "on_error": "#f5f5f5",
+            "error_container": "#d9d9d9",
+            "on_error_container": "#1f1f1f",
+            "background": "#f3f3f3",
+            "on_background": "#1a1a1a",
+            "surface": "#f5f5f5",
+            "on_surface": "#1c1c1c",
+            "surface_variant": "#e5e5e5",
+            "on_surface_variant": "#2f2f2f",
+            "outline": "#7a7a7a",
+            "outline_variant": "#c7c7c7",
+            "shadow": "#000000",
+            "scrim": "#000000",
+            "surface_tint": "#1a1a1a",
+            "inverse_surface": "#2b2b2b",
+            "inverse_on_surface": "#f2f2f2",
+            "inverse_primary": "#d0d0d0",
+        },
+    },
+    "background": {
+        "image": "",
+        "opacity": 0.0,
+        "fit": "cover",
+        "alignment": "center",
+        "repeat": "no_repeat",
+    },
+    "components": {},
+}
+
+BUILTIN_THEMES: dict[str, dict[str, Any]] = {
+    "default": DEFAULT_THEME_DATA,
+    "bw": MONO_THEME_DATA,
+}
+
 ALLOWED_COLOR_SCHEME_KEYS = {
     "primary",
     "on_primary",
@@ -69,7 +130,6 @@ ALLOWED_COLOR_SCHEME_KEYS = {
     "surface_tint",
     "outline_variant",
     "scrim",
-    "brightness",
 }
 
 IMAGE_FIT_MAP = {
@@ -177,6 +237,18 @@ class ThemeManager:
         self._themes_dir = themes_dir or (CONFIG_DIR / "themes")
         self._themes_dir.mkdir(parents=True, exist_ok=True)
         self._active: LoadedTheme | None = None
+        self._override_profile: str | None = None
+        self._override_reason: str | None = None
+        self._override_locked: bool = False
+
+        # Enforce memorial-day override as early as possible to avoid any
+        # pre-load applying user themes before lock kicks in.
+        if self._is_memorial_day():
+            self._override_profile = "bw"
+            self._override_reason = (
+                "12月13日为南京大屠杀死难者国家公祭日，已启用黑白主题并暂停主题自定义，以示哀悼。"
+            )
+            self._override_locked = True
 
     @property
     def active(self) -> LoadedTheme:
@@ -194,6 +266,8 @@ class ThemeManager:
         return self._themes_dir
 
     def current_profile(self) -> str:
+        if self._override_profile:
+            return self._override_profile
         if self._settings is None:
             return "default"
         value = self._settings.get("ui.theme_profile", "default")
@@ -203,6 +277,46 @@ class ThemeManager:
         if token.lower() == "system":
             return "default"
         return token
+
+    @property
+    def override_profile(self) -> str | None:
+        return self._override_profile
+
+    @property
+    def override_reason(self) -> str | None:
+        return self._override_reason
+
+    @property
+    def override_locked(self) -> bool:
+        return self._override_locked
+
+    @staticmethod
+    def _is_memorial_day() -> bool:
+        today = datetime.date.today()
+        return today.month == 12 and today.day == 13
+
+    def apply_profile_override(
+        self,
+        profile: str | None,
+        *,
+        reason: str | None = None,
+        lock_changes: bool = False,
+        reload: bool = True,
+    ) -> None:
+        token = profile.strip() if isinstance(profile, str) else None
+        reason_text = reason.strip() if isinstance(reason, str) else None
+        changed = (
+            token != self._override_profile
+            or reason_text != self._override_reason
+            or bool(lock_changes) != self._override_locked
+        )
+
+        self._override_profile = token
+        self._override_reason = reason_text
+        self._override_locked = bool(token) and bool(lock_changes)
+
+        if changed and reload:
+            self.reload()
 
     @staticmethod
     def _sanitize_metadata_text(value: Any) -> str | None:
@@ -309,31 +423,30 @@ class ThemeManager:
     def list_profiles(self) -> list[dict[str, Any]]:
         current = self.current_profile()
         profiles: list[ThemeProfileInfo] = []
+        seen: set[str] = set()
 
-        default_meta = self._extract_profile_metadata(DEFAULT_THEME_DATA, None)
-        default_name = (
-            default_meta.get("name")
-            or DEFAULT_THEME_DATA.get("name")
-            or "Default"
-        )
-        profiles.append(
-            ThemeProfileInfo(
-                identifier="default",
-                name=str(default_name),
-                path=None,
-                builtin=True,
-                source="builtin",
-                summary=default_meta.get("summary"),
-                description=default_meta.get("description"),
-                author=default_meta.get("author"),
-                logo=default_meta.get("logo"),
-                details=default_meta.get("details"),
-                website=default_meta.get("website"),
-                is_active=current.lower() in {"default"},
-            ),
-        )
-
-        seen: set[str] = {"default"}
+        for builtin_key, builtin_data in BUILTIN_THEMES.items():
+            meta = self._extract_profile_metadata(builtin_data, None)
+            name = meta.get("name") or builtin_data.get("name") or builtin_key
+            identifier = builtin_key
+            is_active = current.lower() == identifier.lower()
+            profiles.append(
+                ThemeProfileInfo(
+                    identifier=identifier,
+                    name=str(name),
+                    path=None,
+                    builtin=True,
+                    source="builtin",
+                    summary=meta.get("summary"),
+                    description=meta.get("description"),
+                    author=meta.get("author"),
+                    logo=meta.get("logo"),
+                    details=meta.get("details"),
+                    website=meta.get("website"),
+                    is_active=is_active,
+                ),
+            )
+            seen.add(identifier)
         try:
             theme_files = sorted(self._themes_dir.glob("**/*.json"))
         except Exception as exc:  # pragma: no cover - filesystem guard
@@ -457,12 +570,19 @@ class ThemeManager:
     def set_profile(self, profile: str) -> dict[str, Any]:
         if self._settings is None:
             raise RuntimeError("ThemeManager 未绑定设置存储，无法更新主题。")
+        if self._override_locked:
+            reason = self._override_reason or "当前已锁定主题切换。"
+            raise RuntimeError(reason)
         token = (profile or "").strip()
         if not token:
             raise ValueError("主题标识不能为空。")
 
-        if token.lower() in {"default", "system"}:
+        lowered = token.lower()
+
+        if lowered in {"default", "system"}:
             stored = "default"
+        elif lowered in {key.lower() for key in BUILTIN_THEMES.keys()}:
+            stored = token
         else:
             candidate = self._resolve_profile_path(token)
             if not candidate or not candidate.exists():
@@ -483,8 +603,8 @@ class ThemeManager:
     # internal helpers
     # ------------------------------------------------------------------
     def _load_theme(self) -> LoadedTheme:
-        profile = "default"
-        if self._settings is not None:
+        profile = self._override_profile or "default"
+        if self._override_profile is None and self._settings is not None:
             raw_profile = self._settings.get("ui.theme_profile", "default")
             if isinstance(raw_profile, str) and raw_profile.strip():
                 profile = raw_profile.strip()
@@ -492,7 +612,11 @@ class ThemeManager:
         data = copy.deepcopy(DEFAULT_THEME_DATA)
         source_path: Path | None = None
 
-        if profile.lower() not in ("default", "system"):
+        lowered = profile.lower()
+
+        if lowered in {key.lower() for key in BUILTIN_THEMES.keys()}:
+            data = copy.deepcopy(BUILTIN_THEMES[next(k for k in BUILTIN_THEMES if k.lower() == lowered)])
+        elif lowered not in ("default", "system"):
             candidate = self._resolve_profile_path(profile)
             if candidate and candidate.exists():
                 try:
@@ -573,12 +697,7 @@ class ThemeManager:
         for key in ALLOWED_COLOR_SCHEME_KEYS:
             if key in data:
                 value = data[key]
-                if key == "brightness":
-                    brightness = self._coerce_brightness(value)
-                    if brightness is not None:
-                        kwargs[key] = brightness
-                else:
-                    kwargs[key] = self._normalize_color(value)
+                kwargs[key] = self._normalize_color(value)
         if not kwargs:
             return None
         return ft.ColorScheme(**kwargs)

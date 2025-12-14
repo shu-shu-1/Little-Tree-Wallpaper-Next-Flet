@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import mimetypes
@@ -14,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 # NOTE: download_file moved from pycurl to requests streaming
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import aiohttp
 import platformdirs
@@ -503,33 +502,33 @@ def _reverse_mime(mime: str) -> str | None:
 
 
 # ---------- 服务器侧推断 ----------
-def _infer_ext_from_server(resp_headers: dict[str, str], url: str) -> str | None:
-    # 1) Content-Disposition
-    cd = resp_headers.get("content-disposition", "")
-    match = re.findall(r'filename\*?=(?:[^\'"]*\'\'|["\']?)([^"\';]+)', cd, re.IGNORECASE)
-    if match:
-        filename = unquote(match[-1].strip())
-        ext = Path(filename).suffix.lower()
-        if ext:
-            return ext
+# def _infer_ext_from_server(resp_headers: dict[str, str], url: str) -> str | None:
+#     # 1) Content-Disposition
+#     cd = resp_headers.get("content-disposition", "")
+#     match = re.findall(r'filename\*?=(?:[^\'"]*\'\'|["\']?)([^"\';]+)', cd, re.IGNORECASE)
+#     if match:
+#         filename = unquote(match[-1].strip())
+#         ext = Path(filename).suffix.lower()
+#         if ext:
+#             return ext
 
-    # 2) Content-Type
-    ct = resp_headers.get("content-type", "").split(";")[0].strip().lower()
-    if ct and ct != "application/octet-stream":
-        ext = mimetypes.guess_extension(ct)
-        if ext:
-            return ext
-        ext = _reverse_mime(ct)
-        if ext:
-            return ext
+#     # 2) Content-Type
+#     ct = resp_headers.get("content-type", "").split(";")[0].strip().lower()
+#     if ct and ct != "application/octet-stream":
+#         ext = mimetypes.guess_extension(ct)
+#         if ext:
+#             return ext
+#         ext = _reverse_mime(ct)
+#         if ext:
+#             return ext
 
-    # 3) URL 路径
-    url_path = unquote(urlparse(url).path).lower()
-    maybe_ext = Path(url_path).suffix
-    if maybe_ext and re.fullmatch(r"\.\w{2,6}", maybe_ext):
-        return maybe_ext
+#     # 3) URL 路径
+#     url_path = unquote(urlparse(url).path).lower()
+#     maybe_ext = Path(url_path).suffix
+#     if maybe_ext and re.fullmatch(r"\.\w{2,6}", maybe_ext):
+#         return maybe_ext
 
-    return None
+#     return None
 
 
 # ---------- 下载主函数 ----------
@@ -639,35 +638,100 @@ def download_file(
                             if progress_callback and total_size > 0:
                                 progress_callback(start_offset + bytes_written_this_round, total_size)
 
-                # ---------- 文件名 ----------
-                filename = custom_filename
-                if not filename:
-                    cd = resp_headers.get("content-disposition", "")
-                    match = re.findall(
-                        r'filename\*?=(?:[^\'\"]*\'\'|["\']?)([^"\';]+)', cd, re.IGNORECASE,
-                    )
+                # ---------- 文件名与扩展名推断 ----------
+                def _clean_filename(raw: str) -> str:
+                    raw = raw.strip().strip("\"").strip("'")
+                    return unquote(raw)
+
+                def _ext_from_filename(name: str) -> str | None:
+                    suffix = Path(name).suffix
+                    return suffix.lower() if suffix else None
+
+                def _filename_from_content_disposition(cd_value: str) -> str | None:
+                    if not cd_value:
+                        return None
+                    match_star = re.findall(r"filename\*\s*=\s*([^;]+)", cd_value, re.IGNORECASE)
+                    if match_star:
+                        value = _clean_filename(match_star[-1])
+                        if "''" in value:
+                            _, value = value.split("''", 1)
+                        return value
+                    match = re.findall(r"filename\s*=\s*([^;]+)", cd_value, re.IGNORECASE)
                     if match:
-                        filename = unquote(match[-1].strip())
-                if not filename:
-                    filename = unquote(os.path.basename(urlparse(url).path)) or None
-                if not filename:
-                    filename = hashlib.md5(url.encode()).hexdigest()
+                        return _clean_filename(match[-1])
+                    return None
 
-                # ---------- 扩展名 ----------
-                ext = _infer_ext_from_server(resp_headers, url)
+                def _ensure_head() -> bytes:
+                    nonlocal head
+                    if head == b"":
+                        try:
+                            with open(tmp_path, "rb") as fb:
+                                head = fb.read(2048)
+                        except Exception:
+                            head = b""
+                    return head
 
+                head = b""
+                filename = custom_filename
+                ext = None
+                content_type = resp_headers.get("content-type", "").split(";")[0].strip().lower()
+
+                # 1) Content-Disposition（filename* 优先，随后 filename）
+                if not filename:
+                    cd_filename = _filename_from_content_disposition(resp_headers.get("content-disposition", ""))
+                    if cd_filename:
+                        filename = cd_filename
+                        ext = _ext_from_filename(cd_filename)
+
+                # 2) URL 查询参数中的 response-content-disposition
+                if not ext:
+                    query_params = parse_qs(urlparse(url).query)
+                    rcd_values = query_params.get("response-content-disposition", [])
+                    if rcd_values:
+                        decoded_cd = unquote(rcd_values[-1])
+                        query_cd_filename = _filename_from_content_disposition(decoded_cd) or _clean_filename(decoded_cd)
+                        if not filename and query_cd_filename:
+                            filename = query_cd_filename
+                        if query_cd_filename:
+                            ext = ext or _ext_from_filename(query_cd_filename)
+
+                # 3) URL 路径
+                if not filename:
+                    path_name = _clean_filename(Path(unquote(urlparse(url).path)).name)
+                    if path_name:
+                        filename = path_name
+                if filename and not ext:
+                    ext = _ext_from_filename(filename)
+                    if not ext and content_type:
+                        guessed = mimetypes.guess_extension(content_type) or _reverse_mime(content_type)
+                        if guessed:
+                            ext = guessed
+
+                # 4) 兜底默认值
+                if not filename:
+                    ts = int(time.time())
+                    ext = ext or mimetypes.guess_extension(content_type) or _reverse_mime(content_type) or ".bin"
+                    filename = f"downloaded_file{ts}{ext}"
+                elif not ext:
+                    ext = mimetypes.guess_extension(content_type) or _reverse_mime(content_type)
+
+                # 额外兜底：魔数 / MIME 猜测
                 if not ext or ext in {".bin", ".tmp"}:
-                    with open(tmp_path, "rb") as fb:
-                        head = fb.read(2048)
-                    ext = _guess_ext_by_signature(head)
+                    head = _ensure_head()
+                    guessed_ext = _guess_ext_by_signature(head)
+                    if guessed_ext:
+                        ext = guessed_ext
 
                 if ext == ".zip":
+                    head = _ensure_head()
                     ext = _is_office_zip(head) or ext
 
                 if (not ext or ext in {".bin", ".tmp"}) and magic:
+                    head = _ensure_head()
                     ext = mimetypes.guess_extension(magic.from_buffer(head, mime=True))
 
                 if (not ext or ext in {".bin", ".tmp"}) and filetype:
+                    head = _ensure_head()
                     ft = filetype.guess(head)
                     if ft:
                         ext = "." + ft.extension

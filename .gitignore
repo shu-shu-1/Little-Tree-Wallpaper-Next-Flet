@@ -174,3 +174,4 @@ docs/build_nuitka.md
 run.bat
 .gitignore
 sync_env.bat
+test/1.py

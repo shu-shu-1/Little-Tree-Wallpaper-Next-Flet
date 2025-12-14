@@ -7,6 +7,7 @@ import hashlib
 import json
 import mimetypes
 import re
+import shutil
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ import rtoml
 from loguru import logger
 
 import ltwapi
+from ltws import URLTemplateEngine
 
 from .paths import BASE_DIR, CACHE_DIR, CONFIG_DIR, DATA_DIR
 from .source_parser import (
@@ -26,7 +28,6 @@ from .source_parser import (
     SourceSpec,
     SourceValidationError,
     parse_source_file,
-    parse_source_string,
 )
 
 
@@ -170,6 +171,7 @@ class WallpaperCategoryRef:
     source_name: str
     search_tokens: tuple[str, ...]
     footer_text: str | None
+    icon: str | None = None
 
 
 @dataclass(slots=True)
@@ -190,6 +192,19 @@ class WallpaperItem:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class PreparedRequest:
+    method: str
+    url: str | None
+    headers: dict[str, str]
+    params: dict[str, Any] | None
+    json: Any
+    data: Any
+    engine: URLTemplateEngine
+    context: dict[str, Any]
+    param_values: dict[str, Any]
+
+
 class WallpaperSourceManager:
     def __init__(self) -> None:
         self._builtin_dir = BASE_DIR / "wallpaper_sources"
@@ -201,6 +216,22 @@ class WallpaperSourceManager:
         _ensure_dir(self._user_dir)
         _ensure_dir(self._cache_dir)
         self.reload()
+
+    def _iter_source_paths(self, directory: Path) -> list[Path]:
+        if not directory.exists():
+            return []
+        candidates: list[Path] = []
+        for path in sorted(directory.iterdir()):
+            if path.is_dir():
+                # 支持开发阶段直接加载目录
+                candidates.append(path)
+                continue
+            if path.suffix.lower() == ".ltws":
+                candidates.append(path)
+                continue
+            if path.suffix.lower() == ".toml":
+                logger.warning("检测到旧版壁纸源格式 {path}，请转换为 .ltws 包", path=path)
+        return candidates
 
     # ------------------------------------------------------------------
     # state helpers
@@ -260,10 +291,9 @@ class WallpaperSourceManager:
             else:
                 records[identifier] = record
 
-        if self._builtin_dir.exists():
-            for path in sorted(self._builtin_dir.glob("*.toml")):
-                merge_source(path, "builtin")
-        for path in sorted(self._user_dir.glob("*.toml")):
+        for path in self._iter_source_paths(self._builtin_dir):
+            merge_source(path, "builtin")
+        for path in self._iter_source_paths(self._user_dir):
             merge_source(path, "user")
 
         removed = set(enabled_state) - set(records)
@@ -338,17 +368,20 @@ class WallpaperSourceManager:
         return self.first_enabled_identifier()
 
     def import_source(self, file_path: Path) -> WallpaperSourceRecord:
+        if not file_path.exists():
+            raise WallpaperSourceImportError("文件不存在")
+        if file_path.is_dir():
+            raise WallpaperSourceImportError("请选择 .ltws 壁纸源包文件，而不是目录")
+        if file_path.suffix.lower() != ".ltws":
+            raise WallpaperSourceImportError("仅支持导入 .ltws 格式的壁纸源")
         try:
-            text = file_path.read_text(encoding="utf-8")
-        except Exception as exc:
-            raise WallpaperSourceImportError(f"读取文件失败: {exc}") from exc
-        try:
-            spec = parse_source_string(text, path_hint=str(file_path))
+            spec = parse_source_file(file_path)
         except SourceValidationError as exc:
             raise WallpaperSourceImportError(str(exc)) from exc
-        dest = self._user_dir / f"{spec.identifier}.toml"
+        dest = self._user_dir / f"{spec.identifier}.ltws"
         try:
-            dest.write_text(text, encoding="utf-8")
+            _ensure_dir(dest.parent)
+            shutil.copy2(file_path, dest)
         except Exception as exc:
             raise WallpaperSourceImportError(f"写入目标文件失败: {exc}") from exc
         self._state.setdefault("order", [])
@@ -370,7 +403,10 @@ class WallpaperSourceManager:
         if record.origin != "user":
             raise WallpaperSourceError("内置壁纸源不可移除")
         try:
-            record.path.unlink(missing_ok=True)
+            if record.path.is_dir():
+                shutil.rmtree(record.path, ignore_errors=False)
+            else:
+                record.path.unlink(missing_ok=True)
         except Exception as exc:
             raise WallpaperSourceError(f"删除文件失败: {exc}") from exc
         self._state["enabled"].pop(identifier, None)
@@ -428,6 +464,7 @@ class WallpaperSourceManager:
                         source_name=spec.name,
                         search_tokens=tuple(sorted(tokens)),
                         footer_text=spec.effective_footer_for_api(api),
+                        icon=category.icon,
                     ),
                 )
         return refs
@@ -456,11 +493,11 @@ class WallpaperSourceManager:
         api = ref.api
         fmt = api.format
         if fmt == "static_list":
-            return await self._fetch_static_list(ref, record)
+            return await self._fetch_static_list(ref, record, params)
         if fmt == "static_dict":
-            return await self._fetch_static_dict(ref, record)
-        timeout = aiohttp.ClientTimeout(total=30)
-        connector = aiohttp.TCPConnector(ssl=False) if record.spec.skip_ssl_verify else None
+            return await self._fetch_static_dict(ref, record, params)
+        timeout = self._effective_timeout(record, api)
+        connector = aiohttp.TCPConnector(ssl=False) if self._should_skip_ssl(record, api) else None
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             if fmt == "image_url":
                 return await self._fetch_image_url(ref, record, session, params)
@@ -513,21 +550,209 @@ class WallpaperSourceManager:
                 values[key] = value
         return values
 
+    def _build_template_environment(
+        self,
+        record: WallpaperSourceRecord,
+        ref: WallpaperCategoryRef,
+        overrides: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], URLTemplateEngine, dict[str, Any]]:
+        params = self._preset_values(record.spec, ref.category, overrides)
+        engine = URLTemplateEngine()
+        context = engine.create_context(params=params or {})
+        for key, value in (params or {}).items():
+            engine.register_variable(key, value)
+        self._register_request_variables(engine, context, record)
+        meta_variables = {
+            "source_identifier": record.identifier,
+            "source_name": record.spec.name,
+            "api_name": ref.api.name,
+            "category_id": ref.category.id or "",
+            "category_name": ref.category.name or ref.label,
+            "category_label": ref.label,
+        }
+        for key, value in meta_variables.items():
+            engine.register_variable(key, value)
+            context[key] = value
+        return params, engine, context
+
+    def _register_request_variables(
+        self,
+        engine: URLTemplateEngine,
+        context: dict[str, Any],
+        record: WallpaperSourceRecord,
+    ) -> None:
+        request_cfg = {}
+        if isinstance(record.spec.config, dict):
+            request_cfg = record.spec.config.get("request") or {}
+        variables = request_cfg.get("variables") if isinstance(request_cfg, dict) else None
+        if not isinstance(variables, dict):
+            return
+        for key, value in variables.items():
+            if not isinstance(key, str):
+                continue
+            rendered = self._render_template_value(value, engine, context)
+            context[key] = rendered
+            engine.register_variable(key, rendered)
+
+    def _compose_headers(
+        self,
+        record: WallpaperSourceRecord,
+        api: API,
+        engine: URLTemplateEngine,
+        context: dict[str, Any],
+    ) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        sources = [record.spec.request_headers or {}, api.request_headers or {}]
+        for mapping in sources:
+            for key, value in mapping.items():
+                if not isinstance(key, str):
+                    continue
+                header_key = engine.replace(key, context)
+                if not header_key:
+                    continue
+                if isinstance(value, str):
+                    header_value = engine.replace(value, context)
+                else:
+                    header_value = str(value)
+                headers[header_key] = header_value
+        user_agent = api.user_agent or record.spec.request_user_agent
+        if user_agent:
+            headers["User-Agent"] = engine.replace(user_agent, context)
+        return headers
+
+    def _render_template_value(self, value: Any, engine: URLTemplateEngine, context: dict[str, Any]) -> Any:
+        if isinstance(value, str):
+            return engine.replace(value, context)
+        if isinstance(value, list):
+            return [self._render_template_value(item, engine, context) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._render_template_value(item, engine, context) for item in value)
+        if isinstance(value, dict):
+            rendered_dict: dict[str, Any] = {}
+            for key, item in value.items():
+                rendered_key = engine.replace(str(key), context)
+                rendered_dict[rendered_key] = self._render_template_value(item, engine, context)
+            return rendered_dict
+        return value
+
+    def _stringify_query_params(self, payload: dict[str, Any]) -> dict[str, Any]:
+        query: dict[str, Any] = {}
+        for key, value in payload.items():
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple)):
+                query[key] = ["" if item is None else str(item) for item in value]
+            elif isinstance(value, bool):
+                query[key] = "1" if value else "0"
+            else:
+                query[key] = str(value)
+        return query
+
+    def _prepare_request(
+        self,
+        record: WallpaperSourceRecord,
+        ref: WallpaperCategoryRef,
+        overrides: dict[str, Any] | None,
+    ) -> PreparedRequest:
+        params, engine, context = self._build_template_environment(record, ref, overrides)
+        api = ref.api
+        url: str | None = None
+        if api.url:
+            url = engine.build_url(api.url, params=params or {})
+        body = self._render_template_value(api.request_body, engine, context) if api.request_body is not None else None
+        headers = self._compose_headers(record, api, engine, context)
+        method = api.method.upper()
+        json_payload: Any = None
+        data_payload: Any = None
+        query_params: dict[str, Any] | None = None
+        if isinstance(body, (dict, list)):
+            if method == "GET":
+                if isinstance(body, dict):
+                    query_params = self._stringify_query_params(body)
+                else:
+                    query_params = {str(index): value for index, value in enumerate(body)}
+            else:
+                json_payload = body
+        elif body is not None:
+            data_payload = body
+        if method == "GET" and not query_params and params:
+            query_params = self._stringify_query_params(params)
+        if method != "GET" and json_payload is None and data_payload is None and params and not query_params:
+            query_params = self._stringify_query_params(params)
+        return PreparedRequest(
+            method=method,
+            url=url,
+            headers=headers,
+            params=query_params,
+            json=json_payload,
+            data=data_payload,
+            engine=engine,
+            context=context,
+            param_values=params,
+        )
+
+    def _effective_timeout(self, record: WallpaperSourceRecord, api: API) -> aiohttp.ClientTimeout:
+        timeout_seconds = api.timeout_seconds or record.spec.request_timeout or 30
+        if timeout_seconds <= 0:
+            timeout_seconds = 30
+        return aiohttp.ClientTimeout(total=timeout_seconds)
+
+    def _should_skip_ssl(self, record: WallpaperSourceRecord, api: API) -> bool:
+        if api.skip_ssl_verify is not None:
+            return bool(api.skip_ssl_verify)
+        return bool(record.spec.skip_ssl_verify)
+
+    async def _perform_request(
+        self,
+        session: aiohttp.ClientSession,
+        request: PreparedRequest,
+        *,
+        expect_bytes: bool = False,
+    ) -> tuple[int, dict[str, str], str | bytes]:
+        if not request.url:
+            raise WallpaperSourceFetchError("该 API 未提供 URL")
+        try:
+            async with session.request(
+                request.method or "GET",
+                request.url,
+                headers=request.headers or None,
+                params=request.params or None,
+                json=request.json,
+                data=request.data,
+            ) as resp:
+                status = resp.status
+                headers = dict(resp.headers)
+                payload: str | bytes
+                if expect_bytes:
+                    payload = await resp.read()
+                else:
+                    payload = await resp.text()
+        except WallpaperSourceFetchError:
+            raise
+        except Exception as exc:
+            raise WallpaperSourceFetchError(f"请求失败: {exc}") from exc
+        return status, headers, payload
+
     async def _fetch_static_list(
         self,
         ref: WallpaperCategoryRef,
         record: WallpaperSourceRecord,
+        overrides: dict[str, Any] | None,
     ) -> list[WallpaperItem]:
+        _, engine, context = self._build_template_environment(record, ref, overrides=overrides)
         urls = ref.api.static_list.urls if ref.api.static_list else []
         if not urls:
             return []
         items: list[WallpaperItem] = []
         for index, url in enumerate(urls):
+            rendered_url = engine.replace(url, context)
+            if not rendered_url:
+                continue
             try:
                 item = await self._prepare_item_from_url(
                     ref,
                     record,
-                    url,
+                    rendered_url,
                     f"static-{index}",
                 )
             except WallpaperSourceFetchError as exc:
@@ -540,20 +765,27 @@ class WallpaperSourceManager:
         self,
         ref: WallpaperCategoryRef,
         record: WallpaperSourceRecord,
+        overrides: dict[str, Any] | None,
     ) -> list[WallpaperItem]:
+        _, engine, context = self._build_template_environment(record, ref, overrides=overrides)
         entries = ref.api.static_dict.items if ref.api.static_dict else []
         if not entries:
             return []
         items: list[WallpaperItem] = []
         for index, entry in enumerate(entries):
+            rendered_url = engine.replace(entry.url, context)
+            if not rendered_url:
+                continue
+            rendered_title = engine.replace(entry.title, context) if entry.title else None
+            rendered_description = engine.replace(entry.description, context) if entry.description else None
             try:
                 item = await self._prepare_item_from_url(
                     ref,
                     record,
-                    entry.url,
+                    rendered_url,
                     f"static-dict-{index}",
-                    title=entry.title,
-                    description=entry.description,
+                    title=rendered_title,
+                    description=rendered_description,
                 )
             except WallpaperSourceFetchError as exc:
                 logger.error("静态字典壁纸加载失败: {error}", error=str(exc))
@@ -568,14 +800,11 @@ class WallpaperSourceManager:
         session: aiohttp.ClientSession,
         overrides: dict[str, Any] | None,
     ) -> list[WallpaperItem]:
-        if not ref.api.url:
-            raise WallpaperSourceFetchError("该 API 未提供 URL")
-        params = self._preset_values(record.spec, ref.category, overrides)
-        try:
-            async with session.get(ref.api.url, params=params or None) as resp:
-                text = await resp.text()
-        except Exception as exc:
-            raise WallpaperSourceFetchError(f"请求图片链接失败: {exc}") from exc
+        request = self._prepare_request(record, ref, overrides)
+        status, _, payload = await self._perform_request(session, request, expect_bytes=False)
+        if status != 200:
+            raise WallpaperSourceFetchError(f"HTTP {status}")
+        text = payload
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         if not lines:
             raise WallpaperSourceFetchError("接口未返回有效的图片链接")
@@ -601,19 +830,12 @@ class WallpaperSourceManager:
         session: aiohttp.ClientSession,
         overrides: dict[str, Any] | None,
     ) -> list[WallpaperItem]:
-        if not ref.api.url:
-            raise WallpaperSourceFetchError("该 API 未提供 URL")
-        params = self._preset_values(record.spec, ref.category, overrides)
-        try:
-            async with session.request(ref.api.method, ref.api.url, params=params or None) as resp:
-                if resp.status != 200:
-                    raise WallpaperSourceFetchError(f"HTTP {resp.status}")
-                data = await resp.read()
-                content_type = resp.headers.get("Content-Type")
-        except WallpaperSourceFetchError:
-            raise
-        except Exception as exc:
-            raise WallpaperSourceFetchError(f"请求原始图片失败: {exc}") from exc
+        request = self._prepare_request(record, ref, overrides)
+        status, headers, payload = await self._perform_request(session, request, expect_bytes=True)
+        if status != 200:
+            raise WallpaperSourceFetchError(f"HTTP {status}")
+        data = payload if isinstance(payload, (bytes, bytearray)) else bytes(payload)
+        content_type = headers.get("Content-Type") if headers else None
         path = await self._write_cached_bytes(ref, record, data, content_type, seed="image-raw")
         preview = base64.b64encode(data).decode("ascii")
         item = WallpaperItem(
@@ -640,22 +862,8 @@ class WallpaperSourceManager:
         session: aiohttp.ClientSession,
         overrides: dict[str, Any] | None,
     ) -> list[WallpaperItem]:
-        if not ref.api.url:
-            raise WallpaperSourceFetchError("该 API 未提供 URL")
-        params = self._preset_values(record.spec, ref.category, overrides)
-        method = ref.api.method.upper()
-        request_kwargs: dict[str, Any] = {}
-        if method == "GET":
-            request_kwargs["params"] = params or None
-        else:
-            request_kwargs["json"] = params or {}
-        try:
-            async with session.request(method, ref.api.url, **request_kwargs) as resp:
-                text = await resp.text()
-                status = resp.status
-                content_type = resp.headers.get("Content-Type")
-        except Exception as exc:
-            raise WallpaperSourceFetchError(f"请求 Base64 图片失败: {exc}") from exc
+        request = self._prepare_request(record, ref, overrides)
+        status, headers, text = await self._perform_request(session, request, expect_bytes=False)
         if status != 200:
             raise WallpaperSourceFetchError(f"HTTP {status}")
         payload = text.strip()
@@ -663,8 +871,10 @@ class WallpaperSourceManager:
             raise WallpaperSourceFetchError("接口未返回有效的图片数据")
         data_bytes, mime_type = _decode_base64_image(payload)
         header_mime: str | None = None
-        if content_type:
-            header_mime = content_type.split(";", 1)[0].strip()
+        if headers:
+            content_type = headers.get("Content-Type")
+            if content_type:
+                header_mime = content_type.split(";", 1)[0].strip()
         effective_mime = mime_type or header_mime
         path = await self._write_cached_bytes(
             ref,
@@ -698,24 +908,11 @@ class WallpaperSourceManager:
         session: aiohttp.ClientSession,
         overrides: dict[str, Any] | None,
     ) -> list[WallpaperItem]:
-        if not ref.api.url:
-            raise WallpaperSourceFetchError("该 API 未提供 URL")
-        params = self._preset_values(record.spec, ref.category, overrides)
-        method = ref.api.method
-        request_kwargs: dict[str, Any] = {}
-        if method.upper() == "GET":
-            request_kwargs["params"] = params or None
-        else:
-            request_kwargs["json"] = params or {}
-        try:
-            async with session.request(method, ref.api.url, **request_kwargs) as resp:
-                text = await resp.text()
-                content_type = resp.headers.get("Content-Type", "")
-                status = resp.status
-        except Exception as exc:
-            raise WallpaperSourceFetchError(f"请求失败: {exc}") from exc
+        request = self._prepare_request(record, ref, overrides)
+        status, headers, text = await self._perform_request(session, request, expect_bytes=False)
         if status != 200:
             raise WallpaperSourceFetchError(f"HTTP {status}")
+        content_type = headers.get("Content-Type", "") if headers else ""
         data = self._parse_structured_payload(ref.api.format, text, content_type)
         items_data = self._extract_items_data(ref, data)
         items: list[WallpaperItem] = []

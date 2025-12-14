@@ -54,6 +54,9 @@ DEFAULT_CONFIG = {
             },
         },
         "allow_NSFW": False,
+        "sources": {
+            "merge_display": False,
+        },
     },
     "download": {
         "segment_size_kb": 200,

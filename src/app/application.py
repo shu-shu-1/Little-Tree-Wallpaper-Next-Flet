@@ -79,6 +79,7 @@ Module Description:
 
 from __future__ import annotations
 
+import datetime
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -229,6 +230,9 @@ class Application:
         self._start_hidden = start_hidden
         self._first_run_pending = False
         self._startup_conflicts: list[StartupConflict] = []
+        self._theme_lock_active: bool = False
+        self._theme_lock_reason: str = ""
+        self._theme_lock_profile: str | None = None
 
     def __call__(self, page: ft.Page) -> None:
         self._page = page
@@ -266,6 +270,19 @@ class Application:
         finally:
             self._start_hidden = False
 
+    @staticmethod
+    def _is_memorial_day() -> bool:
+        today = datetime.date.today()
+        return today.month == 12 and today.day == 13
+
+    @staticmethod
+    def _normalize_theme_profile(value: Any) -> str:
+        if isinstance(value, str):
+            token = value.strip()
+            if token:
+                return token
+        return "default"
+
     # ------------------------------------------------------------------
     # lifecycle helpers
     # ------------------------------------------------------------------
@@ -273,6 +290,33 @@ class Application:
         logger.info(f"Little Tree Wallpaper Next {BUILD_VERSION} 初始化")
 
         self._reload_required = False
+
+        self._theme_lock_profile = self._normalize_theme_profile(
+            app_config.get("ui.theme_profile", "default"),
+        )
+        self._theme_lock_active = self._is_memorial_day()
+        self._theme_lock_reason = (
+            "12月13日为南京大屠杀死难者国家公祭日，已启用黑白主题并暂停主题自定义，以示哀悼。"
+            if self._theme_lock_active
+            else ""
+        )
+
+        if self._theme_lock_active:
+            logger.info("国家公祭日主题锁定已开启，将强制使用黑白主题。")
+            try:
+                app_config.set("ui.theme_profile", "bw")
+            except Exception:
+                logger.debug("在锁定期间写入黑白主题配置失败，继续使用覆盖模式。")
+
+        if self._theme_lock_active:
+            self._theme_manager.apply_profile_override(
+                "bw",
+                reason=self._theme_lock_reason,
+                lock_changes=True,
+                reload=False,
+            )
+        else:
+            self._theme_manager.apply_profile_override(None, reload=False)
 
         self._theme_manager.reload()
 
@@ -369,6 +413,11 @@ class Application:
             "first_run_required_version": FIRST_RUN_MARKER_VERSION,
         }
         base_metadata["startup_conflicts"] = tuple(self._startup_conflicts)
+        base_metadata["theme_lock"] = {
+            "active": self._theme_lock_active,
+            "reason": self._theme_lock_reason,
+            "stored_profile": self._theme_lock_profile or "default",
+        }
 
         def build_context(plugin: Plugin, manifest: PluginManifest) -> PluginContext:
             if manifest is None:
@@ -951,6 +1000,10 @@ class Application:
         self, plugin_id: str, profile: str,
     ) -> PluginOperationResult:
         selection = (profile or "").strip()
+
+        if self._theme_manager.override_locked:
+            reason = self._theme_manager.override_reason or "当前已锁定主题切换。"
+            return PluginOperationResult.failed("theme_locked", reason)
 
         def _granted() -> PluginOperationResult:
             if not selection:
