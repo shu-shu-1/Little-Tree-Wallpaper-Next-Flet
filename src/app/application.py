@@ -129,7 +129,7 @@ from .plugins.config import PluginConfigStore
 from .settings import SettingsStore
 from .theme import ThemeManager
 from .tray import TrayIcon
-from .ui_utils import build_watermark
+from .ui_utils import apply_hide_on_close, build_watermark
 
 app_config = SettingsStore()
 
@@ -727,6 +727,7 @@ class Application:
         self._theme_manager.apply_page_theme(page)
         if font_family:
             page.theme.font_family = font_family
+        apply_hide_on_close(page, bool(app_config.get("ui.hide_on_close", False)))
 
     def _set_permission_state(
         self, plugin_id: str, permission: str, state: PermissionState,

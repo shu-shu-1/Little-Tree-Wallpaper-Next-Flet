@@ -84,13 +84,76 @@ import traceback
 import flet as ft
 
 from app import Application
+from app.ipc import IPCAlreadyRunningError
+from app.paths import HITO_FONT_PATH, UI_FONT_PATH
 
 _START_HIDDEN = any(arg.lower() in {"/hide", "--hide"} for arg in sys.argv[1:])
 
 
 def main(page: ft.Page) -> None:
     """Delegate to the modular :class:`Application`."""
-    Application(start_hidden=_START_HIDDEN)(page)
+    try:
+        app = Application(start_hidden=_START_HIDDEN)
+    except IPCAlreadyRunningError:
+        # 如果已有实例占用 IPC，显示提示界面，告知用户检查托盘图标，然后退出。
+        page.clean()
+        fonts: dict[str, str] = {}
+        if UI_FONT_PATH.exists():
+            fonts["UIDisplay"] = str(UI_FONT_PATH)
+        if HITO_FONT_PATH.exists():
+            fonts["Hitokoto"] = str(HITO_FONT_PATH)
+        if fonts:
+            page.fonts = fonts
+            page.theme = ft.Theme(font_family="UIDisplay")
+
+        page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+        page.vertical_alignment = ft.MainAxisAlignment.CENTER
+        page.padding = 24
+        page.bgcolor = ft.Colors.SURFACE
+        page.add(
+            ft.Container(
+            bgcolor=ft.Colors.SURFACE,
+                padding=24,
+                border_radius=16,
+                content=ft.Column(
+                    [
+                        ft.Row(
+                            [
+                                ft.Icon(ft.Icons.NOTIFICATIONS_ACTIVE, color=ft.Colors.AMBER, size=28),
+                                ft.Text("已检测到正在运行的实例", size=22, weight=ft.FontWeight.BOLD),
+                            ],
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        ft.Text(
+                            "本次启动已取消。请检查系统托盘中的小树壁纸图标，先退出现有实例后再重试。",
+                            size=14,
+                        ),
+                        ft.Text(
+                            "如未在托盘看到图标，可稍等片刻或在任务管理器结束旧进程再启动。",
+                            size=12,
+                            color=ft.Colors.GREY,
+                        ),
+                        ft.Row(
+                            [
+                                ft.ElevatedButton(
+                                    "退出",
+                                    icon=ft.Icons.CLOSE,
+                                    on_click=lambda _e: getattr(page.window, "destroy", lambda: None)(),
+                                ),
+                            ],
+                            alignment=ft.MainAxisAlignment.END,
+                        ),
+                    ],
+                    spacing=14,
+                    tight=True,
+                ),
+            ),
+        )
+        page.update()
+        return
+
+    app(page)
 
 
 if __name__ == "__main__":

@@ -10,13 +10,17 @@ import uuid
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
-from multiprocessing.connection import Connection, Listener
+from multiprocessing.connection import Client, Connection, Listener
 from queue import Queue
 from typing import Any
 
 from loguru import logger
 
 from .paths import RUNTIME_DIR
+
+
+class IPCAlreadyRunningError(RuntimeError):
+    """Raised when IPC listener address is already taken by another instance."""
 
 
 @dataclass(slots=True)
@@ -136,15 +140,57 @@ class IPCService:
     def _create_listener(self) -> tuple[Listener, str]:
         if os.name == "nt":
             address = r"\\.\pipe\little-tree-wallpaper-ipc"
-            listener = Listener(address, family="AF_PIPE")
-            return listener, address
+            try:
+                listener = Listener(address, family="AF_PIPE")
+                return listener, address
+            except OSError as err:
+                if self._is_address_in_use(err) or self._probe_existing_server(address, "AF_PIPE"):
+                    raise IPCAlreadyRunningError("检测到 IPC 地址已被占用，可能已有实例在运行。") from err
+                raise
+
         socket_path = RUNTIME_DIR / "ipc.sock"
         try:
             socket_path.unlink()
         except FileNotFoundError:
             pass
-        listener = Listener(str(socket_path), family="AF_UNIX")
-        return listener, str(socket_path)
+        try:
+            listener = Listener(str(socket_path), family="AF_UNIX")
+            return listener, str(socket_path)
+        except OSError as err:
+            if self._is_address_in_use(err) or self._probe_existing_server(str(socket_path), "AF_UNIX"):
+                raise IPCAlreadyRunningError("检测到 IPC 地址已被占用，可能已有实例在运行。") from err
+            raise
+
+    def _is_address_in_use(self, err: OSError) -> bool:
+        win_err = getattr(err, "winerror", None)
+        if win_err in {5, 231, 183}:
+            return True
+        errno_code = getattr(err, "errno", None)
+        if errno_code in {13, 98}:  # Permission denied / address in use
+            return True
+        msg = str(err).lower()
+        return "拒绝" in msg or "denied" in msg or "address already in use" in msg
+
+    def _probe_existing_server(self, address: str, family: str) -> bool:
+        """Best-effort探测已有服务，避免重复实例启动导致拒绝访问。"""
+        try:
+            conn = Client(address, family=family)
+        except Exception:
+            return False
+        try:
+            conn.send({"action": "describe"})
+            _ = conn.recv()
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return True
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return True
 
     def _accept_loop(self) -> None:
         while self._running:

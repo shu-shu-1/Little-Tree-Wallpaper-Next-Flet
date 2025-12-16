@@ -153,6 +153,7 @@ from app.settings import SettingsStore
 from app.sniff import SniffedImage, SniffService, SniffServiceError
 from app.startup import StartupManager
 from app.ui_utils import (
+    apply_hide_on_close,
     build_watermark,
     copy_files_to_clipboard,
     copy_image_to_clipboard,
@@ -5539,10 +5540,11 @@ class Pages:
     def _handle_startup_auto_switch(self, event: ft.ControlEvent) -> None:
         desired = bool(getattr(event.control, "value", False))
         app_config.set("startup.auto_start", desired)
+        hide_on_launch = bool(app_config.get("startup.hide_on_launch", True))
         try:
             manager = StartupManager()
             if desired:
-                manager.enable_startup()
+                manager.enable_startup(hide_on_launch=hide_on_launch)
                 self._show_snackbar("已尝试添加至开机自启。")
             else:
                 manager.disable_startup()
@@ -5556,12 +5558,42 @@ class Pages:
         finally:
             self._refresh_startup_auto_status()
 
+    def _handle_startup_hide_toggle(self, event: ft.ControlEvent) -> None:
+        desired = bool(getattr(event.control, "value", False))
+        app_config.set("startup.hide_on_launch", desired)
+        try:
+            if bool(app_config.get("startup.auto_start", False)):
+                StartupManager().enable_startup(hide_on_launch=desired)
+            tip = "开机后将自动隐藏至后台。" if desired else "开机后将直接显示主窗口。"
+            self._show_snackbar(tip)
+        except Exception as exc:
+            logger.error(f"更新开机隐藏设置失败: {exc}")
+            event.control.value = not desired
+            if event.control.page is not None:
+                event.control.update()
+            self._show_snackbar("更新启动项时出现问题，请查看日志。", error=True)
+        finally:
+            self._refresh_startup_auto_status()
+
+    def _handle_hide_on_close_toggle(self, event: ft.ControlEvent) -> None:
+        enabled = bool(getattr(event.control, "value", False))
+        app_config.set("ui.hide_on_close", enabled)
+        apply_hide_on_close(self.page, enabled)
+        tip = "关闭窗口时将隐藏到后台。" if enabled else "关闭窗口时将直接退出程序。"
+        self._show_snackbar(tip)
+
     def _refresh_startup_auto_status(self) -> None:
         if self._startup_auto_status_text is None:
             return
         try:
-            enabled = StartupManager().is_startup_enabled()
-            text = "当前状态：已添加到开机启动" if enabled else "当前状态：未添加到开机启动"
+            enabled, hide_flag = StartupManager().describe_startup(
+                bool(app_config.get("startup.hide_on_launch", True)),
+            )
+            if enabled:
+                suffix = "（启动时隐藏）" if hide_flag else "（启动时显示）"
+                text = f"当前状态：已添加到开机启动 {suffix}"
+            else:
+                text = "当前状态：未添加到开机启动"
             color = ft.Colors.GREEN if enabled else ft.Colors.GREY
         except Exception as exc:  # pragma: no cover - Windows-only
             logger.error(f"检查开机启动状态失败: {exc}")
@@ -5571,6 +5603,19 @@ class Pages:
         self._startup_auto_status_text.color = color
         if self._startup_auto_status_text.page is not None:
             self._startup_auto_status_text.update()
+
+    def _describe_startup_state_text(self) -> str:
+        try:
+            enabled, hide_flag = StartupManager().describe_startup(
+                bool(app_config.get("startup.hide_on_launch", True)),
+            )
+            if enabled:
+                suffix = "（隐藏启动）" if hide_flag else "（显示启动）"
+                return f"启动项状态: 已启用{suffix}"
+            return "启动项状态: 未启用"
+        except Exception as exc:  # pragma: no cover - platform specific
+            logger.error(f"检查开机启动状态失败: {exc}")
+            return "启动项状态: 无法读取"
 
     def _handle_startup_wallpaper_toggle(self, event: ft.ControlEvent) -> None:
         config = self._startup_wallpaper_config()
@@ -5687,10 +5732,17 @@ class Pages:
 
     def _build_startup_settings_section(self) -> ft.Control:
         auto_start_enabled = bool(app_config.get("startup.auto_start", False))
+        hide_on_launch = bool(app_config.get("startup.hide_on_launch", True))
         self._startup_auto_switch = ft.Switch(
             label="开机自启动（Windows）",
             value=auto_start_enabled,
             on_change=self._handle_startup_auto_switch,
+        )
+        self._startup_hide_on_launch_switch = ft.Switch(
+            label="开机后自动隐藏到后台",
+            value=hide_on_launch,
+            on_change=self._handle_startup_hide_toggle,
+            tooltip="启用后将携带 --hide 参数启动，保持后台运行。",
         )
         self._startup_auto_status_text = ft.Text("状态读取中…", size=12, color=ft.Colors.GREY)
         self._refresh_startup_auto_status()
@@ -5774,6 +5826,18 @@ class Pages:
             spacing=12,
         )
 
+        hide_on_close_switch = ft.Switch(
+            label="关闭窗口时隐藏到后台",
+            value=bool(app_config.get("ui.hide_on_close", False)),
+            on_change=self._handle_hide_on_close_toggle,
+            tooltip="启用后点击关闭按钮将仅隐藏窗口，可通过托盘或再次启动恢复。",
+        )
+        hide_on_close_hint = ft.Text(
+            "切换后立即生效，不会中断正在运行的功能。",
+            size=12,
+            color=ft.Colors.GREY,
+        )
+
         return ft.Column(
             controls=[
                 ft.Text("开机与后台", size=20, weight=ft.FontWeight.BOLD),
@@ -5782,6 +5846,14 @@ class Pages:
                     size=12,
                     color=ft.Colors.GREY,
                 ),
+                self._startup_hide_on_launch_switch,
+                ft.Text(
+                    "控制开机自启时是否携带 --hide 参数：开启则启动后隐藏到托盘，关闭则直接显示主窗口。",
+                    size=12,
+                    color=ft.Colors.GREY,
+                ),
+                hide_on_close_switch,
+                hide_on_close_hint,
                 ft.Row([
                     self._startup_auto_switch,
                     self._startup_auto_status_text,
@@ -15620,7 +15692,10 @@ class Pages:
                     "打开初次运行向导", on_click=lambda _: self.page.go("/first-run"),
                 ),
                 ft.Button(
-                    "添加启动项", on_click=lambda _: StartupManager().enable_startup(),
+                    "添加启动项",
+                    on_click=lambda _: StartupManager().enable_startup(
+                        hide_on_launch=bool(app_config.get("startup.hide_on_launch", True)),
+                    ),
                 ),
                 ft.Button(
                     "移除启动项", on_click=lambda _: StartupManager().disable_startup(),
@@ -15628,7 +15703,7 @@ class Pages:
                 ft.Button(
                     "显示启动项状态",
                     on_click=lambda _: self._show_snackbar(
-                        f"启动项状态: {'已启用' if StartupManager().is_startup_enabled() else '未启用'}",
+                        self._describe_startup_state_text(),
                     ),
                 ),
             ],

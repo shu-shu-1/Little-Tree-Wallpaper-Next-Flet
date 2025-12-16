@@ -14,6 +14,7 @@ DEFAULT_CONFIG = {
         "theme_profile": "default",
         "window_background": "",
         "window_icon": "./assets/icons/icon.ico",
+        "hide_on_close": False,
     },
     "updates": {
         "auto_check": True,
@@ -65,6 +66,7 @@ DEFAULT_CONFIG = {
     "startup": {
         "auto_start": False,
         "script": {"enabled": False, "path": ""},
+        "hide_on_launch": True,
         "wallpaper_change": {
             "enabled": False,
             "list_ids": [],

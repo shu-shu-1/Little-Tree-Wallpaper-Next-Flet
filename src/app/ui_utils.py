@@ -120,3 +120,38 @@ def copy_files_to_clipboard(paths: list[str]) -> bool:
         )
         return False
     return True
+
+
+def apply_hide_on_close(page: ft.Page, enabled: bool) -> None:
+    """根据开关配置窗口关闭时是否隐藏到后台。"""
+    window = getattr(page, "window", None)
+    if window is None:
+        logger.warning("页面缺少 window 对象，无法配置关闭行为。")
+        return
+
+    existing_handler = getattr(page, "_ltw_hide_on_close_handler", None)
+
+    def _handle_window_event(e: ft.ControlEvent) -> None:
+        if getattr(e, "data", None) != "close":
+            return
+        try:
+            window.visible = False
+        except Exception as exc:
+            logger.error(f"隐藏窗口失败: {exc}")
+        try:
+            page.update()
+        except Exception as exc:
+            logger.error(f"刷新页面失败: {exc}")
+
+    try:
+        if enabled:
+            window.prevent_close = True
+            setattr(page, "_ltw_hide_on_close_handler", _handle_window_event)
+            window.on_event = _handle_window_event
+        else:
+            window.prevent_close = False
+            if getattr(window, "on_event", None) is existing_handler:
+                window.on_event = None
+            setattr(page, "_ltw_hide_on_close_handler", None)
+    except Exception as exc:
+        logger.error(f"更新窗口关闭行为失败: {exc}")
