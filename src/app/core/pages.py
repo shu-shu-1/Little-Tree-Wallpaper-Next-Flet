@@ -168,6 +168,8 @@ from app.wallpaper_sources import (
     WallpaperSourceRecord,
 )
 from app.source_parser import SourceSpec
+from app.store import StoreService
+from app.store.ui import StoreUI
 
 app_config = SettingsStore()
 
@@ -346,6 +348,9 @@ class Pages:
 
         self._generate_provider_dropdown: ft.Dropdown | None = None
         self._generate_seed_field: ft.TextField | None = None
+        
+        # 商店UI管理器
+        self._store_ui = None
         self._generate_width_field: ft.TextField | None = None
         self._generate_height_field: ft.TextField | None = None
         self._generate_enhance_switch: ft.Switch | None = None
@@ -538,6 +543,7 @@ class Pages:
         self.generate = self._build_generate()
         self.sniff = self._build_sniff()
         self.favorite = self._build_favorite()
+        self.store = self._build_store()
         self.test = self._build_test()
 
         self._refresh_theme_profiles(initial=True)
@@ -9465,6 +9471,83 @@ class Pages:
             ],
             spacing=12,
         )
+    
+    def _build_store_source_settings_section(self) -> ft.Control:
+        """构建商店源设置区域"""
+        # 获取当前商店源URL
+        current_source = app_config.get("store.custom_source_url") or StoreService.DEFAULT_BASE_URL
+        
+        # 是否使用自定义源
+        use_custom = bool(app_config.get("store.use_custom_source", False))
+        
+        # 自定义源URL输入框
+        custom_url_field = ft.TextField(
+            label="自定义源URL",
+            value=current_source if use_custom else "",
+            hint_text="例如: https://your-server.com",
+            width=400,
+            disabled=not use_custom,
+        )
+        
+        def handle_custom_source_change(e: ft.ControlEvent):
+            """处理自定义源开关"""
+            enabled = bool(e.control.value)
+            app_config.set("store.use_custom_source", enabled)
+            custom_url_field.disabled = not enabled
+            
+            if enabled:
+                # 启用自定义源时，保存当前URL
+                if custom_url_field.value:
+                    app_config.set("store.custom_source_url", custom_url_field.value)
+            else:
+                # 禁用自定义源时，使用官方源
+                app_config.set("store.custom_source_url", None)
+            
+            custom_url_field.update()
+            self._show_snackbar("商店源设置已更新，下次打开商店页面时生效")
+        
+        def handle_url_change(e: ft.ControlEvent):
+            """处理URL变更"""
+            url = e.control.value.strip()
+            if url:
+                app_config.set("store.custom_source_url", url)
+        
+        custom_source_switch = ft.Switch(
+            label="使用自定义源",
+            value=use_custom,
+            on_change=handle_custom_source_change,
+        )
+        
+        custom_url_field.on_change = handle_url_change
+        
+        def reset_to_official(_):
+            """重置为官方源"""
+            app_config.set("store.use_custom_source", False)
+            app_config.set("store.custom_source_url", None)
+            custom_source_switch.value = False
+            custom_url_field.value = ""
+            custom_url_field.disabled = True
+            self.page.update()
+            self._show_snackbar("已重置为官方源")
+        
+        return ft.Column(
+            [
+                ft.Text("商店源", size=18, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    f"官方源: {StoreService.DEFAULT_BASE_URL}",
+                    size=12,
+                    color=ft.Colors.GREY,
+                ),
+                custom_source_switch,
+                custom_url_field,
+                ft.TextButton(
+                    "重置为官方源",
+                    icon=ft.Icons.REFRESH,
+                    on_click=reset_to_official,
+                ),
+            ],
+            spacing=12,
+        )
 
     def _build_ws_settings_card(self, record: WallpaperSourceRecord) -> ft.Control:
         spec = record.spec
@@ -15683,6 +15766,88 @@ class Pages:
             padding=16,
         )
 
+    def _build_store(self):
+        """构建商店页面"""
+        # 创建商店UI管理器
+        store_ui = StoreUI(
+            page=self.page,
+            settings=app_config,
+            on_install_theme=self._handle_install_theme,
+            on_install_plugin=self._handle_install_plugin,
+            on_install_wallpaper_source=self._handle_install_wallpaper_source,
+        )
+        
+        # 构建UI
+        store_content = store_ui.build()
+        
+        # 存储引用以便后续使用
+        self._store_ui = store_ui
+        
+        # 启动时自动加载资源
+        self.page.run_task(store_ui.load_resources)
+        
+        return ft.Container(
+            content=store_content,
+            expand=True,
+        )
+    
+    def _handle_install_theme(self, resource):
+        """处理主题安装"""
+        from app.store import ResourceMetadata
+        
+        try:
+            # 获取下载URL
+            download_url = self._store_ui.service.resolve_download_url(resource)
+            
+            if not download_url:
+                self._show_snackbar("该资源没有提供下载链接", error=True)
+                return
+            
+            self._show_snackbar(f"主题安装功能开发中... (URL: {download_url})")
+            logger.info(f"安装主题: {resource.name} from {download_url}")
+            
+        except Exception as e:
+            logger.error(f"安装主题失败: {e}")
+            self._show_snackbar(f"安装失败: {e}", error=True)
+    
+    def _handle_install_plugin(self, resource):
+        """处理插件安装"""
+        from app.store import ResourceMetadata
+        
+        try:
+            # 获取下载URL
+            download_url = self._store_ui.service.resolve_download_url(resource)
+            
+            if not download_url:
+                self._show_snackbar("该资源没有提供下载链接", error=True)
+                return
+            
+            self._show_snackbar(f"插件安装功能开发中... (URL: {download_url})")
+            logger.info(f"安装插件: {resource.name} from {download_url}")
+            
+        except Exception as e:
+            logger.error(f"安装插件失败: {e}")
+            self._show_snackbar(f"安装失败: {e}", error=True)
+    
+    def _handle_install_wallpaper_source(self, resource):
+        """处理壁纸源安装"""
+        from app.store import ResourceMetadata
+        
+        try:
+            # 获取下载URL
+            download_url = self._store_ui.service.resolve_download_url(resource)
+            
+            if not download_url:
+                self._show_snackbar("该资源没有提供下载链接", error=True)
+                return
+            
+            self._show_snackbar(f"壁纸源安装功能开发中... (URL: {download_url})")
+            logger.info(f"安装壁纸源: {resource.name} from {download_url}")
+            
+        except Exception as e:
+            logger.error(f"安装壁纸源失败: {e}")
+            self._show_snackbar(f"安装失败: {e}", error=True)
+
     def _build_test(self):
         return ft.Column(
             [
@@ -16532,6 +16697,8 @@ class Pages:
             ),
             ft.Divider(),
             self._build_wallpaper_source_settings_section(),
+            ft.Divider(),
+            self._build_store_source_settings_section(),
         )
 
         theme_dropdown = ft.Dropdown(
