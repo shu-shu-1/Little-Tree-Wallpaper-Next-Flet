@@ -15793,8 +15793,6 @@ class Pages:
     
     def _handle_install_theme(self, resource):
         """处理主题安装"""
-        from app.store import ResourceMetadata
-        
         try:
             # 获取下载URL
             download_url = self._store_ui.service.resolve_download_url(resource)
@@ -15803,17 +15801,42 @@ class Pages:
                 self._show_snackbar("该资源没有提供下载链接", error=True)
                 return
             
-            self._show_snackbar(f"主题安装功能开发中... (URL: {download_url})")
-            logger.info(f"安装主题: {resource.name} from {download_url}")
+            # 启动异步下载任务
+            self.page.run_task(self._download_and_install_theme, resource, download_url)
+            self._show_snackbar(f"开始下载主题: {resource.name}")
             
         except Exception as e:
             logger.error(f"安装主题失败: {e}")
             self._show_snackbar(f"安装失败: {e}", error=True)
     
+    async def _download_and_install_theme(self, resource, download_url: str):
+        """异步下载并安装主题"""
+        try:
+            # 下载到临时目录
+            temp_dir = CACHE_DIR / "store_downloads"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 根据resource.id生成文件名
+            filename = f"{resource.id}_{resource.version}.zip"
+            temp_file = temp_dir / filename
+            
+            # 使用aiohttp下载
+            async with aiohttp.ClientSession() as session:
+                async with session.get(download_url) as response:
+                    response.raise_for_status()
+                    with open(temp_file, "wb") as f:
+                        async for chunk in response.content.iter_chunked(8192):
+                            f.write(chunk)
+            
+            self._show_snackbar(f"主题 {resource.name} 下载完成，安装功能待实现")
+            logger.info(f"主题已下载到: {temp_file}")
+            
+        except Exception as e:
+            logger.error(f"下载主题失败: {e}")
+            self._show_snackbar(f"下载失败: {e}", error=True)
+    
     def _handle_install_plugin(self, resource):
         """处理插件安装"""
-        from app.store import ResourceMetadata
-        
         try:
             # 获取下载URL
             download_url = self._store_ui.service.resolve_download_url(resource)
@@ -15822,17 +15845,42 @@ class Pages:
                 self._show_snackbar("该资源没有提供下载链接", error=True)
                 return
             
-            self._show_snackbar(f"插件安装功能开发中... (URL: {download_url})")
-            logger.info(f"安装插件: {resource.name} from {download_url}")
+            # 启动异步下载任务
+            self.page.run_task(self._download_and_install_plugin, resource, download_url)
+            self._show_snackbar(f"开始下载插件: {resource.name}")
             
         except Exception as e:
             logger.error(f"安装插件失败: {e}")
             self._show_snackbar(f"安装失败: {e}", error=True)
     
+    async def _download_and_install_plugin(self, resource, download_url: str):
+        """异步下载并安装插件"""
+        try:
+            # 下载到临时目录
+            temp_dir = CACHE_DIR / "store_downloads"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 根据resource.id生成文件名
+            filename = f"{resource.id}_{resource.version}.zip"
+            temp_file = temp_dir / filename
+            
+            # 使用aiohttp下载
+            async with aiohttp.ClientSession() as session:
+                async with session.get(download_url) as response:
+                    response.raise_for_status()
+                    with open(temp_file, "wb") as f:
+                        async for chunk in response.content.iter_chunked(8192):
+                            f.write(chunk)
+            
+            self._show_snackbar(f"插件 {resource.name} 下载完成，安装功能待实现")
+            logger.info(f"插件已下载到: {temp_file}")
+            
+        except Exception as e:
+            logger.error(f"下载插件失败: {e}")
+            self._show_snackbar(f"下载失败: {e}", error=True)
+    
     def _handle_install_wallpaper_source(self, resource):
         """处理壁纸源安装"""
-        from app.store import ResourceMetadata
-        
         try:
             # 获取下载URL
             download_url = self._store_ui.service.resolve_download_url(resource)
@@ -15841,12 +15889,50 @@ class Pages:
                 self._show_snackbar("该资源没有提供下载链接", error=True)
                 return
             
-            self._show_snackbar(f"壁纸源安装功能开发中... (URL: {download_url})")
-            logger.info(f"安装壁纸源: {resource.name} from {download_url}")
+            # 启动异步下载任务
+            self.page.run_task(self._download_and_install_wallpaper_source, resource, download_url)
+            self._show_snackbar(f"开始下载壁纸源: {resource.name}")
             
         except Exception as e:
             logger.error(f"安装壁纸源失败: {e}")
             self._show_snackbar(f"安装失败: {e}", error=True)
+    
+    async def _download_and_install_wallpaper_source(self, resource, download_url: str):
+        """异步下载并安装壁纸源"""
+        try:
+            # 下载到临时目录
+            temp_dir = CACHE_DIR / "store_downloads"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 壁纸源应该是.ltws格式
+            filename = f"{resource.id}.ltws"
+            temp_file = temp_dir / filename
+            
+            # 使用aiohttp下载
+            async with aiohttp.ClientSession() as session:
+                async with session.get(download_url) as response:
+                    response.raise_for_status()
+                    with open(temp_file, "wb") as f:
+                        async for chunk in response.content.iter_chunked(8192):
+                            f.write(chunk)
+            
+            # 尝试导入壁纸源
+            try:
+                record = self._wallpaper_source_manager.import_source(temp_file)
+                self._show_snackbar(f"壁纸源 {resource.name} 安装成功！")
+                logger.info(f"壁纸源已安装: {record.identifier}")
+                
+                # 刷新设置页面的壁纸源列表
+                if hasattr(self, "_ws_refresh_settings_list"):
+                    self._ws_refresh_settings_list()
+                    
+            except WallpaperSourceImportError as e:
+                self._show_snackbar(f"导入壁纸源失败: {e}", error=True)
+                logger.error(f"导入壁纸源失败: {e}")
+            
+        except Exception as e:
+            logger.error(f"下载壁纸源失败: {e}")
+            self._show_snackbar(f"下载失败: {e}", error=True)
 
     def _build_test(self):
         return ft.Column(
