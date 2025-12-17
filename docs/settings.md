@@ -41,7 +41,10 @@
 
 `startup` 节点现在包含更丰富的开机控制：
 
-- `startup.auto_start`：布尔值，配合 `StartupManager` 在 Windows 注册表中添加/移除启动项。
+- `startup.auto_start`：布尔值，配合 `StartupManager` 在系统中添加/移除启动项。支持跨平台：
+  - **Windows**：使用注册表（`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`）
+  - **macOS**：使用 LaunchAgent plist 文件（`~/Library/LaunchAgents/`）
+  - **Linux**：使用 XDG autostart desktop 文件（`~/.config/autostart/`）
 - `startup.wallpaper_change`：描述开机后立即执行一次壁纸更换的行为，字段包括：
   - `enabled`：是否启用。
   - `list_ids`：参与的自动更换列表 ID（与自动换壁纸列表共用存储）。
