@@ -1,4 +1,6 @@
 import platform
+import plistlib
+from pathlib import Path
 
 from loguru import logger
 
@@ -18,36 +20,59 @@ class StartupManager:
 
     def enable_startup(self, hide_on_launch: bool | None = None):
         """启用开机自启动，可选择是否附带隐藏参数。"""
-        if platform.system() == "Windows":
+        system = platform.system()
+        if system == "Windows":
             self._enable_startup_windows(hide_on_launch)
-            logger.info("Startup enabled")
+        elif system == "Darwin":
+            self._enable_startup_macos(hide_on_launch)
+        elif system == "Linux":
+            self._enable_startup_linux(hide_on_launch)
         else:
             raise NotImplementedError(
-                "Startup management is only implemented for Windows.",
+                f"Startup management is not implemented for {system}.",
             )
+        logger.info("Startup enabled")
 
     def disable_startup(self):
-        if platform.system() == "Windows":
+        system = platform.system()
+        if system == "Windows":
             self._disable_startup_windows()
+        elif system == "Darwin":
+            self._disable_startup_macos()
+        elif system == "Linux":
+            self._disable_startup_linux()
         else:
             raise NotImplementedError(
-                "Startup management is only implemented for Windows.",
+                f"Startup management is not implemented for {system}.",
             )
+        logger.info("Startup disabled")
 
     def is_startup_enabled(self, hide_on_launch: bool | None = None):
-        if platform.system() == "Windows":
+        system = platform.system()
+        if system == "Windows":
             enabled, _ = self._describe_windows(hide_on_launch)
             return enabled
+        elif system == "Darwin":
+            enabled, _ = self._describe_macos(hide_on_launch)
+            return enabled
+        elif system == "Linux":
+            enabled, _ = self._describe_linux(hide_on_launch)
+            return enabled
         raise NotImplementedError(
-            "Startup management is only implemented for Windows.",
+            f"Startup management is not implemented for {system}.",
         )
 
     def describe_startup(self, hide_on_launch: bool | None = None) -> tuple[bool, bool]:
         """返回 (是否启用, 是否包含 --hide)。"""
-        if platform.system() == "Windows":
+        system = platform.system()
+        if system == "Windows":
             return self._describe_windows(hide_on_launch)
+        elif system == "Darwin":
+            return self._describe_macos(hide_on_launch)
+        elif system == "Linux":
+            return self._describe_linux(hide_on_launch)
         raise NotImplementedError(
-            "Startup management is only implemented for Windows.",
+            f"Startup management is not implemented for {system}.",
         )
 
     def _build_command(self, hide_on_launch: bool | None = None) -> str:
@@ -127,3 +152,159 @@ class StartupManager:
         if not enabled and raw.strip() == self.app_path:
             enabled = True
         return enabled, hide_flag
+
+    # macOS 实现
+    def _get_launchagent_path(self) -> Path:
+        """获取 macOS LaunchAgent plist 文件路径。"""
+        launch_agents_dir = Path.home() / "Library" / "LaunchAgents"
+        launch_agents_dir.mkdir(parents=True, exist_ok=True)
+        # 使用反向域名风格命名，例如 com.littletreestudio.LittleTreeWallpaperNext
+        plist_name = f"com.littletreestudio.{self.app_name.replace(' ', '')}.plist"
+        return launch_agents_dir / plist_name
+
+    def _enable_startup_macos(self, hide_on_launch: bool | None = None):
+        """在 macOS 上启用开机自启动（使用 LaunchAgent）。"""
+        plist_path = self._get_launchagent_path()
+        
+        # 构建启动参数
+        args = [self.app_path]
+        if self.arguments:
+            args.append(self.arguments)
+        if hide_on_launch:
+            args.append("--hide")
+        
+        # 创建 plist 配置
+        plist_data = {
+            "Label": f"com.littletreestudio.{self.app_name.replace(' ', '')}",
+            "ProgramArguments": args,
+            "RunAtLoad": True,
+            "KeepAlive": False,
+        }
+        
+        # 写入 plist 文件
+        with open(plist_path, "wb") as f:
+            plistlib.dump(plist_data, f)
+        
+        logger.info(
+            f"添加 macOS 开机启动项:\n\t路径 -> {plist_path}\n\t命令 -> {' '.join(args)}",
+        )
+
+    def _disable_startup_macos(self):
+        """在 macOS 上禁用开机自启动。"""
+        plist_path = self._get_launchagent_path()
+        if plist_path.exists():
+            plist_path.unlink()
+            logger.info(f"移除 macOS 开机启动项:\n\t路径 -> {plist_path}")
+        else:
+            logger.info(f"macOS 开机启动项不存在:\n\t路径 -> {plist_path}")
+
+    def _describe_macos(self, hide_on_launch: bool | None = None) -> tuple[bool, bool]:
+        """检查 macOS 开机自启动状态。"""
+        plist_path = self._get_launchagent_path()
+        
+        if not plist_path.exists():
+            logger.info(f"检查 macOS 开机启动项: 未找到 plist 文件 -> {plist_path}")
+            return False, False
+        
+        try:
+            with open(plist_path, "rb") as f:
+                plist_data = plistlib.load(f)
+            
+            # 检查 ProgramArguments
+            args = plist_data.get("ProgramArguments", [])
+            if not args:
+                return False, False
+            
+            # 检查路径是否匹配
+            enabled = self.app_path in args[0] if args else False
+            
+            # 检查是否包含 --hide 参数
+            hide_flag = "--hide" in args
+            
+            logger.info(
+                f"检查 macOS 开机启动项: {'已启用' if enabled else '未启用'} (隐藏: {'是' if hide_flag else '否'})\n\t路径 -> {plist_path}\n\t参数 -> {args}",
+            )
+            
+            return enabled, hide_flag
+        except Exception as e:
+            logger.error(f"读取 macOS 启动项配置失败: {e}")
+            return False, False
+
+    # Linux 实现
+    def _get_autostart_path(self) -> Path:
+        """获取 Linux autostart desktop 文件路径。"""
+        autostart_dir = Path.home() / ".config" / "autostart"
+        autostart_dir.mkdir(parents=True, exist_ok=True)
+        desktop_name = f"{self.app_name.replace(' ', '-')}.desktop"
+        return autostart_dir / desktop_name
+
+    def _enable_startup_linux(self, hide_on_launch: bool | None = None):
+        """在 Linux 上启用开机自启动（使用 XDG autostart）。"""
+        desktop_path = self._get_autostart_path()
+        
+        # 构建启动命令
+        args = [self.app_path]
+        if self.arguments:
+            args.append(self.arguments)
+        if hide_on_launch:
+            args.append("--hide")
+        exec_command = " ".join(args)
+        
+        # 创建 .desktop 文件内容
+        desktop_content = f"""[Desktop Entry]
+Type=Application
+Name={self.app_name}
+Exec={exec_command}
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+Comment=Little Tree Wallpaper Next auto-start
+"""
+        
+        # 写入 desktop 文件
+        desktop_path.write_text(desktop_content, encoding="utf-8")
+        desktop_path.chmod(0o755)
+        
+        logger.info(
+            f"添加 Linux 开机启动项:\n\t路径 -> {desktop_path}\n\t命令 -> {exec_command}",
+        )
+
+    def _disable_startup_linux(self):
+        """在 Linux 上禁用开机自启动。"""
+        desktop_path = self._get_autostart_path()
+        if desktop_path.exists():
+            desktop_path.unlink()
+            logger.info(f"移除 Linux 开机启动项:\n\t路径 -> {desktop_path}")
+        else:
+            logger.info(f"Linux 开机启动项不存在:\n\t路径 -> {desktop_path}")
+
+    def _describe_linux(self, hide_on_launch: bool | None = None) -> tuple[bool, bool]:
+        """检查 Linux 开机自启动状态。"""
+        desktop_path = self._get_autostart_path()
+        
+        if not desktop_path.exists():
+            logger.info(f"检查 Linux 开机启动项: 未找到 desktop 文件 -> {desktop_path}")
+            return False, False
+        
+        try:
+            content = desktop_path.read_text(encoding="utf-8")
+            
+            # 检查路径是否在 Exec 行中
+            enabled = False
+            hide_flag = False
+            
+            for line in content.splitlines():
+                if line.startswith("Exec="):
+                    exec_line = line[5:].strip()
+                    enabled = self.app_path in exec_line
+                    hide_flag = "--hide" in exec_line
+                    break
+            
+            logger.info(
+                f"检查 Linux 开机启动项: {'已启用' if enabled else '未启用'} (隐藏: {'是' if hide_flag else '否'})\n\t路径 -> {desktop_path}",
+            )
+            
+            return enabled, hide_flag
+        except Exception as e:
+            logger.error(f"读取 Linux 启动项配置失败: {e}")
+            return False, False
