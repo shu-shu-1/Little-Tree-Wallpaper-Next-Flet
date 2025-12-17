@@ -12,11 +12,12 @@ if platform.system() == "Windows":
 
 
 class StartupManager:
-    def __init__(self, app_name=APP_NAME, app_path=SOFTWARE_DIR, arguments="--startup"):
+    def __init__(self, app_name=APP_NAME, app_path=SOFTWARE_DIR, arguments="--startup", bundle_id="com.littletreestudio"):
         self.app_name = app_name
         # store the path that will be written to registry (as string)
         self.app_path = str(app_path)
         self.arguments = arguments
+        self.bundle_id = bundle_id
 
     def enable_startup(self, hide_on_launch: bool | None = None):
         """启用开机自启动，可选择是否附带隐藏参数。"""
@@ -159,7 +160,7 @@ class StartupManager:
         launch_agents_dir = Path.home() / "Library" / "LaunchAgents"
         launch_agents_dir.mkdir(parents=True, exist_ok=True)
         # 使用反向域名风格命名，例如 com.littletreestudio.LittleTreeWallpaperNext
-        plist_name = f"com.littletreestudio.{self.app_name.replace(' ', '')}.plist"
+        plist_name = f"{self.bundle_id}.{self.app_name.replace(' ', '')}.plist"
         return launch_agents_dir / plist_name
 
     def _enable_startup_macos(self, hide_on_launch: bool | None = None):
@@ -168,14 +169,15 @@ class StartupManager:
         
         # 构建启动参数
         args = [self.app_path]
+        # 将参数字符串拆分为单独的参数
         if self.arguments:
-            args.append(self.arguments)
+            args.extend(self.arguments.split())
         if hide_on_launch:
             args.append("--hide")
         
         # 创建 plist 配置
         plist_data = {
-            "Label": f"com.littletreestudio.{self.app_name.replace(' ', '')}",
+            "Label": f"{self.bundle_id}.{self.app_name.replace(' ', '')}",
             "ProgramArguments": args,
             "RunAtLoad": True,
             "KeepAlive": False,
@@ -215,8 +217,9 @@ class StartupManager:
             if not args:
                 return False, False
             
-            # 检查路径是否匹配
-            enabled = self.app_path in args[0] if args else False
+            # 检查第一个参数（可执行文件路径）是否匹配
+            # 可能是完整路径或包含 app_path 作为子字符串
+            enabled = (args[0] == self.app_path or self.app_path in args[0])
             
             # 检查是否包含 --hide 参数
             hide_flag = "--hide" in args
@@ -244,8 +247,9 @@ class StartupManager:
         
         # 构建启动命令
         args = [self.app_path]
+        # 将参数字符串拆分为单独的参数
         if self.arguments:
-            args.append(self.arguments)
+            args.extend(self.arguments.split())
         if hide_on_launch:
             args.append("--hide")
         exec_command = " ".join(args)
@@ -258,7 +262,7 @@ Exec={exec_command}
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
-Comment=Little Tree Wallpaper Next auto-start
+Comment={self.app_name} auto-start
 """
         
         # 写入 desktop 文件
