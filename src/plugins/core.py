@@ -151,6 +151,13 @@ class CorePlugin(Plugin):
                 selected_icon=ft.Icons.STAR,
                 content=pages.favorite,
             ),
+            AppNavigationView(
+                id="store",
+                label="商店",
+                icon=ft.Icons.STORE_OUTLINED,
+                selected_icon=ft.Icons.STORE,
+                content=pages.store,
+            ),
         ]
 
         if MODE != "STABLE":
