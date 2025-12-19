@@ -120,20 +120,32 @@ class StoreUI:
         return ft.Column(
             [
                 ft.Container(
-                    content=ft.Column(
+                    content=ft.Row(
                         [
-                            ft.Text(
-                                "资源商店",
-                                size=24,
-                                weight=ft.FontWeight.BOLD,
+                            ft.Column(
+                                [
+                                    ft.Text(
+                                        "资源商店",
+                                        size=24,
+                                        weight=ft.FontWeight.BOLD,
+                                    ),
+                                    ft.Text(
+                                        "获取主题、壁纸源和插件",
+                                        size=14,
+                                        color=ft.Colors.GREY,
+                                    ),
+                                ],
+                                spacing=4,
+                                expand=True,
                             ),
-                            ft.Text(
-                                "获取主题、壁纸源和插件",
-                                size=14,
-                                color=ft.Colors.GREY,
+                            ft.FilledTonalButton(
+                                "安装管理",
+                                icon=ft.Icons.DOWNLOAD_DONE,
+                                on_click=lambda _: self.page.go("/store/install-manager"),
                             ),
                         ],
-                        spacing=4,
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     padding=ft.padding.only(left=16, top=16, right=16, bottom=8),
                 ),
@@ -500,4 +512,5 @@ class StoreUI:
         self._current_tab = tab_map.get(selected_index, "theme")
         
         # 重新加载资源
-        asyncio.create_task(self.load_resources())
+        # 使用页面提供的事件循环调度，避免无运行循环报错
+        self.page.run_task(self.load_resources)

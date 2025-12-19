@@ -1,5 +1,21 @@
 """Sniffing utilities."""
 
-from .service import SniffedImage, SniffService, SniffServiceError
+from .service import (
+	DEFAULT_SNIFF_REFERER_TEMPLATE,
+	DEFAULT_SNIFF_TIMEOUT_SECONDS,
+	DEFAULT_SNIFF_USER_AGENT,
+	DEFAULT_SNIFF_USE_SOURCE_REFERER,
+	SniffedImage,
+	SniffService,
+	SniffServiceError,
+)
 
-__all__ = ["SniffService", "SniffServiceError", "SniffedImage"]
+__all__ = [
+	"SniffService",
+	"SniffServiceError",
+	"SniffedImage",
+	"DEFAULT_SNIFF_USER_AGENT",
+	"DEFAULT_SNIFF_TIMEOUT_SECONDS",
+	"DEFAULT_SNIFF_REFERER_TEMPLATE",
+	"DEFAULT_SNIFF_USE_SOURCE_REFERER",
+]

@@ -205,6 +205,12 @@ class CorePlugin(Plugin):
             ),
         )
         context.add_route_view(
+            AppRouteView(
+                route="/store/install-manager",
+                builder=pages.build_install_manager_view,
+            ),
+        )
+        context.add_route_view(
             AppRouteView(route="/first-run", builder=pages.build_first_run_page),
         )
         context.add_route_view(

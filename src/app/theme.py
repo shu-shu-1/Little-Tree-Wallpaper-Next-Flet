@@ -528,44 +528,76 @@ class ThemeManager:
         if not source.exists():
             raise FileNotFoundError(f"未找到主题文件: {source}")
         if not source.is_file():
-            raise ValueError("主题导入仅支持 JSON 文件。")
-        if source.suffix.lower() != ".json":
-            raise ValueError("请选择以 .json 结尾的主题文件。")
+            raise ValueError("主题导入仅支持文件或压缩包。")
 
+        suffix = source.suffix.lower()
+        if suffix not in {".json", ".zip"}:
+            raise ValueError("请选择 .json 或 .zip 主题包。")
+
+        temp_dir: Path | None = None
         try:
-            data_bytes = source.read_bytes()
-        except Exception as exc:  # pragma: no cover - defensive logging
-            raise ValueError(f"读取主题文件失败: {exc}") from exc
+            if suffix == ".zip":
+                import tempfile
+                import zipfile
 
-        try:
-            text = data_bytes.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError("主题文件必须使用 UTF-8 编码。") from exc
+                temp_dir_obj = tempfile.TemporaryDirectory()
+                temp_dir = Path(temp_dir_obj.name)
+                with zipfile.ZipFile(source, "r") as zf:
+                    zf.extractall(temp_dir)
+                candidates = sorted(temp_dir.rglob("*.json"))
+                if not candidates:
+                    raise ValueError("压缩包中未找到 JSON 主题文件。")
+                theme_file = candidates[0]
+            else:
+                theme_file = source
 
-        try:
-            payload = json.loads(text)
-        except Exception as exc:
-            raise ValueError("主题文件不是有效的 JSON。") from exc
+            try:
+                data_bytes = theme_file.read_bytes()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                raise ValueError(f"读取主题文件失败: {exc}") from exc
 
-        if not isinstance(payload, dict):
-            raise ValueError("主题文件必须是 JSON 对象。")
+            try:
+                text = data_bytes.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError("主题文件必须使用 UTF-8 编码。") from exc
 
-        target = self._themes_dir / source.name
-        counter = 1
-        while target.exists():
-            target = self._themes_dir / f"{source.stem}-{counter}{source.suffix}"
-            counter += 1
+            try:
+                payload = json.loads(text)
+            except Exception as exc:
+                raise ValueError("主题文件不是有效的 JSON。") from exc
 
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+            if not isinstance(payload, dict):
+                raise ValueError("主题文件必须是 JSON 对象。")
 
-        metadata = self._extract_profile_metadata(payload, target)
-        identifier = target.relative_to(self._themes_dir).as_posix()
-        return {
-            "id": identifier,
-            "path": str(target),
-            "metadata": metadata,
-        }
+            # 目标目录按文件名归档
+            base_name = theme_file.stem
+            sanitized = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in base_name).strip("_")
+            sanitized = sanitized or "theme"
+            target_dir = self._themes_dir / sanitized
+            counter = 1
+            while target_dir.exists():
+                target_dir = self._themes_dir / f"{sanitized}_{counter}"
+                counter += 1
+
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / f"{theme_file.stem}.json"
+            target.write_text(text, encoding="utf-8")
+
+            metadata = self._extract_profile_metadata(payload, target)
+            identifier = target.relative_to(self._themes_dir).as_posix()
+            return {
+                "id": identifier,
+                "path": str(target),
+                "metadata": metadata,
+            }
+        finally:
+            if temp_dir and temp_dir.exists():
+                try:
+                    import shutil
+
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
     def set_profile(self, profile: str) -> dict[str, Any]:
         if self._settings is None:

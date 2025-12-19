@@ -63,6 +63,12 @@ DEFAULT_CONFIG = {
         "segment_size_kb": 200,
         "proxy": {"enabled": False, "type": "http", "server": ""},
     },
+    "sniff": {
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 LittleTreeWallpaper/1.0",
+        "referer": "",
+        "use_source_as_referer": True,
+        "timeout_seconds": 40,
+    },
     "startup": {
         "auto_start": False,
         "script": {"enabled": False, "path": ""},

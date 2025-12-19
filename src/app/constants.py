@@ -4,15 +4,16 @@ Keep numeric tab indices here so callers can avoid magic numbers. These
 values reflect the order of tabs in the main settings view (0-based).
 """
 
-# Index of the "Plugins" tab inside the Settings view (0-based).
-SETTINGS_TAB_PLUGINS = 5
+# Index of tabs inside the Settings view (0-based).
+SETTINGS_TAB_SNIFF = 4
+SETTINGS_TAB_PLUGINS = 7
 """Global constants for Little Tree Wallpaper Next."""
 
 APP_NAME = "小树壁纸 Next"
-VER = "0.1.0"
-BUILD = "2025.12.16-002"
-MODE = "TEST"
-BUILD_VERSION = f"v{VER} ({BUILD})"
+VER = "1.0.0"
+BUILD = "2025.12.19-002"
+MODE = "STABLE"  # 可选值: STABLE, TEST
+BUILD_VERSION = f"v{VER} ({BUILD}) 技术预览"
 
 # 调整该标记值以控制首次启动引导是否在新版本中重新显示。
 FIRST_RUN_MARKER_VERSION = 1

@@ -7,6 +7,8 @@ import importlib
 import importlib.util
 import shutil
 import sys
+import tempfile
+import zipfile
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -148,13 +150,14 @@ class PluginManager:
                         permissions={},
                     )
                     permissions_state = config_entry.permissions
+                    module_file = getattr(module, "__file__", None) or entry
                     self._runtime[identifier] = PluginRuntimeInfo(
                         identifier=identifier,
                         manifest=None,
                         enabled=config_entry.enabled,
                         status=PluginStatus.FAILED,
                         error="缺少 PLUGIN 实例",
-                        source_path=Path(getattr(module, "__file__", entry)),
+                        source_path=Path(module_file),
                         builtin=False,
                         permissions_granted=config_entry.permissions,
                         module_name=module_name,
@@ -174,13 +177,14 @@ class PluginManager:
                         source={"type": "module", "module": module_name, "path": str(entry)},
                         permissions={},
                     )
+                    module_file = getattr(module, "__file__", None) or entry
                     self._runtime[identifier] = PluginRuntimeInfo(
                         identifier=identifier,
                         manifest=None,
                         enabled=config_entry.enabled,
                         status=PluginStatus.FAILED,
                         error="manifest 缺失或类型错误",
-                        source_path=Path(getattr(module, "__file__", entry)),
+                        source_path=Path(module_file),
                         builtin=False,
                         permissions_granted=self._states_to_bool(permissions_state),
                         permission_states=permissions_state,
@@ -447,6 +451,16 @@ class PluginManager:
                                 cached.unlink()
                             except OSError:
                                 pass
+                # 如果源路径是文件，额外尝试删除其所在目录（用户插件目录）
+                parent_dir = path.parent
+                for root in self._search_paths:
+                    try:
+                        parent_dir.relative_to(root)
+                    except ValueError:
+                        continue
+                    if parent_dir.exists():
+                        shutil.rmtree(parent_dir, ignore_errors=True)
+                    break
         self._config.remove_plugin(identifier)
         self._runtime.pop(identifier, None)
         self._loaded = [plugin for plugin in self._loaded if plugin.identifier != identifier]
@@ -460,38 +474,91 @@ class PluginManager:
         source = Path(source_path)
         if not source.exists():
             raise FileNotFoundError(source)
-        if source.is_dir():
-            raise ValueError("暂不支持导入目录形式的插件，请选择 *.py 文件")
 
         target_root = self._search_paths[0]
         target_root.mkdir(parents=True, exist_ok=True)
 
+        # 归一化目标目录名
         sanitized = "".join(
             ch if ch.isalnum() or ch == "_" else "_" for ch in source.stem
-        ).strip("_")
-        sanitized = sanitized or "plugin"
+        ).strip("_") or "plugin"
         candidate = sanitized
         counter = 1
-        while (target_root / f"{candidate}.py").exists():
+        while (target_root / candidate).exists():
             candidate = f"{sanitized}_{counter}"
             counter += 1
 
-        destination = target_root / f"{candidate}.py"
-        shutil.copy2(source, destination)
-        importlib.invalidate_caches()
+        destination_dir = target_root / candidate
+        destination_dir.mkdir(parents=True, exist_ok=False)
 
-        manifest: PluginManifest | None = None
-        identifier: str | None = None
-        requested_permissions: set[str] = set()
-        error: str | None = None
-        module_name = destination.stem
+        temp_dir: Path | None = None
+        module_name = destination_dir.name
 
-        import_permissions = self._derive_import_permissions(
-            self._collect_import_modules(destination),
-        )
-        requested_permissions.update(import_permissions)
+        def _cleanup() -> None:
+            try:
+                if temp_dir and temp_dir.exists():
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+            finally:
+                importlib.invalidate_caches()
 
         try:
+            payload_root: Path
+            main_file: Path | None = None
+
+            if source.is_file() and source.suffix.lower() == ".zip":
+                temp_dir_obj = tempfile.TemporaryDirectory()
+                temp_dir = Path(temp_dir_obj.name)
+                with zipfile.ZipFile(source, "r") as zf:
+                    zf.extractall(temp_dir)
+
+                entries = [p for p in temp_dir.iterdir() if not p.name.startswith("__MACOSX")]
+                if len(entries) == 1 and entries[0].is_dir():
+                    payload_root = entries[0]
+                else:
+                    payload_root = temp_dir
+
+                shutil.copytree(payload_root, destination_dir, dirs_exist_ok=True)
+            elif source.is_file():
+                # 普通 .py 文件：包装为包目录
+                shutil.copy2(source, destination_dir / source.name)
+            else:
+                raise ValueError("仅支持导入 .py 或 .zip 插件包")
+
+            # 确保存在入口 __init__.py
+            candidates = list(destination_dir.glob("*.py")) + list(destination_dir.rglob("__init__.py"))
+            if not candidates:
+                raise ValueError("未找到插件 Python 文件，请确认压缩包内容")
+            # 优先 __init__.py 作为入口
+            main_file = next((p for p in candidates if p.name == "__init__.py"), None)
+            if main_file is None:
+                main_file = next((p for p in candidates if p.stem.lower() in {"plugin", "main"}), candidates[0])
+                # 写一个 __init__.py 将入口暴露为包
+                init_path = destination_dir / "__init__.py"
+                init_path.write_text(
+                    f"from .{main_file.stem} import *\n",
+                    encoding="utf-8",
+                )
+            elif not main_file.samefile(destination_dir / "__init__.py"):
+                # 确保包入口存在
+                init_path = destination_dir / "__init__.py"
+                if not init_path.exists():
+                    init_path.write_text(
+                        f"from .{main_file.stem} import *\n",
+                        encoding="utf-8",
+                    )
+
+            importlib.invalidate_caches()
+
+            manifest: PluginManifest | None = None
+            identifier: str | None = None
+            requested_permissions: set[str] = set()
+            error: str | None = None
+
+            import_permissions = self._derive_import_permissions(
+                self._collect_import_modules(destination_dir / "__init__.py"),
+            )
+            requested_permissions.update(import_permissions)
+
             import_name = f"{self._package_prefix}.{module_name}"
             module = importlib.import_module(import_name)
             plugin = getattr(module, "PLUGIN", None)
@@ -502,14 +569,10 @@ class PluginManager:
                 requested_permissions.update(manifest.permissions or tuple())
 
                 if identifier in self._runtime:
-                    if destination.exists():
-                        try:
-                            destination.unlink()
-                        except OSError:
-                            pass
                     raise ValueError(f"插件标识符 {identifier} 已存在，请先删除后再导入。")
 
-                module_path = Path(getattr(module, "__file__", destination))
+                module_file = getattr(module, "__file__", None) or (destination_dir / "__init__.py")
+                module_path = Path(module_file)
                 is_builtin = self.is_builtin(identifier)
 
                 try:
@@ -527,13 +590,16 @@ class PluginManager:
                     self._config.get_permissions(identifier),
                 )
 
+                # 对于用户安装的插件，记录整个目录作为源路径，便于卸载时删除干净
+                source_path = module_path if is_builtin else destination_dir
+
                 config_entry = self._config.register_plugin(
                     identifier,
                     default_enabled=True if is_builtin else False,
                     source={
                         "type": "builtin" if is_builtin else "module",
                         "module": module_name,
-                        "path": str(module_path),
+                        "path": str(source_path),
                     },
                     permissions={k: v.value for k, v in permission_states.items()},
                 )
@@ -559,7 +625,7 @@ class PluginManager:
                     enabled=config_entry.enabled,
                     status=PluginStatus.DISABLED if not config_entry.enabled else PluginStatus.LOADED,
                     error=None,
-                    source_path=module_path,
+                    source_path=source_path,
                     builtin=is_builtin,
                     permissions_required=manifest.permissions,
                     permissions_granted=self._states_to_bool(permission_states),
@@ -579,19 +645,24 @@ class PluginManager:
                     ]
 
                 self._evaluate_dependencies()
-        except ValueError:
-            # Duplicate identifier or other validation error.
+            else:
+                error = "插件未提供 manifest 或 PLUGIN"
+
+        except Exception:
+            # 清理已创建的目录
+            shutil.rmtree(destination_dir, ignore_errors=True)
+            _cleanup()
             raise
-        except Exception as exc:  # pragma: no cover - diagnostic helper
-            error = str(exc)
+
+        _cleanup()
 
         return PluginImportResult(
-            destination=destination,
-            identifier=identifier,
-            manifest=manifest,
-            requested_permissions=tuple(sorted(requested_permissions)),
+            destination=destination_dir,
+            identifier=locals().get("identifier"),
+            manifest=locals().get("manifest"),
+            requested_permissions=tuple(sorted(locals().get("requested_permissions", set()))),
             module_name=module_name,
-            error=error,
+            error=locals().get("error"),
         )
 
     def get_runtime(self, identifier: str) -> PluginRuntimeInfo | None:

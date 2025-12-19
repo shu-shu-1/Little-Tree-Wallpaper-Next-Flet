@@ -25,7 +25,16 @@ _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".avif", 
 _STYLE_URL_RE = re.compile(r"url\((['\"]?)([^'\"\)]+)\1\)")
 _SRCSET_SPLIT_RE = re.compile(r"\s*,\s*")
 
-_DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=40)
+DEFAULT_SNIFF_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/122.0.0.0 Safari/537.36 LittleTreeWallpaper/1.0"
+)
+DEFAULT_SNIFF_TIMEOUT_SECONDS = 40
+DEFAULT_SNIFF_REFERER_TEMPLATE = ""
+DEFAULT_SNIFF_USE_SOURCE_REFERER = True
+
+_DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=DEFAULT_SNIFF_TIMEOUT_SECONDS)
 
 
 @dataclass(slots=True)
@@ -93,9 +102,27 @@ class _ImageExtractor(HTMLParser):
 
 
 class SniffService:
-    def __init__(self, cache_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        cache_dir: Path | None = None,
+        *,
+        user_agent: str | None = None,
+        referer: str | None = None,
+        timeout_seconds: int | None = None,
+        use_source_as_referer: bool | None = None,
+    ) -> None:
         self._cache_dir = Path(cache_dir or (CACHE_DIR / "sniff"))
         self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._user_agent_value = DEFAULT_SNIFF_USER_AGENT
+        self._referer_template = DEFAULT_SNIFF_REFERER_TEMPLATE
+        self._use_source_as_referer = DEFAULT_SNIFF_USE_SOURCE_REFERER
+        self._timeout = _DEFAULT_TIMEOUT
+        self.update_settings(
+            user_agent=user_agent,
+            referer=referer,
+            timeout_seconds=timeout_seconds,
+            use_source_as_referer=use_source_as_referer,
+        )
 
     async def sniff(self, url: str) -> list[SniffedImage]:
         normalized = url.strip()
@@ -103,9 +130,14 @@ class SniffService:
             raise SniffServiceError("仅支持 HTTP/HTTPS 链接")
 
         logger.info("开始嗅探图片: {}", normalized)
-        async with aiohttp.ClientSession(timeout=_DEFAULT_TIMEOUT) as session:
+        headers = {"User-Agent": self._user_agent_value}
+        referer_header = self._build_referer(normalized)
+        if referer_header:
+            headers["Referer"] = referer_header
+
+        async with aiohttp.ClientSession(timeout=self._timeout, headers=headers) as session:
             try:
-                async with session.get(normalized, headers={"User-Agent": self._user_agent()}) as resp:
+                async with session.get(normalized) as resp:
                     resp.raise_for_status()
                     actual_url = str(resp.url)
                     content_type = resp.headers.get("Content-Type", "").lower()
@@ -149,9 +181,10 @@ class SniffService:
         cached = self._find_cached(image.id)
         if cached:
             return cached
-        headers: dict[str, str] | None = None
-        if image.referer:
-            headers = {"Referer": image.referer}
+        headers: dict[str, str] = {"User-Agent": self._user_agent_value}
+        referer_header = image.referer or self._build_referer(image.url)
+        if referer_header:
+            headers["Referer"] = referer_header
         filename = image.filename or image.id
         filename = self._sanitize_filename(filename)
         result = await asyncio.to_thread(
@@ -286,8 +319,47 @@ class SniffService:
             return parsed_ext.lower()
         return ".jpg"
 
-    def _user_agent(self) -> str:
-        return "LittleTreeWallpaperSniffer/1.0"
+    def update_settings(
+        self,
+        *,
+        user_agent: str | None = None,
+        referer: str | None = None,
+        timeout_seconds: int | None = None,
+        use_source_as_referer: bool | None = None,
+    ) -> None:
+        if user_agent is not None:
+            normalized = user_agent.strip()
+            self._user_agent_value = normalized or DEFAULT_SNIFF_USER_AGENT
+        if referer is not None:
+            self._referer_template = referer.strip()
+        if timeout_seconds is not None:
+            self._timeout = self._build_timeout(timeout_seconds)
+        if use_source_as_referer is not None:
+            self._use_source_as_referer = bool(use_source_as_referer)
+
+    def _build_timeout(self, timeout_seconds: int | float | None) -> aiohttp.ClientTimeout:
+        try:
+            seconds = int(timeout_seconds) if timeout_seconds is not None else DEFAULT_SNIFF_TIMEOUT_SECONDS
+        except Exception:
+            seconds = DEFAULT_SNIFF_TIMEOUT_SECONDS
+        seconds = max(5, min(seconds, 180))
+        return aiohttp.ClientTimeout(total=seconds)
+
+    def _build_referer(self, source_url: str) -> str | None:
+        template = self._referer_template.strip()
+        if template:
+            return template.replace("{url}", source_url)
+        if self._use_source_as_referer:
+            return source_url
+        return None
 
 
-__all__ = ["SniffService", "SniffServiceError", "SniffedImage"]
+__all__ = [
+    "SniffService",
+    "SniffServiceError",
+    "SniffedImage",
+    "DEFAULT_SNIFF_USER_AGENT",
+    "DEFAULT_SNIFF_TIMEOUT_SECONDS",
+    "DEFAULT_SNIFF_REFERER_TEMPLATE",
+    "DEFAULT_SNIFF_USE_SOURCE_REFERER",
+]
