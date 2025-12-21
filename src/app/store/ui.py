@@ -58,6 +58,7 @@ class StoreUI:
         self._loading = False
         self._error_message: str | None = None
         self._resources: list[ResourceMetadata] = []
+        self._load_seq: int = 0  # 加载序列号，确保只渲染最新的请求结果
         
         # UI组件引用
         self._tabs: ft.Tabs | None = None
@@ -162,9 +163,9 @@ class StoreUI:
     
     async def load_resources(self):
         """加载当前标签的资源"""
-        if self._loading:
-            return
-        
+        # 递增请求序列号，用于判断返回结果是否仍然匹配当前标签
+        self._load_seq += 1
+        request_id = self._load_seq
         self._loading = True
         self._error_message = None
         
@@ -174,29 +175,40 @@ class StoreUI:
             self._error_text.visible = False
         if self._resource_grid:
             self._resource_grid.controls.clear()
+        self._resources = []
         
         self.page.update()
         
+        resources: list[ResourceMetadata] = []
+        error_message: str | None = None
+        resource_type = self._current_tab
+        
         try:
             # 根据当前标签获取对应类型的资源
-            resource_type = self._current_tab
-            self._resources = await self.service.get_all_resources(resource_type)
-            
-            # 构建资源卡片
-            if self._resource_grid:
-                for resource in self._resources:
-                    card = self._build_resource_card(resource)
-                    self._resource_grid.controls.append(card)
-            
+            resources = await self.service.get_all_resources(resource_type)
         except StoreServiceError as e:
-            self._error_message = str(e)
-            if self._error_text:
-                self._error_text.value = f"加载失败: {self._error_message}"
-                self._error_text.visible = True
+            error_message = str(e)
             logger.error(f"加载商店资源失败: {e}")
         
         finally:
+            # 若有新的加载请求启动，放弃本次结果，避免跨页渲染
+            if request_id != self._load_seq:
+                return
+            
             self._loading = False
+            if error_message:
+                self._error_message = error_message
+                if self._error_text:
+                    self._error_text.value = f"加载失败: {self._error_message}"
+                    self._error_text.visible = True
+            else:
+                self._resources = resources
+                # 构建资源卡片
+                if self._resource_grid:
+                    for resource in self._resources:
+                        card = self._build_resource_card(resource)
+                        self._resource_grid.controls.append(card)
+            
             if self._loading_indicator:
                 self._loading_indicator.visible = False
             self.page.update()
