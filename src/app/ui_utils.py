@@ -13,7 +13,7 @@ from .constants import BUILD_VERSION, SHOW_WATERMARK
 
 
 def build_watermark(
-    text: str = f"小树壁纸Next测试版\n测试版本，不代表最终品质\n商店-技术预览版\n{BUILD_VERSION}",
+    text: str = f"小树壁纸Next测试版\n测试版本，不代表最终品质\n{BUILD_VERSION}",
     opacity: float = 0.7,
     padding: int = 8,
     margin_rb: tuple[int, int] = (12, 12),

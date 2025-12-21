@@ -125,6 +125,7 @@ from app.constants import (
     VER,
     ZHAOYU_API_URL,
 )
+from app.update import InstallerUpdateService, UpdateChecker, UpdateInfo, UpdateChannel
 from app.download_manager import DownloadLocationType, download_manager
 from app.favorites import (
     FavoriteFolder,
@@ -271,6 +272,7 @@ class Pages:
         self._favorite_file_picker: ft.FilePicker | None = None
         self._theme_file_picker: ft.FilePicker | None = None
         self._home_export_picker: ft.FilePicker | None = None
+        self._installer_file_picker: ft.FilePicker | None = None
         self._home_pending_export_source: Path | None = None
         self._home_change_button: ft.TextButton | None = None
         self.home_quote_text: ft.Text | None = None
@@ -405,6 +407,27 @@ class Pages:
         self._generate_last_model: str | None = None
         self._generate_last_enhance: bool = False
         self._generate_last_allow_nsfw: bool = False
+
+        # 更新服务
+        self._update_service = InstallerUpdateService()
+        self._update_checker = UpdateChecker()
+        self._update_info: UpdateInfo | None = None
+        self._update_channels: list[UpdateChannel] = []
+        self._update_loading: bool = False
+        self._update_checked_once: bool = False
+        self._update_error: str | None = None
+        self._update_home_banner: ft.Container | None = None
+        self._update_status_icon: ft.Icon | None = None
+        self._update_status_title: ft.Text | None = None
+        self._update_status_sub: ft.Text | None = None
+        self._update_channel_dropdown: ft.Dropdown | None = None
+        self._update_auto_switch: ft.Switch | None = None
+        self._update_refresh_button: ft.Control | None = None
+        self._update_detail_button: ft.Control | None = None
+        self._update_detail_sheet: ft.BottomSheet | None = None
+        self._update_install_button: ft.Control | None = None
+        self._update_last_checked_text: ft.Text | None = None
+        self._update_downloading: bool = False
 
         # Sniff page state
         self._sniff_service = SniffService(
@@ -594,6 +617,7 @@ class Pages:
         self.page.run_task(self._load_bing_wallpaper)
         self.page.run_task(self._load_spotlight_wallpaper)
         self.page.run_task(self._load_im_sources)
+        self.page.run_task(self._auto_check_updates_on_launch)
 
     # 模型列表加载已移除
 
@@ -5057,10 +5081,12 @@ class Pages:
             interval_enabled=enabled and mode == "interval",
             slideshow_enabled=enabled and mode == "slideshow",
         )
+        self._update_home_banner = ft.Container(visible=False)
         return ft.Container(
             ft.Column(
                 [
                     ft.Text("当前壁纸", size=30),
+                    self._update_home_banner,
                     ft.Row(
                         [
                             self.img,
@@ -12983,7 +13009,7 @@ class Pages:
 
         grid = ft.GridView(
             expand=True,
-            runs_count=0,
+            runs_count=6,
             max_extent=360,
             child_aspect_ratio=1.15,
             spacing=16,
@@ -13044,13 +13070,13 @@ class Pages:
                 content=ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, color=ft.Colors.OUTLINE),
             )
 
-        max_tag_badges = 6
         tag_controls: list[ft.Control]
         if item.tags:
+            primary_tag = item.tags[0]
             tag_controls = [
                 ft.Container(
                     content=ft.Text(
-                        tag,
+                        primary_tag,
                         size=11,
                         color=ft.Colors.ON_SECONDARY_CONTAINER,
                     ),
@@ -13058,9 +13084,8 @@ class Pages:
                     border_radius=ft.border_radius.all(12),
                     bgcolor=ft.Colors.SECONDARY_CONTAINER,
                 )
-                for tag in item.tags[:max_tag_badges]
             ]
-            overflow_count = len(item.tags) - max_tag_badges
+            overflow_count = len(item.tags) - 1
             if overflow_count > 0:
 
                 def _open_tags_dialog(
@@ -13125,14 +13150,14 @@ class Pages:
                     item.title,
                     size=16,
                     weight=ft.FontWeight.BOLD,
-                    max_lines=2,
+                    max_lines=1,
                     overflow=ft.TextOverflow.ELLIPSIS,
                 ),
                 ft.Text(
                     item.description or "暂无描述",
                     size=12,
                     color=ft.Colors.GREY,
-                    max_lines=3,
+                    max_lines=2,
                     overflow=ft.TextOverflow.ELLIPSIS,
                 ),
                 ft.Row(
@@ -13329,7 +13354,7 @@ class Pages:
                 ),
                 padding=ft.Padding(12, 6, 12, 6),
                 border_radius=ft.border_radius.all(8),
-                bgcolor=ft.colors.with_opacity(0.04, ft.Colors.SECONDARY_CONTAINER),
+                bgcolor=ft.Colors.with_opacity(0.04, ft.Colors.SECONDARY_CONTAINER),
             )
             for tag in tags
         ]
@@ -17578,6 +17603,473 @@ class Pages:
             ),
         ]
 
+    def _ensure_installer_picker(self) -> None:
+        if self.page is None:
+            return
+        if self._installer_file_picker is None:
+            self._installer_file_picker = ft.FilePicker(
+                on_result=self._handle_installer_picker_result,
+            )
+        if self._installer_file_picker not in self.page.overlay:
+            self.page.overlay.append(self._installer_file_picker)
+            self.page.update()
+
+    def _handle_installer_picker_result(self, event: ft.FilePickerResultEvent) -> None:
+        if not event.files:
+            return
+        first = event.files[0]
+        path = getattr(first, "path", None)
+        if not path:
+            return
+        self._start_installer_update(Path(path))
+
+    def _open_installer_picker(self, _=None) -> None:
+        self._ensure_installer_picker()
+        if self._installer_file_picker is None:
+            self._show_snackbar("无法打开文件选择器。", error=True)
+            return
+        try:
+            self._installer_file_picker.pick_files(
+                allow_multiple=False,
+                allowed_extensions=["exe", "msi"],
+                dialog_title="选择安装包以更新主程序",
+            )
+        except Exception as exc:
+            logger.error("选择安装包失败: {error}", error=str(exc))
+            self._show_snackbar("无法选择安装包。", error=True)
+
+    def _start_installer_update(self, installer_path: Path) -> None:
+        try:
+            # 改为交互式安装，允许安装程序自行关闭/重启主应用
+            self._update_service.launch_installer(
+                installer_path=installer_path,
+                mode="interactive",
+                extra_args=None,
+                restart_after=True,
+                log_to_cache=True,
+            )
+        except FileNotFoundError:
+            self._show_snackbar("安装包不存在。", error=True)
+            return
+        except Exception as exc:
+            logger.error("启动安装包更新失败: {error}", error=str(exc))
+            self._show_snackbar(f"启动更新失败：{exc}", error=True)
+            return
+
+        self._show_snackbar("已启动更新程序，应用将退出以完成安装。")
+        self.page.update()
+        self.page.run_task(self._delayed_quit_for_update)
+
+    async def _delayed_quit_for_update(self) -> None:
+        await asyncio.sleep(1)
+        self._quit_for_update()
+
+    def _quit_for_update(self) -> None:
+        window = getattr(self.page, "window", None)
+        try:
+            if window is not None:
+                window.close()
+                window.destroy()
+                return
+        except Exception as exc:
+            logger.error("退出以更新时遇到异常: {error}", error=str(exc))
+        try:
+            os._exit(0)
+        except Exception:
+            pass
+
+    def _build_update_settings_section(self) -> ft.Control:
+        icon = ft.Icon(ft.Icons.CHECK_CIRCLE, size=60, color=ft.Colors.GREEN)
+        self._update_status_icon = icon
+        title = ft.Text("已是最新版本", size=20, weight=ft.FontWeight.BOLD)
+        self._update_status_title = title
+        sub = ft.Text(f"当前版本 v{VER}")
+        self._update_status_sub = sub
+
+        self._update_channel_dropdown = ft.Dropdown(
+            label="更新渠道",
+            options=self._ensure_update_channel_options(),
+            value=self._current_channel(),
+            on_change=self._change_update_channel,
+            width=200,
+        )
+
+        self._update_auto_switch = ft.Switch(
+            label="启动后自动检查更新",
+            value=bool(app_config.get("updates.auto_check", True)),
+            on_change=self._toggle_auto_update,
+        )
+
+        self._update_refresh_button = ft.FilledButton(
+            "刷新更新状态",
+            icon=ft.Icons.REFRESH,
+            on_click=lambda _: self.page.run_task(
+                self._check_updates, manual=True, force=True
+            ),
+        )
+        self._update_detail_button = ft.OutlinedButton(
+            "查看更新详情",
+            icon=ft.Icons.NEW_RELEASES,
+            on_click=self._open_update_detail_sheet,
+            disabled=True,
+        )
+        self._update_last_checked_text = ft.Text("尚未检查")
+
+        status_row = ft.Row(
+            [icon, ft.Column([title, sub, self._update_last_checked_text], spacing=4)],
+            spacing=14,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+        )
+
+        controls: list[ft.Control] = [
+            status_row,
+            ft.Row(
+                [
+                    self._update_channel_dropdown,
+                    self._update_auto_switch,
+                    self._update_refresh_button,
+                    self._update_detail_button,
+                ],
+                spacing=12,
+                wrap=True,
+            ),
+            ft.Text(
+                "提示：版本号遵循 SemVer 2.0.0。若本次启动已检查过更新，进入本页时不会再次自动检查，可手动刷新。",
+                size=12,
+                color=ft.Colors.GREY,
+            ),
+        ]
+
+        self._refresh_update_controls()
+        if not self._update_checked_once:
+            self.page.run_task(self._check_updates, manual=False, force=True)
+        return ft.Column(controls=controls, spacing=12, tight=True)
+
+    # ------------------------------------------------------------------
+    # 更新检查与提醒
+    # ------------------------------------------------------------------
+
+    async def _auto_check_updates_on_launch(self) -> None:
+        auto_enabled = bool(app_config.get("updates.auto_check", True))
+        if not auto_enabled:
+            return
+        await self._check_updates(manual=False, force=not self._update_checked_once)
+
+    def _ensure_update_channel_options(self) -> list[ft.DropdownOption]:
+        options: list[ft.DropdownOption] = []
+        if self._update_channels:
+            for ch in self._update_channels:
+                options.append(ft.DropdownOption(key=ch.id, text=ch.name))
+        else:
+            # 默认选项兜底
+            options = [
+                ft.DropdownOption(key="stable", text="正式版"),
+                ft.DropdownOption(key="beta", text="测试版"),
+            ]
+        return options
+
+    def _current_channel(self) -> str:
+        return str(app_config.get("updates.channel", "stable") or "stable")
+
+    async def _check_updates(
+        self, *, manual: bool = False, force: bool = False
+    ) -> None:
+        if self._update_loading:
+            return
+        if self._update_checked_once and not force:
+            return
+        self._update_loading = True
+        self._update_error = None
+        self._refresh_update_controls(status_hint="正在检查更新…")
+        try:
+            # 拉取频道
+            channels = await self._update_checker.fetch_channels()
+            if channels:
+                self._update_channels = channels
+            channel_id = self._current_channel()
+            valid_ids = (
+                {ch.id for ch in self._update_channels}
+                if self._update_channels
+                else {channel_id}
+            )
+            if channel_id not in valid_ids and self._update_channels:
+                channel_id = self._update_channels[0].id
+                app_config.set("updates.channel", channel_id)
+
+            info = await self._update_checker.fetch_update(channel_id)
+            self._update_info = info
+            self._update_checked_once = True
+            if manual:
+                self._show_snackbar("更新检查完成。")
+        except Exception as exc:
+            self._update_error = str(exc)
+            if manual:
+                self._show_snackbar(f"检查更新失败：{exc}", error=True)
+        finally:
+            self._update_loading = False
+            self._refresh_update_controls()
+            self._update_home_update_banner()
+
+    def _refresh_update_controls(self, status_hint: str | None = None) -> None:
+        info = self._update_info
+        local_version = VER
+        has_new = bool(info and info.is_newer_than(local_version))
+        force_new = bool(info and info.is_force_for(local_version))
+        if self._update_error:
+            icon = ft.Icons.WARNING_AMBER
+            color = ft.Colors.AMBER
+            title = "检查更新失败"
+            sub = self._update_error
+        elif has_new:
+            icon = ft.Icons.ERROR_OUTLINE if force_new else ft.Icons.NEW_RELEASES
+            color = ft.Colors.RED if force_new else ft.Colors.BLUE
+            title = f"发现新版本 v{info.version}" if info else "发现新版本"
+            sub = "需要尽快更新" if force_new else "建议尽快更新体验新功能"
+        else:
+            icon = ft.Icons.CHECK_CIRCLE
+            color = ft.Colors.GREEN
+            title = "已是最新版本"
+            sub = f"当前版本 v{local_version}"
+
+        if status_hint:
+            sub = status_hint
+        if self._update_status_icon is not None:
+            self._update_status_icon.name = icon
+            self._update_status_icon.color = color
+        if self._update_status_title is not None:
+            self._update_status_title.value = title
+        if self._update_status_sub is not None:
+            self._update_status_sub.value = sub
+        if self._update_channel_dropdown is not None:
+            self._update_channel_dropdown.options = (
+                self._ensure_update_channel_options()
+            )
+            self._update_channel_dropdown.value = self._current_channel()
+            self._update_channel_dropdown.disabled = self._update_loading
+        if self._update_auto_switch is not None:
+            self._update_auto_switch.value = bool(
+                app_config.get("updates.auto_check", True)
+            )
+        if self._update_refresh_button is not None:
+            self._update_refresh_button.disabled = self._update_loading
+        if self._update_detail_button is not None:
+            self._update_detail_button.disabled = not has_new or self._update_loading
+        if self._update_install_button is not None:
+            self._update_install_button.disabled = (
+                not has_new or self._update_downloading
+            )
+        if self._update_last_checked_text is not None:
+            if self._update_checked_once:
+                self._update_last_checked_text.value = (
+                    f"已检查：{time.strftime('%H:%M:%S')}"
+                )
+            elif status_hint:
+                self._update_last_checked_text.value = status_hint
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+    def _update_home_update_banner(self) -> None:
+        banner = self._update_home_banner
+        if banner is None:
+            return
+        info = self._update_info
+        local_version = VER
+        if not (info and info.is_newer_than(local_version)):
+            banner.visible = False
+            try:
+                banner.update()
+            except Exception:
+                pass
+            return
+
+        force_new = info.is_force_for(local_version)
+        icon = ft.Icon(
+            ft.Icons.ERROR_OUTLINE if force_new else ft.Icons.NEW_RELEASES,
+            color=ft.Colors.RED if force_new else ft.Colors.BLUE,
+        )
+        text = ft.Text(f"发现新版本 v{info.version}", weight=ft.FontWeight.BOLD)
+        action = ft.TextButton("查看详情", on_click=self._open_update_detail_sheet)
+        banner.content = ft.Row(
+            [icon, text, action],
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        banner.visible = True
+        try:
+            banner.update()
+        except Exception:
+            pass
+
+    def _toggle_auto_update(self, e: ft.ControlEvent | None = None) -> None:
+        target = bool(getattr(getattr(e, "control", None), "value", True))
+        app_config.set("updates.auto_check", target)
+        if target and not self._update_checked_once:
+            self.page.run_task(self._check_updates, manual=False, force=True)
+
+    def _change_update_channel(self, e: ft.ControlEvent | None = None) -> None:
+        value = None
+        if e and getattr(e, "control", None) is not None:
+            value = getattr(e.control, "value", None)
+        channel = str(value or self._current_channel() or "stable")
+        app_config.set("updates.channel", channel)
+        self.page.run_task(self._check_updates, manual=False, force=True)
+
+    def _open_update_detail_sheet(self, _=None) -> None:
+        info = self._update_info
+        if not info or not info.is_newer_than(VER):
+            self._show_snackbar("当前无可用更新。")
+            return
+        sheet = self._ensure_update_detail_sheet(info)
+        sheet.open = True
+        self.page.update()
+
+    def _ensure_update_detail_sheet(self, info: UpdateInfo) -> ft.BottomSheet:
+        def fmt_size(num: int) -> str:
+            if num <= 0:
+                return "未知"
+            units = ["B", "KB", "MB", "GB"]
+            size = float(num)
+            idx = 0
+            while size >= 1024 and idx < len(units) - 1:
+                size /= 1024
+                idx += 1
+            return f"{size:.1f} {units[idx]}"
+
+        if self._update_detail_sheet is None:
+            # 初始化时放置空容器，后续再填充具体内容
+            self._update_detail_sheet = ft.BottomSheet(ft.Container())
+            self.page.overlay.append(self._update_detail_sheet)
+
+        pkg = info.package
+        release_rows: list[ft.Control] = []
+        release_rows.append(ft.Text(f"版本：v{info.version}"))
+        if info.release_date:
+            release_rows.append(ft.Text(f"发布日期：{info.release_date}"))
+        if pkg:
+            release_rows.append(ft.Text(f"下载大小：{fmt_size(pkg.size_bytes)}"))
+            release_rows.append(ft.Text(f"SHA256：{pkg.sha256}"))
+        if info.release_notes_url:
+            release_rows.append(
+                ft.TextButton(
+                    "查看更新日志",
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    on_click=lambda _: self.page.launch_url(info.release_notes_url),
+                )
+            )
+        if info.download_url and not pkg:
+            release_rows.append(ft.Text(f"下载地址：{info.download_url}"))
+
+        note_text = info.release_note or "暂无更新日志。"
+        actions: list[ft.Control] = []
+        install_btn = ft.FilledButton(
+            "立即安装",
+            icon=ft.Icons.SYSTEM_UPDATE_ALT,
+            on_click=lambda _: self.page.run_task(self._download_and_install_update),
+        )
+        self._update_install_button = install_btn
+        actions.append(install_btn)
+        if info.release_notes_url:
+            actions.append(
+                ft.TextButton(
+                    "打开更新页面",
+                    icon=ft.Icons.DESCRIPTION,
+                    on_click=lambda _: self.page.launch_url(info.release_notes_url),
+                )
+            )
+
+        self._update_detail_sheet.content = ft.Container(
+            padding=20,
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.NEW_RELEASES, color=ft.Colors.PRIMARY),
+                            ft.Text(
+                                f"新版本 v{info.version}",
+                                size=18,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                        ],
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Column(release_rows, spacing=6),
+                    ft.Text("更新内容", size=14, weight=ft.FontWeight.BOLD),
+                    ft.Text(
+                        note_text,
+                        selectable=True,
+                        max_lines=10,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                    ft.Row(actions, spacing=12, wrap=True),
+                ],
+                spacing=12,
+                tight=True,
+                scroll=ft.ScrollMode.ALWAYS,
+            ),
+        )
+        return self._update_detail_sheet
+
+    async def _download_and_install_update(self) -> None:
+        if self._update_downloading:
+            return
+        info = self._update_info
+        if not info:
+            self._show_snackbar("暂无可用更新包。", error=True)
+            return
+        pkg = info.package
+        # 如果未提供按平台包，尝试使用顶层下载信息
+        if pkg is None and info.download_url:
+            pkg = type("AnonPkg", (), {})()
+            pkg.download_url = info.download_url
+            pkg.size_bytes = info.size_bytes or 0
+            pkg.sha256 = info.sha256 or ""
+            pkg.platform = "unknown"
+            pkg.arch = "unknown"
+        if pkg is None:
+            self._show_snackbar("暂无可用更新包。", error=True)
+            return
+        dest_dir = CACHE_DIR / "updates"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        parsed_url = urlparse(pkg.download_url)
+        filename = Path(parsed_url.path).name or f"update-{info.version}.exe"
+        # 去掉查询字符串里的 token 等无效字符，避免 Windows 路径错误
+        if not filename.lower().endswith(('.exe', '.msi')):
+            filename = f"{filename}.exe"
+        dest = dest_dir / filename
+        self._update_downloading = True
+        self._refresh_update_controls(status_hint="正在下载更新…")
+        try:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(pkg.download_url) as resp:
+                    resp.raise_for_status()
+                    hasher = hashlib.sha256()
+                    with dest.open("wb") as f:
+                        async for chunk in resp.content.iter_chunked(65536):
+                            if not chunk:
+                                continue
+                            f.write(chunk)
+                            hasher.update(chunk)
+            digest = hasher.hexdigest()
+            if pkg.sha256 and digest.lower() != pkg.sha256.lower():
+                raise ValueError("校验失败：SHA256 不匹配")
+            self._show_snackbar("更新包下载完成，正在启动安装…")
+            # 交互式安装，交由安装程序处理弹窗与关闭逻辑
+            self._update_service.launch_installer(
+                dest, mode="interactive", restart_after=True, log_to_cache=True
+            )
+            await asyncio.sleep(0.5)
+            await self._delayed_quit_for_update()
+        except Exception as exc:
+            logger.error("下载或安装更新失败: {error}", error=str(exc))
+            self._show_snackbar(f"更新失败：{exc}", error=True)
+        finally:
+            self._update_downloading = False
+            self._refresh_update_controls()
+
     def build_settings_view(self):
         def _change_nsfw(e: ft.ControlEvent):
             switch = getattr(e, "control", None)
@@ -17844,6 +18336,10 @@ class Pages:
             "壁纸设置",
             self._build_auto_change_settings_section(),
         )
+        update_tab = tab_content(
+            "更新",
+            self._build_update_settings_section(),
+        )
         appearance = tab_content(
             "外观",
             # 界面主题
@@ -17876,6 +18372,15 @@ class Pages:
                 "部分壁纸源由 小树壁纸资源中心 和 IntelliMarkets-壁纸源市场 提供\nAI 生成由 pollinations.ai 提供\n\n当您使用本软件时，即表示您接受小树工作室用户协议及第三方数据提供方条款。",
                 size=12,
                 color=ft.Colors.GREY,
+            ),
+            ft.Row(
+                controls=[
+                    ft.FilledButton(
+                        "使用安装包更新",
+                        icon=ft.Icons.SYSTEM_UPDATE_ALT,
+                        on_click=self._open_installer_picker,
+                    ),
+                ],
             ),
             ft.Row(
                 controls=[
@@ -17942,6 +18447,7 @@ class Pages:
                 ft.Tab(text="资源", icon=ft.Icons.WALLPAPER, content=resource),
                 ft.Tab(text="下载", icon=ft.Icons.DOWNLOAD, content=download),
                 ft.Tab(text="嗅探", icon=ft.Icons.SEARCH, content=sniff_settings),
+                ft.Tab(text="更新", icon=ft.Icons.SYSTEM_UPDATE, content=update_tab),
                 ft.Tab(text="外观", icon=ft.Icons.PALETTE, content=appearance),
                 ft.Tab(text="关于", icon=ft.Icons.INFO, content=about),
                 ft.Tab(
@@ -17962,11 +18468,12 @@ class Pages:
             "content": 2,
             "download": 3,
             "sniff": 4,
-            "ui": 5,
-            "appearance": 5,
-            "about": 6,
-            "plugins": 7,
-            "plugin": 7,
+            "update": 5,
+            "ui": 6,
+            "appearance": 6,
+            "about": 7,
+            "plugins": 8,
+            "plugin": 8,
         }
         if self._pending_settings_tab:
             pending = None
