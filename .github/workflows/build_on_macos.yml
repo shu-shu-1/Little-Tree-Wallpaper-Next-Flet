@@ -1,0 +1,61 @@
+name: build on macos
+
+on:
+  push:
+  pull_request:
+
+env:
+  FLUTTER_VERSION: "3.29.2"
+  PYTHONUTF8: "1"
+  FLET_CLI_NO_RICH_OUTPUT: "1"
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+          architecture: "arm64"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Create virtual env with uv
+        run: |
+          uv venv
+
+      - name: Install dependencies into the venv (via uv)
+        run: |
+          uv pip install "flet[all]"
+          uv pip install .
+          uv pip list
+
+      - name: Verify Flutter and Flet versions
+        run: |
+          flutter --version
+          uv run flet --version
+
+      - name: Build Flet application (macOS)
+        run: |
+          uv run flet build macos -v
+
+      - name: Upload build/macos as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flet-application-macos-${{ github.run_number }}
+          path: build/macos/**
+          if-no-files-found: error
+          compression-level: 6

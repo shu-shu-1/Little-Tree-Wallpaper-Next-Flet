@@ -1,6 +1,6 @@
 [project]
 name = "little-tree-wallpaper-next-flet"
-version = "0.1.0"
+version = "1.0.0"
 description = ""
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,7 +22,7 @@ dependencies = [
   "pystray>=0.19.5",
   "psutil>=7.1.3",
   "pillow>=12.0.0",
-  "ltws-parser>=1.5.0",
+  "ltws-parser>=1.5.1",
 ]
 
 [dependency-groups]
