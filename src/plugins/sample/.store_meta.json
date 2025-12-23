@@ -1,8 +1,0 @@
-{
-  "id": "com.zsxiaoshu.sample",
-  "name": "示例插件",
-  "version": "0.1.0",
-  "type": "plugin",
-  "source_url": "src/sample.py",
-  "timestamp": 1766214749.0316734
-}

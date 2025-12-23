@@ -91,7 +91,6 @@ class StartupManager:
 
     def _describe_windows(self, hide_on_launch: bool | None = None) -> tuple[bool, bool]:
         desired = self._build_command(hide_on_launch)
-        legacy = self._build_command(False)
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Run",
