@@ -92,7 +92,12 @@ from loguru import logger
 import ltwapi
 
 from .conflicts import StartupConflict, detect_conflicts
-from .constants import BUILD_VERSION, FIRST_RUN_MARKER_VERSION, MODE
+from .constants import (
+    BUILD_VERSION,
+    ENABLE_FIRST_RUN_GUIDE,
+    FIRST_RUN_MARKER_VERSION,
+    MODE,
+)
 from .core.pages import Pages
 from .first_run import should_show_first_run
 from .ipc import IPCService
@@ -405,7 +410,10 @@ class Application:
             page.add(ft.Text("未发现可用插件"))
             return
 
-        self._first_run_pending = should_show_first_run(FIRST_RUN_MARKER_VERSION)
+        # 如果该向导被禁用，跳过首次运行的检查。
+        self._first_run_pending = (
+            ENABLE_FIRST_RUN_GUIDE and should_show_first_run(FIRST_RUN_MARKER_VERSION)
+        )
         self._startup_conflicts = detect_conflicts()
         base_metadata = {
             "app_version": BUILD_VERSION,
@@ -627,7 +635,16 @@ class Application:
         if isinstance(watermark, ft.Container) and watermark.content is not None:
             stack_controls.append(watermark)
 
-        appbar_actions: list[ft.Control] = [ft.TextButton("帮助", icon=ft.Icons.HELP)]
+        def open_help(_: ft.ControlEvent) -> None:
+            page.launch_url("https://docs.zsxiaoshu.cn/docs/wallpaper/user/")
+
+        appbar_actions: list[ft.Control] = [
+            ft.TextButton(
+                "帮助",
+                icon=ft.Icons.HELP,
+                on_click=open_help,
+            )
+        ]
 
         def open_settings(_: ft.ControlEvent) -> None:
             page.go("/settings")

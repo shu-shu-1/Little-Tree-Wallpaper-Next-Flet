@@ -18271,7 +18271,7 @@ class Pages:
         sniff_settings = tab_content("嗅探", self._build_sniff_settings_section())
         resource = tab_content(
             "内容",
-            ft.Text("是否允许 NSFW 内容？"),
+            ft.Text("是否允许 NSFW 内容？(实验性)"),
             ft.Switch(
                 value=app_config.get("wallpaper.allow_nsfw", False),
                 on_change=_change_nsfw,

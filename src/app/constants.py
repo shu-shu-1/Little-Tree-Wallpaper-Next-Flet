@@ -11,12 +11,15 @@ SETTINGS_TAB_PLUGINS = 7
 
 APP_NAME = "小树壁纸 Next"
 VER = "1.0.0"
-BUILD = "2025.12.21-003"
-MODE = "TEST"  # 可选值: STABLE, TEST
-BUILD_VERSION = f"v{VER} ({BUILD}) 技术预览"
+BUILD = "2025.12.24-001"
+MODE = "STABLE"  # 可选值: STABLE, TEST
+BUILD_VERSION = f"v{VER} ({BUILD})"
 
 # 调整该标记值以控制首次启动引导是否在新版本中重新显示。
 FIRST_RUN_MARKER_VERSION = 1
+
+# 将该值设为 False 可完全禁用首次启动向导。
+ENABLE_FIRST_RUN_GUIDE = True
 
 HITOKOTO_API = [
     "https://v1.hitokoto.cn",
