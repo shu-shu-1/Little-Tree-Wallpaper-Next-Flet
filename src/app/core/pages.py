@@ -4827,7 +4827,24 @@ class Pages:
                 ),
             )
             return
-        pyperclip.copy(self.wallpaper_path)
+        try:
+            pyperclip.copy(self.wallpaper_path)
+        except pyperclip.PyperclipException:
+            self.page.open(
+                ft.SnackBar(
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                name=ft.Icons.ERROR_OUTLINE,
+                                color=ft.Colors.ON_ERROR_CONTAINER,
+                            ),
+                            ft.Text("复制失败，请先安装 xclip/xsel 或 wl-clipboard"),
+                        ],
+                    ),
+                    bgcolor=ft.Colors.ON_ERROR,
+                ),
+            )
+            return
         self.page.open(
             ft.SnackBar(
                 ft.Row(
@@ -6892,7 +6909,7 @@ class Pages:
                     icon=ft.Icons.WINDOW,
                     content=self._build_spotlight_loading_indicator(),
                 ),
-                ft.Tab(text="搜索", icon=ft.Icons.SEARCH),
+                # ft.Tab(text="搜索", icon=ft.Icons.SEARCH),
                 ft.Tab(
                     text="IntelliMarkets 图片源",
                     icon=ft.Icons.SUBJECT,
@@ -14382,7 +14399,17 @@ class Pages:
                 )
                 self._emit_bing_action("copy_link", False)
                 return
-            pyperclip.copy(self.bing_wallpaper_url)
+            try:
+                pyperclip.copy(self.bing_wallpaper_url)
+            except pyperclip.PyperclipException:
+                self.page.open(
+                    ft.SnackBar(
+                        ft.Text("复制失败，请先安装 xclip/xsel 或 wl-clipboard"),
+                        bgcolor=ft.Colors.ON_ERROR,
+                    ),
+                )
+                self._emit_bing_action("copy_link", False)
+                return
             self.page.open(
                 ft.SnackBar(
                     ft.Text("链接已复制，快去分享吧~"),

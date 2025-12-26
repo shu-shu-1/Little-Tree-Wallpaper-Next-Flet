@@ -408,7 +408,22 @@ def set_wallpaper(path: str) -> None:
         subprocess.run(["pcmanfm", "--set-wallpaper", path], check=False)
         return
 
-    # 兜底：使用 feh / nitrogen
+    # 兜底：先尝试通用 gsettings，再尝试 feh / nitrogen
+    gsettings = which("gsettings")
+    if gsettings:
+        uri = Path(path).as_uri()
+        # 不强制报错，允许在无 GNOME schema 时继续后续兜底
+        result = subprocess.run(
+            [gsettings, "set", "org.gnome.desktop.background", "picture-uri", uri],
+            check=False,
+        )
+        subprocess.run(
+            [gsettings, "set", "org.gnome.desktop.background", "picture-uri-dark", uri],
+            check=False,
+        )
+        if result.returncode == 0:
+            return
+
     if which("feh"):
         subprocess.run(["feh", "--bg-scale", path], check=True)
         return
