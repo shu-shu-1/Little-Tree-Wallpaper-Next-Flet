@@ -649,6 +649,29 @@ class Pages:
         except GlobalDataError as exc:
             logger.error(f"初始化全局数据命名空间失败: {exc}")
 
+    @staticmethod
+    def _control_attached(control: ft.Control | None) -> bool:
+        """检查控件是否已挂载到页面，避免访问 page 属性触发异常。"""
+        current = control
+        while current is not None:
+            try:
+                if isinstance(current, ft.Page):
+                    return True
+                current = current.parent
+            except Exception:
+                return False
+        return False
+
+    def _update_if_attached(self, control: ft.Control | None) -> None:
+        if control is None:
+            return
+        if not self._control_attached(control):
+            return
+        try:
+            control.update()
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # auto-change helpers
     # ------------------------------------------------------------------
@@ -686,8 +709,7 @@ class Pages:
         )
         self._home_change_button.disabled = not available
         self._home_change_button.tooltip = tooltip
-        if self._home_change_button.page is not None:
-            self._home_change_button.update()
+        self._update_if_attached(self._home_change_button)
 
     def _refresh_auto_change_controls(self) -> None:
         config = self._auto_current_config()
@@ -741,8 +763,7 @@ class Pages:
         try:
             if self._auto_enable_switch is not None:
                 self._auto_enable_switch.value = enabled
-                if self._auto_enable_switch.page is not None:
-                    self._auto_enable_switch.update()
+                self._update_if_attached(self._auto_enable_switch)
             if self._auto_mode_dropdown is not None:
                 target_mode = (
                     mode
@@ -751,86 +772,70 @@ class Pages:
                 )
                 self._auto_mode_dropdown.value = target_mode
                 self._auto_mode_dropdown.disabled = not enabled
-                if self._auto_mode_dropdown.page is not None:
-                    self._auto_mode_dropdown.update()
+                self._update_if_attached(self._auto_mode_dropdown)
             if self._auto_interval_value_field is not None:
                 self._auto_interval_value_field.value = str(interval_value)
                 self._auto_interval_value_field.error_text = None
                 self._auto_interval_value_field.disabled = not interval_enabled
-                if self._auto_interval_value_field.page is not None:
-                    self._auto_interval_value_field.update()
+                self._update_if_attached(self._auto_interval_value_field)
             if self._auto_interval_unit_dropdown is not None:
                 self._auto_interval_unit_dropdown.value = interval_unit
                 self._auto_interval_unit_dropdown.disabled = not interval_enabled
-                if self._auto_interval_unit_dropdown.page is not None:
-                    self._auto_interval_unit_dropdown.update()
+                self._update_if_attached(self._auto_interval_unit_dropdown)
             if self._auto_interval_order_dropdown is not None:
                 self._auto_interval_order_dropdown.value = interval_order
                 self._auto_interval_order_dropdown.disabled = not interval_enabled
-                if self._auto_interval_order_dropdown.page is not None:
-                    self._auto_interval_order_dropdown.update()
+                self._update_if_attached(self._auto_interval_order_dropdown)
             self._auto_refresh_interval_lists(enabled=interval_enabled)
             if self._auto_interval_fixed_image_display is not None:
                 display_text = str(fixed_path) if fixed_path else "未选择"
                 display_color = ft.Colors.ON_SURFACE if fixed_path else ft.Colors.GREY
                 self._auto_interval_fixed_image_display.value = display_text
                 self._auto_interval_fixed_image_display.color = display_color
-                if self._auto_interval_fixed_image_display.page is not None:
-                    self._auto_interval_fixed_image_display.update()
+                self._update_if_attached(self._auto_interval_fixed_image_display)
             if self._auto_interval_select_button is not None:
                 self._auto_interval_select_button.disabled = not interval_enabled
-                if self._auto_interval_select_button.page is not None:
-                    self._auto_interval_select_button.update()
+                self._update_if_attached(self._auto_interval_select_button)
             if self._auto_interval_clear_button is not None:
                 self._auto_interval_clear_button.disabled = not (
                     interval_enabled and bool(fixed_path)
                 )
-                if self._auto_interval_clear_button.page is not None:
-                    self._auto_interval_clear_button.update()
+                self._update_if_attached(self._auto_interval_clear_button)
             if self._auto_slideshow_interval_field is not None:
                 self._auto_slideshow_interval_field.value = str(slideshow_value)
                 self._auto_slideshow_interval_field.error_text = None
                 self._auto_slideshow_interval_field.disabled = not slideshow_enabled
-                if self._auto_slideshow_interval_field.page is not None:
-                    self._auto_slideshow_interval_field.update()
+                self._update_if_attached(self._auto_slideshow_interval_field)
             if self._auto_slideshow_unit_dropdown is not None:
                 self._auto_slideshow_unit_dropdown.value = slideshow_unit
                 self._auto_slideshow_unit_dropdown.disabled = not slideshow_enabled
-                if self._auto_slideshow_unit_dropdown.page is not None:
-                    self._auto_slideshow_unit_dropdown.update()
+                self._update_if_attached(self._auto_slideshow_unit_dropdown)
             if self._auto_slideshow_mode_dropdown is not None:
                 self._auto_slideshow_mode_dropdown.value = slideshow_mode
                 self._auto_slideshow_mode_dropdown.disabled = not slideshow_enabled
-                if self._auto_slideshow_mode_dropdown.page is not None:
-                    self._auto_slideshow_mode_dropdown.update()
+                self._update_if_attached(self._auto_slideshow_mode_dropdown)
             if self._auto_schedule_order_dropdown is not None:
                 self._auto_schedule_order_dropdown.value = schedule_order
                 self._auto_schedule_order_dropdown.disabled = not schedule_enabled
-                if self._auto_schedule_order_dropdown.page is not None:
-                    self._auto_schedule_order_dropdown.update()
+                self._update_if_attached(self._auto_schedule_order_dropdown)
             if self._auto_slideshow_add_file_button is not None:
                 self._auto_slideshow_add_file_button.disabled = not slideshow_enabled
-                if self._auto_slideshow_add_file_button.page is not None:
-                    self._auto_slideshow_add_file_button.update()
+                self._update_if_attached(self._auto_slideshow_add_file_button)
             if self._auto_slideshow_add_folder_button is not None:
                 self._auto_slideshow_add_folder_button.disabled = not slideshow_enabled
-                if self._auto_slideshow_add_folder_button.page is not None:
-                    self._auto_slideshow_add_folder_button.update()
+                self._update_if_attached(self._auto_slideshow_add_folder_button)
         finally:
             self._auto_updating_auto_ui = False
 
         if self._auto_interval_section is not None:
             self._auto_interval_section.visible = mode == "interval"
-            if self._auto_interval_section.page is not None:
-                self._auto_interval_section.update()
+            self._update_if_attached(self._auto_interval_section)
         if self._auto_schedule_section is not None:
             self._auto_schedule_section.visible = mode == "schedule"
-            if self._auto_schedule_section.page is not None:
-                self._auto_schedule_section.update()
+            self._update_if_attached(self._auto_schedule_section)
         if self._auto_slideshow_section is not None:
             self._auto_slideshow_section.visible = mode == "slideshow"
-            if self._auto_slideshow_section.page is not None:
-                self._auto_slideshow_section.update()
+            self._update_if_attached(self._auto_slideshow_section)
 
         self._auto_refresh_schedule_entries(enabled=schedule_enabled)
         self._auto_refresh_slideshow_items(enabled=slideshow_enabled)
@@ -1347,12 +1352,10 @@ class Pages:
                         enabled=enabled_state,
                     ),
                 )
-        if column.page is not None:
-            column.update()
+        self._update_if_attached(column)
         if self._auto_schedule_add_button is not None:
             self._auto_schedule_add_button.disabled = not enabled_state
-            if self._auto_schedule_add_button.page is not None:
-                self._auto_schedule_add_button.update()
+            self._update_if_attached(self._auto_schedule_add_button)
 
     def _auto_build_schedule_entry_card(
         self,
@@ -1545,12 +1548,10 @@ class Pages:
         if display is not None:
             display.value = fixed_image if fixed_image else "未选择"
             display.color = ft.Colors.ON_SURFACE if fixed_image else ft.Colors.GREY
-            if display.page is not None:
-                display.update()
+            self._update_if_attached(display)
         if clear_button is not None:
             clear_button.disabled = not fixed_image
-            if clear_button.page is not None:
-                clear_button.update()
+            self._update_if_attached(clear_button)
 
     def _auto_schedule_dialog_clear_fixed_image(self) -> None:
         self._auto_schedule_dialog_set_fixed_image(None)
@@ -1568,12 +1569,10 @@ class Pages:
         normalized_time = self._auto_normalize_schedule_time(raw_time)
         if normalized_time is None:
             time_field.error_text = "请输入合法的 24 小时时间，如 08:30"
-            if time_field.page is not None:
-                time_field.update()
+            self._update_if_attached(time_field)
             return
         time_field.error_text = None
-        if time_field.page is not None:
-            time_field.update()
+        self._update_if_attached(time_field)
         list_checks: dict[str, ft.Checkbox] = state.get("list_checks", {})  # type: ignore[assignment]
         selected_ids = [
             list_id for list_id, checkbox in list_checks.items() if bool(checkbox.value)
@@ -1684,16 +1683,14 @@ class Pages:
                 column.controls.append(
                     self._auto_build_slideshow_item_row(item, enabled=enabled_state),
                 )
-        if column.page is not None:
-            column.update()
+        self._update_if_attached(column)
         for button in (
             self._auto_slideshow_add_file_button,
             self._auto_slideshow_add_folder_button,
         ):
             if button is not None:
                 button.disabled = not enabled_state
-                if button.page is not None:
-                    button.update()
+                self._update_if_attached(button)
 
     def _auto_build_slideshow_item_row(
         self,
@@ -1852,24 +1849,20 @@ class Pages:
         raw = str(control.value or "").strip()
         if not raw:
             control.error_text = "请输入数字"
-            if control.page is not None:
-                control.update()
+            self._update_if_attached(control)
             return
         try:
             value = int(raw)
         except ValueError:
             control.error_text = "请输入数字"
-            if control.page is not None:
-                control.update()
+            self._update_if_attached(control)
             return
         if value <= 0:
             control.error_text = "必须大于 0"
-            if control.page is not None:
-                control.update()
+            self._update_if_attached(control)
             return
         control.error_text = None
-        if control.page is not None:
-            control.update()
+        self._update_if_attached(control)
         config = copy.deepcopy(self._auto_current_config())
         slideshow = dict(config.get("slideshow") or {})
         slideshow["value"] = value
@@ -1932,24 +1925,20 @@ class Pages:
         raw = str(control.value or "").strip()
         if not raw:
             control.error_text = "请输入数字"
-            if control.page is not None:
-                control.update()
+            self._update_if_attached(control)
             return
         try:
             value = int(raw)
         except ValueError:
             control.error_text = "请输入数字"
-            if control.page is not None:
-                control.update()
+            self._update_if_attached(control)
             return
         if value <= 0:
             control.error_text = "必须大于 0"
-            if control.page is not None:
-                control.update()
+            self._update_if_attached(control)
             return
         control.error_text = None
-        if control.page is not None:
-            control.update()
+        self._update_if_attached(control)
         config = copy.deepcopy(self._auto_current_config())
         interval = dict(config.get("interval") or {})
         interval["value"] = value
@@ -2019,8 +2008,7 @@ class Pages:
                 )
                 self._auto_interval_list_checks[auto_list.id] = checkbox
                 self._auto_interval_lists_wrap.controls.append(checkbox)
-        if self._auto_interval_lists_wrap.page is not None:
-            self._auto_interval_lists_wrap.update()
+            self._update_if_attached(self._auto_interval_lists_wrap)
 
     def _auto_on_interval_list_toggle(self, list_id: str, checked: bool) -> None:
         if self._auto_updating_auto_ui:
@@ -2152,8 +2140,7 @@ class Pages:
         self._auto_lists_summary_text.value = (
             f"当前共 {len(lists)} 个列表，可在自动更换设置中随时选择使用。"
         )
-        if self._auto_lists_summary_text.page is not None:
-            self._auto_lists_summary_text.update()
+        self._update_if_attached(self._auto_lists_summary_text)
 
     def _refresh_auto_lists_view(self) -> None:
         if self._auto_lists_column is None:
@@ -2170,8 +2157,7 @@ class Pages:
                 self._auto_lists_column.controls.append(
                     self._auto_build_list_card(auto_list),
                 )
-        if self._auto_lists_column.page is not None:
-            self._auto_lists_column.update()
+        self._update_if_attached(self._auto_lists_column)
         self._rebuild_startup_wallpaper_list_checks()
 
     def _auto_build_list_card(self, auto_list: AutoChangeList) -> ft.Control:
@@ -2441,8 +2427,7 @@ class Pages:
                 entries_column.controls.append(
                     self._auto_build_editor_entry_row(index, entry),
                 )
-        if entries_column.page is not None:
-            entries_column.update()
+        self._update_if_attached(entries_column)
 
     def _auto_build_editor_entry_row(
         self,
@@ -2798,8 +2783,7 @@ class Pages:
                                     ),
                                 )
                 collected_controls["params"] = params_controls
-                if params_column.page is not None:
-                    params_column.update()
+                self._update_if_attached(params_column)
 
             def on_change(event: ft.ControlEvent) -> None:
                 rebuild_params(event.control.value)
@@ -2900,8 +2884,7 @@ class Pages:
                                 ),
                             )
                 collected_controls["params"] = params_controls
-                if params_column.page is not None:
-                    params_column.update()
+                self._update_if_attached(params_column)
 
             def im_on_change(event: ft.ControlEvent) -> None:
                 rebuild_im_params(event.control.value)
@@ -3032,8 +3015,7 @@ class Pages:
                 return
             placeholder.content = inline_column
             # update UI
-            if placeholder.page is not None:
-                placeholder.update()
+            self._update_if_attached(placeholder)
             return
 
         # Otherwise fall back to modal dialog
@@ -3117,8 +3099,7 @@ class Pages:
             placeholder = None
         if placeholder is not None:
             placeholder.content = None
-            if placeholder.page is not None:
-                placeholder.update()
+            self._update_if_attached(placeholder)
         self._auto_entry_dialog_state = {}
 
     def _auto_confirm_entry_inline(self) -> None:
@@ -3663,7 +3644,7 @@ class Pages:
         if denied_permissions:
             badges.append(
                 ft.Container(
-                    padding=ft.Padding(8, 4, 8, 4),
+                    padding=ft.Padding(left=8, top=4, right=8, bottom=4),
                     bgcolor=ft.Colors.RED_50,
                     border_radius=6,
                     content=ft.Text(
@@ -3676,7 +3657,7 @@ class Pages:
         if prompt_permissions:
             badges.append(
                 ft.Container(
-                    padding=ft.Padding(8, 4, 8, 4),
+                    padding=ft.Padding(left=8, top=4, right=8, bottom=4),
                     bgcolor=ft.Colors.AMBER_50,
                     border_radius=6,
                     content=ft.Text(
@@ -4134,11 +4115,15 @@ class Pages:
 
     def _open_dialog(self, dialog: ft.AlertDialog) -> None:
         self.page.dialog = dialog
-        self.page.open(self.page.dialog)
+        self.page.show_dialog(dialog)
 
     def _close_dialog(self) -> None:
         if self.page.dialog is not None:
-            self.page.close(self.page.dialog)
+            try:
+                self.page.pop_dialog()
+            except Exception:  # pragma: no cover - 兼容旧版本关闭逻辑
+                self.page.dialog.open = False
+                self.page.update()
 
     # -----------------------------
     # 收藏：添加本地图片入口
@@ -4835,7 +4820,7 @@ class Pages:
                     ft.Row(
                         controls=[
                             ft.Icon(
-                                name=ft.Icons.ERROR_OUTLINE,
+                                icon=ft.Icons.ERROR_OUTLINE,
                                 color=ft.Colors.ON_ERROR_CONTAINER,
                             ),
                             ft.Text("复制失败，请先安装 xclip/xsel 或 wl-clipboard"),
@@ -4849,7 +4834,7 @@ class Pages:
             ft.SnackBar(
                 ft.Row(
                     controls=[
-                        ft.Icon(name=ft.Icons.DONE, color=ft.Colors.ON_SECONDARY),
+                        ft.Icon(icon=ft.Icons.DONE, color=ft.Colors.ON_SECONDARY),
                         ft.Text("壁纸路径已复制~ (。・∀・)"),
                     ],
                 ),
@@ -5074,7 +5059,7 @@ class Pages:
             src=self.wallpaper_path or "",
             height=200,
             border_radius=10,
-            fit=ft.ImageFit.COVER,
+            fit=ft.BoxFit.COVER,
             tooltip="当前计算机的壁纸",
             error_content=ft.Container(ft.Text("图片已失效，请刷新数据~"), padding=20),
         )
@@ -5684,17 +5669,14 @@ class Pages:
         config = self._startup_wallpaper_config()
         if self._startup_wallpaper_switch is not None:
             self._startup_wallpaper_switch.value = config["enabled"]
-            if self._startup_wallpaper_switch.page is not None:
-                self._startup_wallpaper_switch.update()
+            self._update_if_attached(self._startup_wallpaper_switch)
         if self._startup_wallpaper_order_dropdown is not None:
             self._startup_wallpaper_order_dropdown.value = config["order"]
-            if self._startup_wallpaper_order_dropdown.page is not None:
-                self._startup_wallpaper_order_dropdown.update()
+            self._update_if_attached(self._startup_wallpaper_order_dropdown)
         if self._startup_wallpaper_delay_field is not None:
             self._startup_wallpaper_delay_field.value = str(config["delay_seconds"])
             self._startup_wallpaper_delay_field.error_text = None
-            if self._startup_wallpaper_delay_field.page is not None:
-                self._startup_wallpaper_delay_field.update()
+            self._update_if_attached(self._startup_wallpaper_delay_field)
         self._update_startup_fixed_image_display(config.get("fixed_image"))
         self._rebuild_startup_wallpaper_list_checks()
 
@@ -5729,8 +5711,7 @@ class Pages:
                 checkbox.disabled = False
                 self._startup_wallpaper_list_checks[auto_list.id] = checkbox
                 column.controls.append(checkbox)
-        if column.page is not None:
-            column.update()
+            self._update_if_attached(column)
 
     def _handle_startup_auto_switch(self, event: ft.ControlEvent) -> None:
         desired = bool(getattr(event.control, "value", False))
@@ -5747,8 +5728,7 @@ class Pages:
         except Exception as exc:  # pragma: no cover - platform specific
             logger.error(f"更新开机启动状态失败: {exc}")
             event.control.value = not desired
-            if event.control.page is not None:
-                event.control.update()
+            self._update_if_attached(event.control)
             self._show_snackbar("无法修改开机启动状态，请查看日志。", error=True)
         finally:
             self._refresh_startup_auto_status()
@@ -5764,8 +5744,7 @@ class Pages:
         except Exception as exc:
             logger.error(f"更新开机隐藏设置失败: {exc}")
             event.control.value = not desired
-            if event.control.page is not None:
-                event.control.update()
+            self._update_if_attached(event.control)
             self._show_snackbar("更新启动项时出现问题，请查看日志。", error=True)
         finally:
             self._refresh_startup_auto_status()
@@ -5796,8 +5775,7 @@ class Pages:
             color = ft.Colors.ERROR
         self._startup_auto_status_text.value = text
         self._startup_auto_status_text.color = color
-        if self._startup_auto_status_text.page is not None:
-            self._startup_auto_status_text.update()
+        self._update_if_attached(self._startup_auto_status_text)
 
     def _describe_startup_state_text(self) -> str:
         try:
@@ -5842,12 +5820,10 @@ class Pages:
             delay = max(0, int(raw_value))
         except ValueError:
             event.control.error_text = "请输入非负整数"
-            if event.control.page is not None:
-                event.control.update()
+            self._update_if_attached(event.control)
             return
         event.control.error_text = None
-        if event.control.page is not None:
-            event.control.update()
+        self._update_if_attached(event.control)
         config = self._startup_wallpaper_config()
         config["delay_seconds"] = delay
         self._save_startup_wallpaper_config(config)
@@ -5869,12 +5845,10 @@ class Pages:
             self._startup_wallpaper_fixed_image_display.color = (
                 ft.Colors.ON_SURFACE if path else ft.Colors.GREY
             )
-            if self._startup_wallpaper_fixed_image_display.page is not None:
-                self._startup_wallpaper_fixed_image_display.update()
+            self._update_if_attached(self._startup_wallpaper_fixed_image_display)
         if self._startup_wallpaper_clear_button is not None:
             self._startup_wallpaper_clear_button.disabled = not bool(path)
-            if self._startup_wallpaper_clear_button.page is not None:
-                self._startup_wallpaper_clear_button.update()
+            self._update_if_attached(self._startup_wallpaper_clear_button)
 
     def _handle_startup_wallpaper_run_now(
         self, _: ft.ControlEvent | None = None
@@ -6353,8 +6327,7 @@ class Pages:
         self._sniff_service.update_settings(timeout_seconds=seconds)
         if self._sniff_settings_timeout_field is not None:
             self._sniff_settings_timeout_field.value = str(seconds)
-            if self._sniff_settings_timeout_field.page is not None:
-                self._sniff_settings_timeout_field.update()
+            self._update_if_attached(self._sniff_settings_timeout_field)
 
     # 下载设置事件处理方法
     def _handle_download_location_change(self, e: ft.ControlEvent):
@@ -6504,7 +6477,7 @@ class Pages:
         self._download_clear_dialog = confirm_dialog
         self.page.dialog = confirm_dialog
         confirm_dialog.open = True
-        self.page.open(confirm_dialog)
+        self.page.show_dialog(confirm_dialog)
         self.page.update()
 
     def _confirm_clear_download_folder(self):
@@ -6527,11 +6500,10 @@ class Pages:
         if hasattr(self, "_download_clear_dialog") and self._download_clear_dialog:
             self._download_clear_dialog.open = False
             try:
-                # 如果当前页面的对话框正好是这个，也一起关闭
                 if self.page.dialog is self._download_clear_dialog:
-                    self.page.close(self.page.dialog)
+                    self.page.pop_dialog()
                 else:
-                    self.page.close(self._download_clear_dialog)
+                    self.page.update()
             except Exception:
                 # 兼容性处理：如果 close 过程中出错，不影响后续 UI 更新
                 pass
@@ -6893,35 +6865,39 @@ class Pages:
         # 关闭对话框
         if hasattr(self, "_optimize_dialog") and self._optimize_dialog:
             self._optimize_dialog.open = False
-            self.page.close(self._optimize_dialog)
+            try:
+                if self.page.dialog is self._optimize_dialog:
+                    self.page.pop_dialog()
+                else:
+                    self.page.update()
+            except Exception:
+                pass
             self.page.update()
 
     def _build_resource(self):
+        # 使用新版 Tabs + TabBar/TabBarView 结构，避免 Tab() 接受内容参数的不兼容问题
+        resource_tab_labels = [
+            ("Bing 每日", ft.Icons.TODAY, self._build_bing_loading_indicator()),
+            ("Windows 聚焦", ft.Icons.WINDOW, self._build_spotlight_loading_indicator()),
+            ("IntelliMarkets 图片源", ft.Icons.SUBJECT, self._build_im_page()),
+            ("壁纸源", ft.Icons.SUBJECT, self._build_wallpaper_source_tab()),
+        ]
+
         self.resource_tabs = ft.Tabs(
-            tabs=[
-                ft.Tab(
-                    text="Bing 每日",
-                    icon=ft.Icons.TODAY,
-                    content=self._build_bing_loading_indicator(),
-                ),
-                ft.Tab(
-                    text="Windows 聚焦",
-                    icon=ft.Icons.WINDOW,
-                    content=self._build_spotlight_loading_indicator(),
-                ),
-                # ft.Tab(text="搜索", icon=ft.Icons.SEARCH),
-                ft.Tab(
-                    text="IntelliMarkets 图片源",
-                    icon=ft.Icons.SUBJECT,
-                    content=self._build_im_page(),
-                ),
-                ft.Tab(
-                    text="壁纸源",
-                    icon=ft.Icons.SUBJECT,
-                    content=self._build_wallpaper_source_tab(),
-                ),
-            ],
+            length=len(resource_tab_labels),
             animation_duration=300,
+            content=ft.Column(
+                expand=True,
+                controls=[
+                    ft.TabBar(
+                        tabs=[ft.Tab(label=ft.Text(label), icon=icon) for label, icon, _ in resource_tab_labels],
+                    ),
+                    ft.TabBarView(
+                        expand=True,
+                        controls=[content for _, _, content in resource_tab_labels],
+                    ),
+                ],
+            ),
         )
         return ft.Container(
             ft.Column(
@@ -7071,7 +7047,7 @@ class Pages:
             expand=True,
             border_radius=12,
             bgcolor=self._bgcolor_surface_low,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             padding=16,
             content=placeholder,
         )
@@ -7150,8 +7126,7 @@ class Pages:
         if self._generate_loading_indicator is None:
             return
         self._generate_loading_indicator.visible = active
-        if self._generate_loading_indicator.page is not None:
-            self._generate_loading_indicator.update()
+        self._update_if_attached(self._generate_loading_indicator)
 
     def _update_generate_status(self, message: str, *, error: bool = False) -> None:
         if self._generate_status_text is None:
@@ -7160,8 +7135,7 @@ class Pages:
         self._generate_status_text.color = (
             ft.Colors.ERROR if error else ft.Colors.OUTLINE
         )
-        if self._generate_status_text.page is not None:
-            self._generate_status_text.update()
+        self._update_if_attached(self._generate_status_text)
 
     def _set_generate_output_image(
         self,
@@ -7177,7 +7151,7 @@ class Pages:
             local=is_local_file,
         )
         image_kwargs = dict(
-            fit=ft.ImageFit.CONTAIN,
+            fit=ft.BoxFit.CONTAIN,
             expand=True,
             border_radius=12,
         )
@@ -7196,16 +7170,14 @@ class Pages:
             image_control = ft.Image(src=source, **image_kwargs)
 
         self._generate_output_container.content = image_control
-        if self._generate_output_container.page is not None:
-            self._generate_output_container.update()
+        self._update_if_attached(self._generate_output_container)
 
     def _handle_generate_random_seed(self, _: ft.ControlEvent | None) -> None:
         if self._generate_seed_field is None:
             return
         seed_value = str(random.randint(0, 999_999_999))
         self._generate_seed_field.value = seed_value
-        if self._generate_seed_field.page is not None:
-            self._generate_seed_field.update()
+        self._update_if_attached(self._generate_seed_field)
 
     def _generate_update_actions(self) -> None:
         path = self._generate_last_file
@@ -7214,8 +7186,7 @@ class Pages:
             self._generate_last_file = None
         for control in self._generate_action_buttons.values():
             control.disabled = not has_file
-            if control.page is not None:
-                control.update()
+            self._update_if_attached(control)
 
     def _generate_resolve_target_path(self, directory: Path, file_name: str) -> Path:
         directory.mkdir(parents=True, exist_ok=True)
@@ -7761,8 +7732,7 @@ class Pages:
 
         if self._ws_search_field is not None:
             self._ws_search_field.disabled = not has_records
-            if self._ws_search_field.page is not None:
-                self._ws_search_field.update()
+            self._update_if_attached(self._ws_search_field)
 
         self._ws_hierarchy = self._ws_build_hierarchy(records)
         available_ids = list(self._ws_hierarchy.keys())
@@ -7783,13 +7753,11 @@ class Pages:
             if self._ws_source_info_container is not None:
                 self._ws_source_info_container.content = ft.Container()
                 self._ws_source_info_container.visible = False
-                if self._ws_source_info_container.page is not None:
-                    self._ws_source_info_container.update()
+                self._update_if_attached(self._ws_source_info_container)
             self._ws_param_controls = []
             if self._ws_param_container is not None:
                 self._ws_param_container.content = ft.Container()
-                if self._ws_param_container.page is not None:
-                    self._ws_param_container.update()
+                self._update_if_attached(self._ws_param_container)
             empty_title = (
                 "未找到匹配的壁纸源或分类" if has_records else "尚未启用壁纸源"
             )
@@ -7832,16 +7800,14 @@ class Pages:
             self._ws_source_tabs.selected_index = 0
             self._ws_source_tabs_container.content = ft.Container(
                 content=placeholder,
-                alignment=ft.alignment.center,
+                alignment=ft.Alignment.CENTER,
                 padding=16,
                 bgcolor=self._bgcolor_surface_low,
                 border_radius=8,
             )
             self._ws_source_tabs_container.visible = True
-            if self._ws_source_tabs.page is not None:
-                self._ws_source_tabs.update()
-            if self._ws_source_tabs_container.page is not None:
-                self._ws_source_tabs_container.update()
+            self._update_if_attached(self._ws_source_tabs)
+            self._update_if_attached(self._ws_source_tabs_container)
             for container in (
                 self._ws_primary_container,
                 self._ws_secondary_container,
@@ -7850,8 +7816,7 @@ class Pages:
             ):
                 container.content = None
                 container.visible = False
-                if container.page is not None:
-                    container.update()
+                self._update_if_attached(container)
             status_message = (
                 "未找到匹配的分类，请调整筛选条件。"
                 if has_records
@@ -7860,8 +7825,7 @@ class Pages:
             self._ws_clear_results(status_message)
             self._ws_param_container.content = None
             self._ws_param_container.visible = False
-            if self._ws_param_container.page is not None:
-                self._ws_param_container.update()
+            self._update_if_attached(self._ws_param_container)
             self._ws_update_fetch_button_state()
             return
 
@@ -8209,7 +8173,7 @@ class Pages:
                 content=self._ws_build_logo_control(record, size=26),
                 width=28,
                 height=28,
-                alignment=ft.alignment.center,
+                alignment=ft.Alignment.CENTER,
             )
             label_column = ft.Column(
                 [
@@ -8235,8 +8199,7 @@ class Pages:
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             )
             tabs.append(
-                ft.Tab(
-                    text=record.spec.name,
+                ft.Tab(label=record.spec.name,
                     tab_content=ft.Container(
                         content=tab_row,
                         padding=ft.padding.symmetric(horizontal=4, vertical=6),
@@ -8252,10 +8215,8 @@ class Pages:
         self._ws_source_tabs_container.content = self._ws_source_tabs
         self._ws_source_tabs_container.visible = True
         self._ws_updating_ui = False
-        if self._ws_source_tabs.page is not None:
-            self._ws_source_tabs.update()
-        if self._ws_source_tabs_container.page is not None:
-            self._ws_source_tabs_container.update()
+        self._update_if_attached(self._ws_source_tabs)
+        self._update_if_attached(self._ws_source_tabs_container)
 
     def _ws_update_source_info(self, record: WallpaperSourceRecord | None) -> None:
         if self._ws_source_info_container is None:
@@ -8263,8 +8224,7 @@ class Pages:
         if record is None:
             self._ws_source_info_container.content = ft.Container()
             self._ws_source_info_container.visible = False
-            if self._ws_source_info_container.page is not None:
-                self._ws_source_info_container.update()
+            self._update_if_attached(self._ws_source_info_container)
             return
         spec = record.spec
         if record.identifier.startswith("merged::"):
@@ -8307,7 +8267,7 @@ class Pages:
                     content=self._ws_build_logo_control(record, size=56),
                     width=64,
                     height=64,
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                 ),
                 info_column,
             ],
@@ -8315,8 +8275,7 @@ class Pages:
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
         self._ws_source_info_container.visible = True
-        if self._ws_source_info_container.page is not None:
-            self._ws_source_info_container.update()
+        self._update_if_attached(self._ws_source_info_container)
 
     def _ws_update_primary_tabs(
         self,
@@ -8333,8 +8292,7 @@ class Pages:
             ):
                 container.content = None
                 container.visible = False
-                if container.page is not None:
-                    container.update()
+                self._update_if_attached(container)
             self._ws_active_primary_key = None
             self._ws_active_secondary_key = None
             self._ws_active_tertiary_key = None
@@ -8352,8 +8310,7 @@ class Pages:
             ):
                 container.content = None
                 container.visible = False
-                if container.page is not None:
-                    container.update()
+                self._update_if_attached(container)
             self._ws_active_primary_key = None
             self._ws_active_secondary_key = None
             self._ws_active_tertiary_key = None
@@ -8373,7 +8330,7 @@ class Pages:
             keys = [entry["key"] for entry in primary_list]
             self._ws_updating_ui = True
             self._ws_primary_tabs.tabs = [
-                ft.Tab(text=entry["label"]) for entry in primary_list
+                ft.Tab(label=entry["label"]) for entry in primary_list
             ]
             if not preserve_selection or self._ws_active_primary_key not in keys:
                 self._ws_active_primary_key = keys[0]
@@ -8387,15 +8344,12 @@ class Pages:
             self._ws_primary_container.content = self._ws_primary_tabs
             self._ws_primary_container.visible = True
             self._ws_updating_ui = False
-            if self._ws_primary_tabs.page is not None:
-                self._ws_primary_tabs.update()
-            if self._ws_primary_container.page is not None:
-                self._ws_primary_container.update()
+            self._update_if_attached(self._ws_primary_tabs)
+            self._update_if_attached(self._ws_primary_container)
         else:
             self._ws_primary_container.content = None
             self._ws_primary_container.visible = False
-            if self._ws_primary_container.page is not None:
-                self._ws_primary_container.update()
+            self._update_if_attached(self._ws_primary_container)
             self._ws_active_primary_key = primary_list[0]["key"]
 
         current_primary = next(
@@ -8422,8 +8376,7 @@ class Pages:
         if primary_entry is None:
             self._ws_secondary_container.content = None
             self._ws_secondary_container.visible = False
-            if self._ws_secondary_container.page is not None:
-                self._ws_secondary_container.update()
+            self._update_if_attached(self._ws_secondary_container)
             self._ws_active_secondary_key = None
             self._ws_update_tertiary_tabs(None, preserve_selection=preserve_selection)
             return
@@ -8435,8 +8388,7 @@ class Pages:
         if not secondary_list:
             self._ws_secondary_container.content = None
             self._ws_secondary_container.visible = False
-            if self._ws_secondary_container.page is not None:
-                self._ws_secondary_container.update()
+            self._update_if_attached(self._ws_secondary_container)
             self._ws_active_secondary_key = None
             self._ws_update_tertiary_tabs(None, preserve_selection=preserve_selection)
             return
@@ -8454,7 +8406,7 @@ class Pages:
             keys = [entry["key"] for entry in secondary_list]
             self._ws_updating_ui = True
             self._ws_secondary_tabs.tabs = [
-                ft.Tab(text=entry["label"]) for entry in secondary_list
+                ft.Tab(label=entry["label"]) for entry in secondary_list
             ]
             if not preserve_selection or self._ws_active_secondary_key not in keys:
                 self._ws_active_secondary_key = keys[0]
@@ -8469,15 +8421,12 @@ class Pages:
             self._ws_secondary_container.content = self._ws_secondary_tabs
             self._ws_secondary_container.visible = True
             self._ws_updating_ui = False
-            if self._ws_secondary_tabs.page is not None:
-                self._ws_secondary_tabs.update()
-            if self._ws_secondary_container.page is not None:
-                self._ws_secondary_container.update()
+            self._update_if_attached(self._ws_secondary_tabs)
+            self._update_if_attached(self._ws_secondary_container)
         else:
             self._ws_secondary_container.content = None
             self._ws_secondary_container.visible = False
-            if self._ws_secondary_container.page is not None:
-                self._ws_secondary_container.update()
+            self._update_if_attached(self._ws_secondary_container)
             self._ws_active_secondary_key = secondary_list[0]["key"]
 
         current_secondary = next(
@@ -8502,8 +8451,7 @@ class Pages:
         if secondary_entry is None:
             self._ws_tertiary_container.content = None
             self._ws_tertiary_container.visible = False
-            if self._ws_tertiary_container.page is not None:
-                self._ws_tertiary_container.update()
+            self._update_if_attached(self._ws_tertiary_container)
             self._ws_active_tertiary_key = None
             self._ws_update_leaf_tabs([], preserve_selection=preserve_selection)
             return
@@ -8515,8 +8463,7 @@ class Pages:
         if not tertiary_list:
             self._ws_tertiary_container.content = None
             self._ws_tertiary_container.visible = False
-            if self._ws_tertiary_container.page is not None:
-                self._ws_tertiary_container.update()
+            self._update_if_attached(self._ws_tertiary_container)
             self._ws_active_tertiary_key = None
             self._ws_update_leaf_tabs([], preserve_selection=preserve_selection)
             return
@@ -8532,7 +8479,7 @@ class Pages:
             keys = [entry["key"] for entry in tertiary_list]
             self._ws_updating_ui = True
             self._ws_tertiary_tabs.tabs = [
-                ft.Tab(text=entry["label"]) for entry in tertiary_list
+                ft.Tab(label=entry["label"]) for entry in tertiary_list
             ]
             if not preserve_selection or self._ws_active_tertiary_key not in keys:
                 self._ws_active_tertiary_key = keys[0]
@@ -8548,15 +8495,12 @@ class Pages:
             self._ws_tertiary_container.content = self._ws_tertiary_tabs
             self._ws_tertiary_container.visible = True
             self._ws_updating_ui = False
-            if self._ws_tertiary_tabs.page is not None:
-                self._ws_tertiary_tabs.update()
-            if self._ws_tertiary_container.page is not None:
-                self._ws_tertiary_container.update()
+            self._update_if_attached(self._ws_tertiary_tabs)
+            self._update_if_attached(self._ws_tertiary_container)
         else:
             self._ws_tertiary_container.content = None
             self._ws_tertiary_container.visible = False
-            if self._ws_tertiary_container.page is not None:
-                self._ws_tertiary_container.update()
+            self._update_if_attached(self._ws_tertiary_container)
             self._ws_active_tertiary_key = tertiary_list[0]["key"]
 
         current_tertiary = next(
@@ -8581,8 +8525,7 @@ class Pages:
         if not refs:
             self._ws_leaf_container.content = None
             self._ws_leaf_container.visible = False
-            if self._ws_leaf_container.page is not None:
-                self._ws_leaf_container.update()
+            self._update_if_attached(self._ws_leaf_container)
             self._ws_active_leaf_index = 0
             self._ws_active_category_id = None
             self._ws_clear_results("该分类暂无可用壁纸。")
@@ -8606,32 +8549,29 @@ class Pages:
         self._ws_leaf_container.content = self._ws_leaf_tabs
         self._ws_leaf_container.visible = True
         self._ws_updating_ui = False
-        if self._ws_leaf_tabs.page is not None:
-            self._ws_leaf_tabs.update()
-        if self._ws_leaf_container.page is not None:
-            self._ws_leaf_container.update()
+        self._update_if_attached(self._ws_leaf_tabs)
+        self._update_if_attached(self._ws_leaf_container)
         self._ws_select_leaf(refs[self._ws_active_leaf_index], force_refresh=False)
         self._ws_update_fetch_button_state()
 
     def _ws_build_leaf_tab(self, ref: WallpaperCategoryRef) -> ft.Tab:
         icon_control = self._ws_build_category_icon_control(ref.category.icon, size=20)
         if icon_control is None:
-            return ft.Tab(text=ref.label)
+            return ft.Tab(label=ref.label)
         tab_row = ft.Row(
             [
                 ft.Container(
                     content=icon_control,
                     width=24,
                     height=24,
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                 ),
                 ft.Text(ref.label, overflow=ft.TextOverflow.ELLIPSIS),
             ],
             spacing=8,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
-        return ft.Tab(
-            text=ref.label,
+        return ft.Tab(label=ref.label,
             tab_content=ft.Container(
                 content=tab_row,
                 padding=ft.padding.symmetric(horizontal=4, vertical=6),
@@ -8643,19 +8583,16 @@ class Pages:
         disabled = not has_category or self._ws_fetch_in_progress
         if self._ws_fetch_button is not None:
             self._ws_fetch_button.disabled = disabled
-            if self._ws_fetch_button.page is not None:
-                self._ws_fetch_button.update()
+            self._update_if_attached(self._ws_fetch_button)
         if self._ws_reload_button is not None:
             self._ws_reload_button.disabled = self._ws_fetch_in_progress
-            if self._ws_reload_button.page is not None:
-                self._ws_reload_button.update()
+            self._update_if_attached(self._ws_reload_button)
 
     def _ws_clear_results(self, message: str, *, error: bool = False) -> None:
         self._ws_item_index.clear()
         if self._ws_result_list is not None:
             self._ws_result_list.controls.clear()
-            if self._ws_result_list.page is not None:
-                self._ws_result_list.update()
+            self._update_if_attached(self._ws_result_list)
         self._ws_set_status(message, error=error)
 
     def _ws_select_leaf(
@@ -8693,8 +8630,7 @@ class Pages:
             self._ws_set_status("参数已就绪，点击“获取壁纸”开始下载。", error=False)
             if self._ws_result_list is not None:
                 self._ws_result_list.controls.clear()
-                if self._ws_result_list.page is not None:
-                    self._ws_result_list.update()
+                self._update_if_attached(self._ws_result_list)
 
         self._ws_update_fetch_button_state()
 
@@ -8711,16 +8647,14 @@ class Pages:
         if ref is None:
             self._ws_param_container.content = None
             self._ws_param_container.visible = False
-            if self._ws_param_container.page is not None:
-                self._ws_param_container.update()
+            self._update_if_attached(self._ws_param_container)
             return
 
         record = self._wallpaper_source_manager.get_record(ref.source_id)
         if record is None:
             self._ws_param_container.content = None
             self._ws_param_container.visible = False
-            if self._ws_param_container.page is not None:
-                self._ws_param_container.update()
+            self._update_if_attached(self._ws_param_container)
             return
 
         preset_id = ref.category.param_preset_id
@@ -8768,8 +8702,7 @@ class Pages:
             border_radius=8,
         )
         self._ws_param_container.visible = True
-        if self._ws_param_container.page is not None:
-            self._ws_param_container.update()
+        self._update_if_attached(self._ws_param_container)
 
     def _ws_make_parameter_control(
         self,
@@ -8812,8 +8745,7 @@ class Pages:
                     dropdown.value = None
                 else:
                     dropdown.value = str(value)
-                if dropdown.page is not None:
-                    dropdown.update()
+                self._update_if_attached(dropdown)
 
             def getter() -> Any:
                 raw = dropdown.value
@@ -8828,8 +8760,7 @@ class Pages:
 
             def setter(value: Any) -> None:
                 switch.value = bool(value)
-                if switch.page is not None:
-                    switch.update()
+                self._update_if_attached(switch)
 
             def getter() -> bool:
                 return bool(switch.value)
@@ -8850,8 +8781,7 @@ class Pages:
                 text_field.value = ""
             else:
                 text_field.value = str(value)
-            if text_field.page is not None:
-                text_field.update()
+            self._update_if_attached(text_field)
 
         def getter() -> Any:
             raw = text_field.value or ""
@@ -9126,24 +9056,21 @@ class Pages:
     def _ws_start_loading(self, message: str) -> None:
         if self._ws_loading_indicator is not None:
             self._ws_loading_indicator.visible = True
-            if self._ws_loading_indicator.page is not None:
-                self._ws_loading_indicator.update()
+            self._update_if_attached(self._ws_loading_indicator)
         self._ws_set_status(message, error=False)
 
     def _ws_stop_loading(self) -> None:
         if self._ws_loading_indicator is None:
             return
         self._ws_loading_indicator.visible = False
-        if self._ws_loading_indicator.page is not None:
-            self._ws_loading_indicator.update()
+        self._update_if_attached(self._ws_loading_indicator)
 
     def _ws_set_status(self, message: str, *, error: bool = False) -> None:
         if self._ws_status_text is None:
             return
         self._ws_status_text.value = message
         self._ws_status_text.color = ft.Colors.ERROR if error else ft.Colors.GREY
-        if self._ws_status_text.page is not None:
-            self._ws_status_text.update()
+        self._update_if_attached(self._ws_status_text)
 
     async def _ws_fetch_category_items(
         self,
@@ -9193,8 +9120,7 @@ class Pages:
             self._ws_set_status(status_message, error=False)
             for item in filtered:
                 self._ws_result_list.controls.append(self._ws_build_result_card(item))
-        if self._ws_result_list.page is not None:
-            self._ws_result_list.update()
+        self._update_if_attached(self._ws_result_list)
 
     def _ws_filtered_items(self, items: list[WallpaperItem]) -> list[WallpaperItem]:
         if not self._ws_search_text:
@@ -9221,7 +9147,7 @@ class Pages:
                     content=self._ws_build_logo_control(record, size=36),
                     width=40,
                     height=40,
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                 ),
                 ft.Column(
                     [
@@ -9250,21 +9176,21 @@ class Pages:
                 src_base64=item.preview_base64,
                 width=220,
                 height=124,
-                fit=ft.ImageFit.COVER,
+                fit=ft.BoxFit.COVER,
             )
         elif item.local_path and item.local_path.exists():
             preview = ft.Image(
                 src=str(item.local_path),
                 width=220,
                 height=124,
-                fit=ft.ImageFit.COVER,
+                fit=ft.BoxFit.COVER,
             )
         else:
             preview = ft.Container(
                 width=220,
                 height=124,
                 bgcolor=self._bgcolor_surface_low,
-                alignment=ft.alignment.center,
+                alignment=ft.Alignment.CENTER,
                 content=ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, color=ft.Colors.GREY),
             )
 
@@ -9345,17 +9271,17 @@ class Pages:
         if item.local_path and item.local_path.exists():
             return ft.Image(
                 src=str(item.local_path),
-                fit=ft.ImageFit.CONTAIN,
+                fit=ft.BoxFit.CONTAIN,
                 expand=True,
             )
         if item.preview_base64:
             return ft.Image(
                 src_base64=item.preview_base64,
-                fit=ft.ImageFit.CONTAIN,
+                fit=ft.BoxFit.CONTAIN,
                 expand=True,
             )
         return ft.Container(
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             bgcolor=self._bgcolor_surface_low,
             border_radius=8,
             padding=24,
@@ -9580,14 +9506,14 @@ class Pages:
                 src_base64=payload,
                 width=size,
                 height=size,
-                fit=ft.ImageFit.CONTAIN,
+                fit=ft.BoxFit.CONTAIN,
             )
         if payload:
             return ft.Image(
                 src=payload,
                 width=size,
                 height=size,
-                fit=ft.ImageFit.CONTAIN,
+                fit=ft.BoxFit.CONTAIN,
             )
         return ft.Icon(ft.Icons.COLOR_LENS, size=size * 0.75, color=ft.Colors.PRIMARY)
 
@@ -9616,14 +9542,14 @@ class Pages:
                 src_base64=payload,
                 width=size,
                 height=size,
-                fit=ft.ImageFit.CONTAIN,
+                fit=ft.BoxFit.CONTAIN,
             )
         if payload:
             return ft.Image(
                 src=payload,
                 width=size,
                 height=size,
-                fit=ft.ImageFit.CONTAIN,
+                fit=ft.BoxFit.CONTAIN,
             )
         return None
 
@@ -9764,7 +9690,7 @@ class Pages:
                             content=self._ws_build_logo_control(record, size=64),
                             width=72,
                             height=72,
-                            alignment=ft.alignment.center,
+                            alignment=ft.Alignment.CENTER,
                         ),
                         ft.Column(
                             [
@@ -9825,10 +9751,8 @@ class Pages:
             self._ws_settings_summary_text.value = (
                 f"当前共导入 {len(records)} 个源，已启用 {enabled_count} 个。"
             )
-            if self._ws_settings_summary_text.page is not None:
-                self._ws_settings_summary_text.update()
-        if self._ws_settings_list.page is not None:
-            self._ws_settings_list.update()
+            self._update_if_attached(self._ws_settings_summary_text)
+        self._update_if_attached(self._ws_settings_list)
 
     def _build_wallpaper_source_settings_section(self) -> ft.Control:
         self._ensure_ws_file_picker()
@@ -10028,7 +9952,7 @@ class Pages:
                     content=logo,
                     width=44,
                     height=44,
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                 ),
                 info_column,
             ],
@@ -10169,8 +10093,7 @@ class Pages:
         app_config.set(self._im_notice_dismissed_key, True)
         if self._im_info_card is not None:
             self._im_info_card.visible = False
-            if self._im_info_card.page is not None:
-                self._im_info_card.update()
+            self._update_if_attached(self._im_info_card)
         self._im_info_card = None
 
     def _build_im_info_card(self) -> ft.Control | None:
@@ -10247,7 +10170,7 @@ class Pages:
         self._im_category_dropdown = ft.Dropdown(
             label="分类",
             options=[],
-            on_change=self._on_im_category_change,
+            on_select=self._on_im_category_change,
             expand=True,
         )
         self._im_sources_list = ft.GridView(
@@ -10303,7 +10226,7 @@ class Pages:
                 ft.DropdownOption(key="default_first", text="优先默认"),
                 ft.DropdownOption(key="mirror_first", text="优先镜像"),
             ],
-            on_change=self._on_im_mirror_pref_change,
+            on_select=self._on_im_mirror_pref_change,
             width=180,
         )
 
@@ -10585,7 +10508,7 @@ class Pages:
                     src=logo_src,
                     width=48,
                     height=48,
-                    fit=ft.ImageFit.COVER,
+                    fit=ft.BoxFit.COVER,
                 ),
                 width=56,
                 height=56,
@@ -10597,7 +10520,7 @@ class Pages:
                 ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, size=28, color=ft.Colors.GREY),
                 width=56,
                 height=56,
-                alignment=ft.alignment.center,
+                alignment=ft.Alignment.CENTER,
                 bgcolor=self._bgcolor_surface_low,
                 border_radius=6,
             )
@@ -10635,7 +10558,7 @@ class Pages:
                     item,
                 ),
             ),
-            alignment=ft.alignment.bottom_right,
+            alignment=ft.Alignment.BOTTOM_RIGHT,
             margin=10,
         )
 
@@ -10881,8 +10804,7 @@ class Pages:
             return
         self._im_result_status_text.value = message
         self._im_result_status_text.color = ft.Colors.ERROR if error else ft.Colors.GREY
-        if self._im_result_status_text.page is not None:
-            self._im_result_status_text.update()
+        self._update_if_attached(self._im_result_status_text)
 
     def _build_im_parameter_controls(
         self,
@@ -10954,8 +10876,7 @@ class Pages:
                         target_key = option_key
                         break
                 dropdown.value = target_key
-                if dropdown.page is not None:
-                    dropdown.update()
+                self._update_if_attached(dropdown)
 
             apply_default(setter)
             return _IMParameterControl(param, dropdown, dropdown, getter, setter, key)
@@ -10968,8 +10889,7 @@ class Pages:
 
             def setter(value: Any) -> None:
                 switch.value = bool(value)
-                if switch.page is not None:
-                    switch.update()
+                self._update_if_attached(switch)
 
             apply_default(setter)
             return _IMParameterControl(param, switch, switch, getter, setter, key)
@@ -11004,8 +10924,7 @@ class Pages:
 
             def setter(value: Any) -> None:
                 field.value = "" if value is None else str(value)
-                if field.page is not None:
-                    field.update()
+                self._update_if_attached(field)
 
             apply_default(setter)
             return _IMParameterControl(param, field, field, getter, setter, key)
@@ -11040,8 +10959,7 @@ class Pages:
 
             def setter(value: Any) -> None:
                 field.value = "" if value is None else str(value)
-                if field.page is not None:
-                    field.update()
+                self._update_if_attached(field)
 
             apply_default(setter)
             return _IMParameterControl(param, field, field, getter, setter, key)
@@ -11084,8 +11002,7 @@ class Pages:
                     field.value = ""
                 else:
                     field.value = str(value)
-                if field.page is not None:
-                    field.update()
+                self._update_if_attached(field)
 
             apply_default(setter)
             return _IMParameterControl(param, field, field, getter, setter, key)
@@ -11106,8 +11023,7 @@ class Pages:
 
         def setter(value: Any) -> None:
             field.value = "" if value in (None, "") else str(value)
-            if field.page is not None:
-                field.update()
+            self._update_if_attached(field)
 
         apply_default(setter)
         return _IMParameterControl(param, field, field, getter, setter, key)
@@ -11137,8 +11053,7 @@ class Pages:
                 control.error_text = message
             except Exception:
                 pass
-            if control.page is not None:
-                control.update()
+            self._update_if_attached(control)
 
     def _im_is_empty_value(self, value: Any) -> bool:
         if value is None:
@@ -11340,13 +11255,11 @@ class Pages:
         self._im_running = True
         if self._im_run_button is not None:
             self._im_run_button.disabled = True
-            if self._im_run_button.page is not None:
-                self._im_run_button.update()
+            self._update_if_attached(self._im_run_button)
 
         if self._im_result_spinner is not None:
             self._im_result_spinner.visible = True
-            if self._im_result_spinner.page is not None:
-                self._im_result_spinner.update()
+            self._update_if_attached(self._im_result_spinner)
 
         self._set_im_status(f"准备执行 {batch_count} 次请求...")
 
@@ -11461,12 +11374,10 @@ class Pages:
         self._im_running = False
         if self._im_run_button is not None:
             self._im_run_button.disabled = False
-            if self._im_run_button.page is not None:
-                self._im_run_button.update()
+            self._update_if_attached(self._im_run_button)
         if self._im_result_spinner is not None:
             self._im_result_spinner.visible = False
-            if self._im_result_spinner.page is not None:
-                self._im_result_spinner.update()
+            self._update_if_attached(self._im_result_spinner)
 
     async def _fetch_im_source_result(
         self,
@@ -11877,8 +11788,7 @@ class Pages:
             )
             self._im_result_container.controls.append(image_grid)
 
-        if self._im_result_container.page is not None:
-            self._im_result_container.update()
+        self._update_if_attached(self._im_result_container)
 
     def _build_im_image_card(self, image: dict[str, Any]) -> ft.Control:
         """构建单个图片卡片，支持收藏、壁纸、下载等操作"""
@@ -11894,21 +11804,21 @@ class Pages:
                 src_base64=preview_base64,
                 width=200,
                 height=150,
-                fit=ft.ImageFit.COVER,
+                fit=ft.BoxFit.COVER,
             )
         elif local_path and Path(local_path).exists():
             preview_control = ft.Image(
                 src=str(local_path),
                 width=200,
                 height=150,
-                fit=ft.ImageFit.COVER,
+                fit=ft.BoxFit.COVER,
             )
         else:
             preview_control = ft.Container(
                 width=200,
                 height=150,
                 bgcolor=self._bgcolor_surface_low,
-                alignment=ft.alignment.center,
+                alignment=ft.Alignment.CENTER,
                 content=ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, color=ft.Colors.GREY),
             )
 
@@ -12017,7 +11927,7 @@ class Pages:
                 [
                     ft.Container(
                         content=preview_control,
-                        alignment=ft.alignment.center,
+                        alignment=ft.Alignment.CENTER,
                     ),
                     info_section,
                     ft.Container(
@@ -12275,14 +12185,14 @@ class Pages:
                 src_base64=preview_base64,
                 width=220,
                 height=124,
-                fit=ft.ImageFit.COVER,
+                fit=ft.BoxFit.COVER,
             )
         else:
             preview_control = ft.Container(
                 width=220,
                 height=124,
                 bgcolor=self._bgcolor_surface_low,
-                alignment=ft.alignment.center,
+                alignment=ft.Alignment.CENTER,
                 content=ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, color=ft.Colors.GREY),
             )
 
@@ -12569,8 +12479,7 @@ class Pages:
 
         if self._im_search_field:
             self._im_search_field.value = self._im_search_text
-            if self._im_search_field.page is not None:
-                self._im_search_field.update()
+            self._update_if_attached(self._im_search_field)
 
         if self._im_loading_indicator:
             self._im_loading_indicator.visible = self._im_loading
@@ -12807,8 +12716,7 @@ class Pages:
         self._favorite_item_wallpaper_buttons = {}
         self._favorite_item_export_buttons = {}
         tabs: list[ft.Tab] = [
-            ft.Tab(
-                text="全部",
+            ft.Tab(label="全部",
                 icon=ft.Icons.ALL_INBOX,
                 content=self._build_favorite_folder_view("__all__"),
             ),
@@ -12816,8 +12724,7 @@ class Pages:
         for folder in folders:
             icon = ft.Icons.STAR if folder.id == "default" else ft.Icons.FOLDER_SPECIAL
             tabs.append(
-                ft.Tab(
-                    text=folder.name,
+                ft.Tab(label=folder.name,
                     icon=icon,
                     content=self._build_favorite_folder_view(folder.id),
                 ),
@@ -12906,8 +12813,7 @@ class Pages:
             button, indicator = controls
         if indicator is not None:
             indicator.visible = active
-            if indicator.page is not None:
-                indicator.update()
+            self._update_if_attached(indicator)
         if button is not None:
             button.visible = not active
             if not active:
@@ -12920,18 +12826,15 @@ class Pages:
                 )
                 button.disabled = has_localized
                 button.tooltip = "已完成本地化" if has_localized else "本地化此收藏"
-            if button.page is not None:
-                button.update()
+            self._update_if_attached(button)
         wallpaper_button = self._favorite_item_wallpaper_buttons.get(item_id)
         if wallpaper_button is not None:
             wallpaper_button.disabled = active
-            if wallpaper_button.page is not None:
-                wallpaper_button.update()
+            self._update_if_attached(wallpaper_button)
         export_button = self._favorite_item_export_buttons.get(item_id)
         if export_button is not None:
             export_button.disabled = active
-            if export_button.page is not None:
-                export_button.update()
+            self._update_if_attached(export_button)
 
     def _show_localization_progress(self, total: int) -> None:
         self._favorite_batch_total = max(total, 0)
@@ -12953,8 +12856,7 @@ class Pages:
             self._favorite_localization_spinner,
             self._favorite_localization_status_row,
         ):
-            if control is not None and control.page is not None:
-                control.update()
+            self._update_if_attached(control)
 
     def _update_localization_progress(self, increment: int = 1) -> None:
         if self._favorite_batch_total <= 0:
@@ -12973,8 +12875,7 @@ class Pages:
             self._favorite_localization_status_text,
             self._favorite_localization_progress_bar,
         ):
-            if control is not None and control.page is not None:
-                control.update()
+            self._update_if_attached(control)
 
     def _finish_localization_progress(self, success: int, total: int) -> None:
         if self._favorite_localization_spinner is not None:
@@ -12992,15 +12893,13 @@ class Pages:
             self._favorite_localization_spinner,
             self._favorite_localization_status_row,
         ):
-            if control is not None and control.page is not None:
-                control.update()
+            self._update_if_attached(control)
 
         async def _hide_row_later() -> None:
             await asyncio.sleep(2)
             if self._favorite_localization_status_row is not None:
                 self._favorite_localization_status_row.visible = False
-                if self._favorite_localization_status_row.page is not None:
-                    self._favorite_localization_status_row.update()
+                self._update_if_attached(self._favorite_localization_status_row)
 
         if total > 0:
             self.page.run_task(_hide_row_later)
@@ -13060,7 +12959,7 @@ class Pages:
                 spacing=12,
                 expand=True,
             ),
-            padding=ft.Padding(12, 12, 12, 16),
+            padding=ft.Padding(left=12, top=12, right=12, bottom=16),
             expand=True,
         )
 
@@ -13069,7 +12968,7 @@ class Pages:
         preview_kwargs: dict[str, Any] = {
             "width": 160,
             "height": 96,
-            "fit": ft.ImageFit.COVER,
+            "fit": ft.BoxFit.COVER,
             "border_radius": 12,
         }
         if preview_src:
@@ -13083,7 +12982,7 @@ class Pages:
                 width=preview_kwargs["width"],
                 height=preview_kwargs["height"],
                 border_radius=preview_kwargs["border_radius"],
-                alignment=ft.alignment.center,
+                alignment=ft.Alignment.CENTER,
                 content=ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, color=ft.Colors.OUTLINE),
             )
 
@@ -13097,7 +12996,7 @@ class Pages:
                         size=11,
                         color=ft.Colors.ON_SECONDARY_CONTAINER,
                     ),
-                    padding=ft.Padding(8, 4, 8, 4),
+                    padding=ft.Padding(left=8, top=4, right=8, bottom=4),
                     border_radius=ft.border_radius.all(12),
                     bgcolor=ft.Colors.SECONDARY_CONTAINER,
                 )
@@ -13131,7 +13030,7 @@ class Pages:
                             spacing=4,
                             vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         ),
-                        padding=ft.Padding(10, 4, 10, 4),
+                        padding=ft.Padding(left=10, top=4, right=10, bottom=4),
                         border_radius=ft.border_radius.all(12),
                         bgcolor=ft.Colors.with_opacity(
                             0.08,
@@ -13246,7 +13145,7 @@ class Pages:
             localize_button.tooltip = "已完成本地化"
         localize_indicator = ft.Container(
             content=ft.ProgressRing(width=20, height=20),
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             width=40,
             height=40,
         )
@@ -13369,7 +13268,7 @@ class Pages:
                     spacing=8,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                padding=ft.Padding(12, 6, 12, 6),
+                padding=ft.Padding(left=12, top=6, right=12, bottom=6),
                 border_radius=ft.border_radius.all(8),
                 bgcolor=ft.Colors.with_opacity(0.04, ft.Colors.SECONDARY_CONTAINER),
             )
@@ -13422,13 +13321,11 @@ class Pages:
         manage_enabled = current_folder not in (None, "__all__")
         if edit_button is not None:
             edit_button.disabled = not manage_enabled
-            if edit_button.page is not None:
-                edit_button.update()
+            self._update_if_attached(edit_button)
         if delete_button is not None:
             delete_enabled = manage_enabled and current_folder != "default"
             delete_button.disabled = not delete_enabled
-            if delete_button.page is not None:
-                delete_button.update()
+            self._update_if_attached(delete_button)
 
     async def _localize_favorite_item(self, item: FavoriteItem) -> bool:
         if (
@@ -13569,8 +13466,7 @@ class Pages:
         button = self._favorite_item_wallpaper_buttons.get(item_id)
         if button is not None:
             button.disabled = True
-            if button.page is not None:
-                button.update()
+            self._update_if_attached(button)
 
         pre_existing_local = False
         for candidate in (
@@ -13605,8 +13501,7 @@ class Pages:
                 refreshed_button = self._favorite_item_wallpaper_buttons.get(item_id)
                 if refreshed_button is not None:
                     refreshed_button.disabled = False
-                    if refreshed_button.page is not None:
-                        refreshed_button.update()
+                    self._update_if_attached(refreshed_button)
 
         self.page.run_task(_runner)
 
@@ -13619,8 +13514,7 @@ class Pages:
         export_button = self._favorite_item_export_buttons.get(item_id)
         if export_button is not None:
             export_button.disabled = True
-            if export_button.page is not None:
-                export_button.update()
+            self._update_if_attached(export_button)
 
         pre_existing_local = False
         for candidate in (
@@ -13666,8 +13560,7 @@ class Pages:
                 refreshed = self._favorite_item_export_buttons.get(item_id)
                 if refreshed is not None:
                     refreshed.disabled = False
-                    if refreshed.page is not None:
-                        refreshed.update()
+                    self._update_if_attached(refreshed)
 
         self.page.run_task(_runner)
 
@@ -13880,10 +13773,9 @@ class Pages:
         tabs_control = self._favorite_tabs
         tabs_control.tabs = self._build_favorite_tabs_list(folders)
         tabs_control.selected_index = tab_ids.index(self._favorite_selected_folder)
-        if tabs_control.page is not None:
-            tabs_control.update()
+        self._update_if_attached(tabs_control)
         self._update_favorite_folder_toolbar()
-        if self.page is not None and tabs_control.page is not None:
+        if self.page is not None:
             self.page.update()
 
     def _select_favorite_folder(self, folder_id: str) -> None:
@@ -14144,7 +14036,7 @@ class Pages:
                 src=preview_src,
                 width=200,
                 height=110,
-                fit=ft.ImageFit.COVER,
+                fit=ft.BoxFit.COVER,
                 border_radius=8,
             )
         else:
@@ -14152,7 +14044,7 @@ class Pages:
                 width=200,
                 height=110,
                 border_radius=8,
-                alignment=ft.alignment.center,
+                alignment=ft.Alignment.CENTER,
                 content=ft.Icon(ft.Icons.IMAGE_OUTLINED, color=ft.Colors.OUTLINE),
             )
 
@@ -14793,7 +14685,7 @@ class Pages:
                                 src=self.bing_wallpaper_url,
                                 width=160,
                                 height=90,
-                                fit=ft.ImageFit.COVER,
+                                fit=ft.BoxFit.COVER,
                                 border_radius=8,
                             ),
                             ft.Column(
@@ -15258,7 +15150,7 @@ class Pages:
                 for index in range(len(self.spotlight_wallpaper_url))
             ],
             allow_multiple_selection=False,
-            selected={"0"},
+            selected=["0"],
             on_change=_change_photo,
         )
 
@@ -15288,7 +15180,7 @@ class Pages:
                                 src=url,
                                 width=160,
                                 height=90,
-                                fit=ft.ImageFit.COVER,
+                                fit=ft.BoxFit.COVER,
                                 border_radius=8,
                             )
                             for url in self.spotlight_wallpaper_url
@@ -15484,7 +15376,7 @@ class Pages:
 
         self._sniff_empty_placeholder = ft.Container(
             expand=True,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             content=ft.Column(
                 [
                     ft.Icon(ft.Icons.IMAGE_SEARCH, size=72, color=ft.Colors.OUTLINE),
@@ -15549,12 +15441,10 @@ class Pages:
         has_images = bool(self._sniff_images)
         if self._sniff_empty_placeholder is not None:
             self._sniff_empty_placeholder.visible = not has_images
-            if self._sniff_empty_placeholder.page is not None:
-                self._sniff_empty_placeholder.update()
+            self._update_if_attached(self._sniff_empty_placeholder)
         if self._sniff_grid is not None:
             self._sniff_grid.visible = has_images
-            if self._sniff_grid.page is not None:
-                self._sniff_grid.update()
+            self._update_if_attached(self._sniff_grid)
 
     def _sniff_update_actions(self) -> None:
         count = len(self._sniff_selected_ids)
@@ -15565,14 +15455,12 @@ class Pages:
                 control.disabled = count != 1
             else:
                 control.disabled = count == 0
-            if control.page is not None:
-                control.update()
+            self._update_if_attached(control)
         if self._sniff_selection_text is not None:
             self._sniff_selection_text.value = (
                 "未选择图片" if count == 0 else f"已选择 {count} 张图片"
             )
-            if self._sniff_selection_text.page is not None:
-                self._sniff_selection_text.update()
+            self._update_if_attached(self._sniff_selection_text)
 
     def _sniff_update_task_controls(self) -> None:
         for ctrl in (
@@ -15580,15 +15468,13 @@ class Pages:
             self._sniff_task_bar,
             self._sniff_task_container,
         ):
-            if ctrl is not None and ctrl.page is not None:
-                ctrl.update()
+            self._update_if_attached(ctrl)
 
     def _sniff_set_actions_enabled(self, enabled: bool) -> None:
         self._sniff_actions_busy = not enabled
         if self._sniff_fetch_button is not None:
             self._sniff_fetch_button.disabled = not enabled
-            if self._sniff_fetch_button.page is not None:
-                self._sniff_fetch_button.update()
+            self._update_if_attached(self._sniff_fetch_button)
         self._sniff_update_actions()
 
     def _sniff_task_start(self, message: str) -> None:
@@ -15617,16 +15503,13 @@ class Pages:
         self._sniff_selected_ids.clear()
         if clear_url and self._sniff_url_field is not None:
             self._sniff_url_field.value = ""
-            if self._sniff_url_field.page is not None:
-                self._sniff_url_field.update()
+            self._update_if_attached(self._sniff_url_field)
         if self._sniff_status_text is not None:
             self._sniff_status_text.value = "请输入链接并点击开始嗅探。"
-            if self._sniff_status_text.page is not None:
-                self._sniff_status_text.update()
+            self._update_if_attached(self._sniff_status_text)
         if self._sniff_grid is not None:
             self._sniff_grid.controls.clear()
-            if self._sniff_grid.page is not None:
-                self._sniff_grid.update()
+            self._update_if_attached(self._sniff_grid)
         if self._sniff_task_container is not None:
             self._sniff_task_container.visible = False
         if self._sniff_task_bar is not None:
@@ -15638,16 +15521,13 @@ class Pages:
     def _sniff_set_loading(self, loading: bool, message: str | None = None) -> None:
         if self._sniff_progress is not None:
             self._sniff_progress.visible = loading
-            if self._sniff_progress.page is not None:
-                self._sniff_progress.update()
+            self._update_if_attached(self._sniff_progress)
         if self._sniff_fetch_button is not None:
             self._sniff_fetch_button.disabled = loading
-            if self._sniff_fetch_button.page is not None:
-                self._sniff_fetch_button.update()
+            self._update_if_attached(self._sniff_fetch_button)
         if message and self._sniff_status_text is not None:
             self._sniff_status_text.value = message
-            if self._sniff_status_text.page is not None:
-                self._sniff_status_text.update()
+            self._update_if_attached(self._sniff_status_text)
 
     async def _sniff_start(self) -> None:
         self._apply_sniff_settings_to_service()
@@ -15662,16 +15542,14 @@ class Pages:
             logger.warning("嗅探失败: {}", exc)
             if self._sniff_status_text is not None:
                 self._sniff_status_text.value = str(exc)
-                if self._sniff_status_text.page is not None:
-                    self._sniff_status_text.update()
+                self._update_if_attached(self._sniff_status_text)
             self._show_snackbar(str(exc), error=True)
             return
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("嗅探意外失败: {}", exc)
             if self._sniff_status_text is not None:
                 self._sniff_status_text.value = "嗅探失败，请稍后重试。"
-                if self._sniff_status_text.page is not None:
-                    self._sniff_status_text.update()
+                self._update_if_attached(self._sniff_status_text)
             self._show_snackbar("嗅探失败，请稍后重试。", error=True)
             return
         finally:
@@ -15687,8 +15565,7 @@ class Pages:
                 self._sniff_status_text.value = f"共发现 {len(images)} 张图片"
             else:
                 self._sniff_status_text.value = "未找到可用图片，尝试其他链接。"
-            if self._sniff_status_text.page is not None:
-                self._sniff_status_text.update()
+            self._update_if_attached(self._sniff_status_text)
 
         self._sniff_render_grid()
         self._sniff_update_actions()
@@ -15702,8 +15579,7 @@ class Pages:
         self._sniff_grid.controls.clear()
         for image in self._sniff_images:
             self._sniff_grid.controls.append(self._sniff_build_tile(image))
-        if self._sniff_grid.page is not None:
-            self._sniff_grid.update()
+        self._update_if_attached(self._sniff_grid)
 
     def _sniff_build_tile(self, image: SniffedImage) -> ft.Control:
         selected = image.id in self._sniff_selected_ids
@@ -15712,7 +15588,7 @@ class Pages:
 
         image_control = ft.Image(
             src=image.url,
-            fit=ft.ImageFit.COVER,
+            fit=ft.BoxFit.COVER,
             expand=True,
         )
 
@@ -15721,7 +15597,7 @@ class Pages:
             height=28,
             border_radius=20,
             bgcolor=ft.Colors.PRIMARY,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             content=ft.Icon(ft.Icons.CHECK, size=18, color=ft.Colors.WHITE),
             visible=selected,
         )
@@ -15730,7 +15606,7 @@ class Pages:
             controls=[
                 image_control,
                 ft.Container(
-                    alignment=ft.alignment.top_right,
+                    alignment=ft.Alignment.TOP_RIGHT,
                     padding=8,
                     content=check_badge,
                 ),
@@ -15850,8 +15726,7 @@ class Pages:
                 if new_value in option_keys
                 else next(iter(option_keys), "default")
             )
-            if folder_dropdown.page is not None:
-                folder_dropdown.update()
+            self._update_if_attached(folder_dropdown)
 
         def _create_folder(_: ft.ControlEvent | None = None) -> None:
             self._open_new_folder_dialog(
@@ -16080,7 +15955,7 @@ class Pages:
         logger.debug("显示收藏页加载占位符")
         return ft.Container(
             expand=True,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             content=ft.Column(
                 [
                     ft.ProgressRing(width=56, height=56, stroke_width=4),
@@ -16104,13 +15979,11 @@ class Pages:
         if self._favorite_view_holder is None:
             return
         self._favorite_view_holder.content = self._favorite_loading_placeholder()
-        if self._favorite_view_holder.page is not None:
-            self._favorite_view_holder.update()
+        self._update_if_attached(self._favorite_view_holder)
         overlay = self._favorite_loading_overlay
         if overlay is not None:
             overlay.visible = False
-            if overlay.page is not None:
-                overlay.update()
+            self._update_if_attached(overlay)
         self._favorite_view_loading = False
         self._start_favorite_initialization()
 
@@ -16128,8 +16001,7 @@ class Pages:
                 overlay = self._favorite_loading_overlay
                 if overlay is not None:
                     overlay.visible = False
-                    if overlay.page is not None:
-                        overlay.update()
+                    self._update_if_attached(overlay)
 
         if self.page is not None:
             self.page.run_task(_runner)
@@ -16151,12 +16023,10 @@ class Pages:
 
         if self._favorite_view_holder is not None:
             self._favorite_view_holder.content = view
-            if self._favorite_view_holder.page is not None:
-                self._favorite_view_holder.update()
+            self._update_if_attached(self._favorite_view_holder)
         if self._favorite_loading_overlay is not None:
             self._favorite_loading_overlay.visible = False
-            if self._favorite_loading_overlay.page is not None:
-                self._favorite_loading_overlay.update()
+            self._update_if_attached(self._favorite_loading_overlay)
         if self.page is not None:
             self.page.update()
 
@@ -16172,7 +16042,7 @@ class Pages:
             visible=False,
             expand=True,
             bgcolor=ft.Colors.with_opacity(0.06, overlay_surface),
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment.CENTER,
             content=ft.Column(
                 [
                     ft.ProgressRing(width=48, height=48, stroke_width=4),
@@ -16321,7 +16191,10 @@ class Pages:
                         size=12,
                         color=ft.Colors.GREY,
                     ),
-                    ft.Container(toolbar, padding=ft.Padding(0, 12, 0, 12)),
+                    ft.Container(
+                        toolbar,
+                        padding=ft.Padding(left=0, top=12, right=0, bottom=12),
+                    ),
                     favorite_body_stack,
                 ],
                 spacing=8,
@@ -16365,14 +16238,12 @@ class Pages:
 
         self._install_manager_tabs = ft.Tabs(
             tabs=[
-                ft.Tab(
-                    text="正在安装",
+                ft.Tab(label="正在安装",
                     content=ft.Container(
                         self._install_tasks_column, padding=12, expand=True
                     ),
                 ),
-                ft.Tab(
-                    text="已安装",
+                ft.Tab(label="已安装",
                     content=ft.Container(
                         self._installed_items_column, padding=12, expand=True
                     ),
@@ -17015,8 +16886,7 @@ class Pages:
 
         def _sync_state(_: ft.ControlEvent | None = None) -> None:
             confirm_btn.disabled = not (bool(adult_cb.value) and bool(legal_cb.value))
-            if confirm_btn.page is not None:
-                confirm_btn.update()
+            self._update_if_attached(confirm_btn)
 
         adult_cb.on_change = _sync_state
         legal_cb.on_change = _sync_state
@@ -17155,7 +17025,8 @@ class Pages:
             cards.append(placeholder)
 
         wrap.controls = cards
-        if wrap.page is not None and self.page is not None:
+        self._update_if_attached(wrap)
+        if self.page is not None:
             self.page.update()
 
     def _build_theme_card(self, profile: dict[str, Any]) -> ft.Control | None:
@@ -17181,7 +17052,7 @@ class Pages:
                     src=logo_src.strip(),
                     width=42,
                     height=42,
-                    fit=ft.ImageFit.COVER,
+                    fit=ft.BoxFit.COVER,
                 ),
                 width=42,
                 height=42,
@@ -17193,7 +17064,7 @@ class Pages:
                 width=42,
                 height=42,
                 border_radius=ft.border_radius.all(8),
-                alignment=ft.alignment.center,
+                alignment=ft.Alignment.CENTER,
             )
 
         name_column_controls: list[ft.Control] = [
@@ -18111,8 +17982,7 @@ class Pages:
 
             # Turning on: require confirmation. Revert switch to off first.
             switch.value = False
-            if switch.page is not None:
-                switch.update()
+            self._update_if_attached(switch)
 
             # Show confirm dialog.
             self._confirm_nsfw()
@@ -18130,8 +18000,7 @@ class Pages:
                         def _on_confirm(_: ft.ControlEvent | None = None):
                             self._handle_confirm_nsfw()
                             switch.value = True
-                            if switch.page is not None:
-                                switch.update()
+                            self._update_if_attached(switch)
                             self._close_dialog()
 
                         confirm_btn.on_click = _on_confirm
@@ -18140,8 +18009,7 @@ class Pages:
 
                         def _on_cancel(_: ft.ControlEvent | None = None):
                             switch.value = False
-                            if switch.page is not None:
-                                switch.update()
+                            self._update_if_attached(switch)
                             self._close_dialog()
 
                         cancel_btn.on_click = _on_cancel
@@ -18464,26 +18332,37 @@ class Pages:
             ),
         )
 
+        # Settings 使用新版 Tabs 布局：TabBar + TabBarView
+        settings_tab_items = [
+            ("通用", ft.Icons.SETTINGS, general),
+            ("壁纸", ft.Icons.IMAGE, wallpaper_tab),
+            ("资源", ft.Icons.WALLPAPER, resource),
+            ("下载", ft.Icons.DOWNLOAD, download),
+            ("嗅探", ft.Icons.SEARCH, sniff_settings),
+            ("更新", ft.Icons.SYSTEM_UPDATE, update_tab),
+            ("外观", ft.Icons.PALETTE, appearance),
+            ("关于", ft.Icons.INFO, about),
+            ("插件", ft.Icons.EXTENSION, self._build_plugin_settings_content()),
+        ]
+
         settings_tabs = ft.Tabs(
+            length=len(settings_tab_items),
             selected_index=0,
             animation_duration=300,
             padding=12,
-            tabs=[
-                ft.Tab(text="通用", icon=ft.Icons.SETTINGS, content=general),
-                ft.Tab(text="壁纸", icon=ft.Icons.IMAGE, content=wallpaper_tab),
-                ft.Tab(text="资源", icon=ft.Icons.WALLPAPER, content=resource),
-                ft.Tab(text="下载", icon=ft.Icons.DOWNLOAD, content=download),
-                ft.Tab(text="嗅探", icon=ft.Icons.SEARCH, content=sniff_settings),
-                ft.Tab(text="更新", icon=ft.Icons.SYSTEM_UPDATE, content=update_tab),
-                ft.Tab(text="外观", icon=ft.Icons.PALETTE, content=appearance),
-                ft.Tab(text="关于", icon=ft.Icons.INFO, content=about),
-                ft.Tab(
-                    text="插件",
-                    icon=ft.Icons.EXTENSION,
-                    content=self._build_plugin_settings_content(),
-                ),
-            ],
             expand=True,
+            content=ft.Column(
+                expand=True,
+                controls=[
+                    ft.TabBar(
+                        tabs=[ft.Tab(label=ft.Text(label), icon=icon) for label, icon, _ in settings_tab_items],
+                    ),
+                    ft.TabBarView(
+                        expand=True,
+                        controls=[content for _, _, content in settings_tab_items],
+                    ),
+                ],
+            ),
         )
         self._settings_tabs = settings_tabs
         self._settings_tab_indices = {
@@ -18593,7 +18472,7 @@ class Pages:
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         tight=True,
                     ),
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                     padding=50,
                     expand=True,
                 ),
@@ -18703,7 +18582,7 @@ class Pages:
                         spacing=18,
                         expand=True,
                     ),
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                     padding=ft.padding.all(32),
                     expand=True,
                 ),
@@ -18801,7 +18680,7 @@ class Pages:
                     ),
                     expand=True,
                     padding=ft.padding.symmetric(horizontal=40, vertical=32),
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment.CENTER,
                 ),
             ],
         )
@@ -18939,3 +18818,7 @@ class Pages:
                     bgcolor=ft.Colors.ON_ERROR,
                 ),
             )
+
+
+
+

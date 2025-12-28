@@ -11,7 +11,7 @@ dependencies = [
   "aiohttp>=3.13.2",
   "requests>=2.32.5",
   "filetype>=1.2.0",
-  "flet==0.28.3",
+  "flet==0.80.0",
   "python-magic>=0.4.27; platform_system != 'Windows'",
   "python-magic-bin>=0.4.14; platform_system == 'Windows'",
   "loguru>=0.7.3",
@@ -28,7 +28,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "colorama>=0.4.6",
-    "flet[all]==0.28.3",
+    "flet[all]==0.80.0",
     "pyinstaller>=6.16.0",
 ]
 

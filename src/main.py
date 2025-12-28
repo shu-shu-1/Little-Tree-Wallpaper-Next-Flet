@@ -158,7 +158,7 @@ def main(page: ft.Page) -> None:
 
 if __name__ == "__main__":
     try:
-        ft.app(target=main)
+        ft.run(main=main)
     except Exception as e:
         # 获取完整的异常信息包括堆栈跟踪
         error_message = f"发生错误: {e!s}\n\n详细信息:\n{traceback.format_exc()}"

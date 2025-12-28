@@ -394,7 +394,7 @@ class PluginManager:
                     runtime.status = PluginStatus.ACTIVE
                     runtime.error = None
             except Exception as exc:
-                logger.error(
+                logger.exception(
                     f"插件 {loaded.manifest.identifier if loaded.manifest else loaded.identifier} 激活失败: {exc}",
                 )
                 if runtime:

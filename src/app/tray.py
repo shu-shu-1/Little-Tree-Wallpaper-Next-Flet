@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import os
 import threading
 from collections.abc import Callable
@@ -19,6 +21,20 @@ class TrayIcon:
         self._icon_path = icon_path
         self._icon: Any | None = None
         self._thread: threading.Thread | None = None
+
+    def _fire_and_forget(self, maybe_awaitable: Any) -> None:
+        """在当前或新事件循环中安全触发协程，避免未 awaited 警告。"""
+        if not inspect.isawaitable(maybe_awaitable):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            loop.create_task(maybe_awaitable)
+        else:  # pragma: no cover - 兜底路径
+            asyncio.run(maybe_awaitable)
 
     # ------------------------------------------------------------------
     # helpers
@@ -66,7 +82,7 @@ class TrayIcon:
                 try:
                     window.visible = True
                     window.minimized = False
-                    window.to_front()
+                    self._fire_and_forget(window.to_front())
                 except Exception as e:
                     logger.error(f"显示窗口遇到错误: {e}")
 
@@ -129,18 +145,32 @@ class TrayIcon:
     def _on_quit(self, _icon, _item) -> None:
         def _handler(page: Any) -> None:
             window = getattr(page, "window", None)
+            service = None
+            app = self._app
+            if app is not None:
+                pages = getattr(app, "_core_pages", None)
+                if pages is None and hasattr(app, "_extract_core_pages"):
+                    try:
+                        pages = app._extract_core_pages()
+                    except Exception:
+                        pages = None
+                service = getattr(pages, "auto_change_service", None)
             if window is not None:
                 try:
                     logger.info("关闭程序")
-                    window.close()
-                    window.close()
-                    window.close()
-                    window.destroy()
-                    window.destroy()
-                    window.destroy()
+                    self._fire_and_forget(window.close())
+                    self._fire_and_forget(window.destroy())
+                    if service is not None:
+                        self._fire_and_forget(service.shutdown())
                     return
                 except Exception as e:
                     logger.error(f"注销窗口遇到错误: {e}")
+
+            try:
+                if service is not None:
+                    self._fire_and_forget(service.shutdown())
+            except Exception:
+                pass
 
 
         self._with_page(_handler)
@@ -175,7 +205,7 @@ class TrayIcon:
                     image,
                     "小树壁纸",
                     (
-                        MenuItem("显示", self._on_show),
+                        MenuItem("显示", self._on_show, default=True),
                         MenuItem("隐藏", self._on_hide),
                         MenuItem("立即更换壁纸", self._on_change_wallpaper),
                         Menu.SEPARATOR,

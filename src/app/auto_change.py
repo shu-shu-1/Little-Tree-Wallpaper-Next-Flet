@@ -462,6 +462,30 @@ class AutoChangeService:
         self._task = loop.create_task(self._run())
 
     async def shutdown(self) -> None:
+        """优雅停止后台任务，避免未完成任务在事件循环关闭时被销毁。"""
+        self._stopped = True
+        self._refresh_event.set()
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    def shutdown_sync(self) -> None:
+        """在同步上下文关闭服务，自动选择合适的事件循环。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            loop.create_task(self.shutdown())
+        else:  # pragma: no cover - 兜底同步关闭
+            asyncio.run(self.shutdown())
+
+    async def shutdown(self) -> None:
         self._stopped = True
         self._refresh_event.set()
         if self._task is not None:

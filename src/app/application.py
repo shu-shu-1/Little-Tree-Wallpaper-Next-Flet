@@ -659,7 +659,7 @@ class Application:
 
         appbar = ft.AppBar(
             leading=ft.Image(
-                str(ICO_PATH), width=24, height=24, fit=ft.ImageFit.CONTAIN,
+                str(ICO_PATH), width=24, height=24, fit=ft.BoxFit.CONTAIN,
             ),
             title=ft.Text("小树壁纸 Next - Flet"),
             bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
@@ -1173,11 +1173,15 @@ class Application:
             actions_alignment=ft.MainAxisAlignment.END,
         )
         self._page.dialog = self._permission_dialog
-        self._page.open(self._permission_dialog)
+        self._page.show_dialog(self._permission_dialog)
 
     def _close_permission_dialog(self) -> None:
         if self._permission_dialog and self._page is not None:
-            self._page.close(self._permission_dialog)
+            try:
+                self._page.pop_dialog()
+            except Exception:
+                self._permission_dialog.open = False
+                self._page.update()
         self._permission_dialog = None
 
     def _reset_permission_prompts(self, reason: str) -> None:

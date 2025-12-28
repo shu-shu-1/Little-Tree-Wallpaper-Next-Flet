@@ -133,13 +133,13 @@ ALLOWED_COLOR_SCHEME_KEYS = {
 }
 
 IMAGE_FIT_MAP = {
-    "contain": ft.ImageFit.CONTAIN,
-    "cover": ft.ImageFit.COVER,
-    "fill": ft.ImageFit.FILL,
-    "fit_height": ft.ImageFit.FIT_HEIGHT,
-    "fit_width": ft.ImageFit.FIT_WIDTH,
-    "none": ft.ImageFit.NONE,
-    "scale_down": ft.ImageFit.SCALE_DOWN,
+    "contain": ft.BoxFit.CONTAIN,
+    "cover": ft.BoxFit.COVER,
+    "fill": ft.BoxFit.FILL,
+    "fit_height": ft.BoxFit.FIT_HEIGHT,
+    "fit_width": ft.BoxFit.FIT_WIDTH,
+    "none": ft.BoxFit.NONE,
+    "scale_down": ft.BoxFit.SCALE_DOWN,
 }
 
 IMAGE_REPEAT_MAP = {
@@ -150,19 +150,19 @@ IMAGE_REPEAT_MAP = {
 }
 
 ALIGNMENT_MAP = {
-    "center": ft.alignment.center,
-    "top_left": ft.alignment.top_left,
-    "top": ft.alignment.top_center,
-    "top_center": ft.alignment.top_center,
-    "top_right": ft.alignment.top_right,
-    "left": ft.alignment.center_left,
-    "center_left": ft.alignment.center_left,
-    "right": ft.alignment.center_right,
-    "center_right": ft.alignment.center_right,
-    "bottom_left": ft.alignment.bottom_left,
-    "bottom": ft.alignment.bottom_center,
-    "bottom_center": ft.alignment.bottom_center,
-    "bottom_right": ft.alignment.bottom_right,
+    "center": ft.Alignment.CENTER,
+    "top_left": ft.Alignment.TOP_LEFT,
+    "top": ft.Alignment.TOP_CENTER,
+    "top_center": ft.Alignment.TOP_CENTER,
+    "top_right": ft.Alignment.TOP_RIGHT,
+    "left": ft.Alignment.CENTER_LEFT,
+    "center_left": ft.Alignment.CENTER_LEFT,
+    "right": ft.Alignment.CENTER_RIGHT,
+    "center_right": ft.Alignment.CENTER_RIGHT,
+    "bottom_left": ft.Alignment.BOTTOM_LEFT,
+    "bottom": ft.Alignment.BOTTOM_CENTER,
+    "bottom_center": ft.Alignment.BOTTOM_CENTER,
+    "bottom_right": ft.Alignment.BOTTOM_RIGHT,
 }
 
 
@@ -170,7 +170,7 @@ ALIGNMENT_MAP = {
 class BackgroundLayer:
     src: str
     opacity: float
-    fit: ft.ImageFit
+    fit: ft.BoxFit
     alignment: ft.Alignment
     repeat: ft.ImageRepeat
 
@@ -794,12 +794,12 @@ class ThemeManager:
 
         return OverlayLayer(color=color, opacity=opacity_value)
 
-    def _coerce_image_fit(self, value: Any) -> ft.ImageFit:
+    def _coerce_image_fit(self, value: Any) -> ft.BoxFit:
         if isinstance(value, str):
             key = value.strip().lower()
             if key in IMAGE_FIT_MAP:
                 return IMAGE_FIT_MAP[key]
-        return ft.ImageFit.COVER
+        return ft.BoxFit.COVER
 
     def _coerce_image_repeat(self, value: Any) -> ft.ImageRepeat:
         if isinstance(value, str):
@@ -813,7 +813,7 @@ class ThemeManager:
             key = value.strip().lower()
             if key in ALIGNMENT_MAP:
                 return ALIGNMENT_MAP[key]
-        return ft.alignment.center
+        return ft.Alignment.CENTER
 
     def _coerce_theme_mode(self, value: Any) -> ft.ThemeMode | None:
         if not isinstance(value, str):

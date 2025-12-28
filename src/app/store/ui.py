@@ -73,9 +73,9 @@ class StoreUI:
             animation_duration=300,
             on_change=self._handle_tab_change,
             tabs=[
-                ft.Tab(text="主题", icon=ft.Icons.PALETTE),
-                ft.Tab(text="壁纸源", icon=ft.Icons.WALLPAPER),
-                ft.Tab(text="插件", icon=ft.Icons.EXTENSION),
+                ft.Tab(label="主题", icon=ft.Icons.PALETTE),
+                ft.Tab(label="壁纸源", icon=ft.Icons.WALLPAPER),
+                ft.Tab(label="插件", icon=ft.Icons.EXTENSION),
             ],
         )
         
@@ -224,7 +224,7 @@ class StoreUI:
                     src_base64=icon_url.split(",")[1] if "," in icon_url else icon_url,
                     width=60,
                     height=60,
-                    fit=ft.ImageFit.CONTAIN,
+                    fit=ft.BoxFit.CONTAIN,
                 )
             else:
                 # URL图标
@@ -232,7 +232,7 @@ class StoreUI:
                     src=icon_url,
                     width=60,
                     height=60,
-                    fit=ft.ImageFit.CONTAIN,
+                    fit=ft.BoxFit.CONTAIN,
                     error_content=ft.Icon(ft.Icons.BROKEN_IMAGE, size=60),
                 )
         else:
@@ -273,7 +273,7 @@ class StoreUI:
                         # 图标
                         ft.Container(
                             content=icon_widget,
-                            alignment=ft.alignment.center,
+                            alignment=ft.Alignment.CENTER,
                             padding=8,
                         ),
                         # 名称
@@ -333,14 +333,14 @@ class StoreUI:
                     src_base64=icon_url.split(",")[1] if "," in icon_url else icon_url,
                     width=80,
                     height=80,
-                    fit=ft.ImageFit.CONTAIN,
+                    fit=ft.BoxFit.CONTAIN,
                 )
             else:
                 icon_widget = ft.Image(
                     src=icon_url,
                     width=80,
                     height=80,
-                    fit=ft.ImageFit.CONTAIN,
+                    fit=ft.BoxFit.CONTAIN,
                     error_content=ft.Icon(ft.Icons.BROKEN_IMAGE, size=80),
                 )
         else:
@@ -409,7 +409,7 @@ class StoreUI:
         if resource.homepage_url:
             links.append(
                 ft.TextButton(
-                    "官方网站",
+                    content=ft.Text("官方网站"),
                     icon=ft.Icons.HOME,
                     on_click=lambda _: self.page.launch_url(resource.homepage_url),
                 )
@@ -417,7 +417,7 @@ class StoreUI:
         if resource.repository_url:
             links.append(
                 ft.TextButton(
-                    "源码仓库",
+                    content=ft.Text("源码仓库"),
                     icon=ft.Icons.CODE,
                     on_click=lambda _: self.page.launch_url(resource.repository_url),
                 )
@@ -425,7 +425,7 @@ class StoreUI:
         if resource.changelog_url:
             links.append(
                 ft.TextButton(
-                    "更新日志",
+                    content=ft.Text("更新日志"),
                     icon=ft.Icons.HISTORY,
                     on_click=lambda _: self.page.launch_url(resource.changelog_url),
                 )
@@ -439,18 +439,21 @@ class StoreUI:
         # 安装按钮
         def handle_install(_):
             self._install_resource(resource)
-            dialog.open = False
-            self.page.update()
+            try:
+                self.page.pop_dialog()
+            except Exception:
+                dialog.open = False
+                self.page.update()
         
         install_button = ft.FilledButton(
-            "安装",
+            content=ft.Text("安装"),
             icon=ft.Icons.DOWNLOAD,
             on_click=handle_install,
         )
         
         close_button = ft.TextButton(
-            "关闭",
-            on_click=lambda _: setattr(dialog, "open", False) or self.page.update(),
+            content=ft.Text("关闭"),
+            on_click=lambda _: self.page.pop_dialog(),
         )
         
         # 创建对话框
@@ -470,8 +473,8 @@ class StoreUI:
                 install_button,
             ],
         )
-        
-        self.page.open(dialog)
+
+        self.page.show_dialog(dialog)
     
     def _install_resource(self, resource: ResourceMetadata):
         """安装资源"""
@@ -524,3 +527,7 @@ class StoreUI:
         # 重新加载资源
         # 使用页面提供的事件循环调度，避免无运行循环报错
         self.page.run_task(self.load_resources)
+
+
+
+
