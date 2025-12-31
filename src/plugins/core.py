@@ -190,6 +190,9 @@ class CorePlugin(Plugin):
         for entry in pages.iter_plugin_settings_pages():
             context.add_route_view(_make_settings_route(entry))
         context.add_route_view(
+            AppRouteView(route="/history", builder=pages.build_history_view),
+        )
+        context.add_route_view(
             AppRouteView(route="/test-warning", builder=pages.build_test_warning_page),
         )
         context.add_route_view(

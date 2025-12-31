@@ -51,9 +51,9 @@ https://github.com/shu-shu-1/Little-Tree-Wallpaper-Next-Flet
 
 ================================================================================
 
-Module Name: [module_name]
+Module Name: pages.py
 
-Copyright (C) 2024 Little Tree Studio <studio@zsxiaoshu.cn>
+Copyright (C) 2025 Little Tree Studio <studio@zsxiaoshu.cn>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published
@@ -289,7 +289,12 @@ class Pages:
         self._home_custom_entries_column: ft.GridView | None = None
         self._home_custom_import_picker: ft.FilePicker | None = None
         self._home_custom_export_picker: ft.FilePicker | None = None
+        self._wallpaper_history_limit = 200
+        self._wallpaper_history: list[dict[str, Any]] = self._load_wallpaper_history()
+        self._history_list_column: ft.Column | None = None
+        self._history_placeholder: ft.Text | None = None
         self.wallpaper_path = ltwapi.get_sys_wallpaper()
+        self._record_current_wallpaper("startup")
         self.bing_wallpaper = None
         self.bing_wallpaper_url = None
         self.bing_loading = True
@@ -4856,13 +4861,328 @@ class Pages:
             ),
         )
 
+    def _load_wallpaper_history(self) -> list[dict[str, Any]]:
+        history: list[dict[str, Any]] = []
+        raw_history = app_config.get("wallpaper.history", [])
+        if not isinstance(raw_history, list):
+            return history
+        for item in raw_history:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "").strip()
+            if not path:
+                continue
+            try:
+                ts = float(item.get("timestamp", time.time()))
+            except Exception:
+                ts = time.time()
+            title = str(item.get("title") or Path(path).name)
+            source = str(item.get("source") or "").strip() or None
+            reason = str(item.get("reason") or "set")
+            entry_id = str(item.get("id") or uuid.uuid4().hex)
+            history.append(
+                {
+                    "id": entry_id,
+                    "path": path,
+                    "title": title,
+                    "source": source,
+                    "reason": reason,
+                    "timestamp": ts,
+                },
+            )
+        return history
+
+    def _save_wallpaper_history(self, history: list[dict[str, Any]]) -> None:
+        self._wallpaper_history = history
+        app_config.set("wallpaper.history", copy.deepcopy(history))
+        self._refresh_history_view()
+
+    def _append_wallpaper_history(
+        self,
+        path: str | Path | None,
+        *,
+        reason: str,
+        title: str | None = None,
+        source: str | None = None,
+    ) -> None:
+        if not path:
+            return
+        path_str = str(path)
+        normalized = path_str.lower()
+        deduped: list[dict[str, Any]] = []
+        for item in self._wallpaper_history:
+            existing = str(item.get("path") or "").lower()
+            if existing == normalized:
+                continue
+            deduped.append(item)
+        entry = {
+            "id": uuid.uuid4().hex,
+            "path": path_str,
+            "title": title or Path(path_str).name,
+            "source": source,
+            "reason": reason,
+            "timestamp": time.time(),
+        }
+        history = [entry, *deduped]
+        if len(history) > self._wallpaper_history_limit:
+            history = history[: self._wallpaper_history_limit]
+        self._save_wallpaper_history(history)
+
+    def _record_current_wallpaper(self, reason: str) -> None:
+        if not self.wallpaper_path:
+            return
+        self._append_wallpaper_history(
+            self.wallpaper_path,
+            reason=reason,
+            title=Path(self.wallpaper_path).name,
+            source="system",
+        )
+
+    def _find_history_entry(self, entry_id: str) -> dict[str, Any] | None:
+        for entry in self._wallpaper_history:
+            if entry.get("id") == entry_id:
+                return entry
+        return None
+
+    def _update_home_wallpaper_display(self, path: str | None) -> None:
+        if not path:
+            return
+        self.wallpaper_path = path
+        if self.img is not None:
+            self.img.src = path
+            if self.img.page is not None:
+                self.img.update()
+        if self.file_name is not None:
+            self.file_name.spans = [self._build_wallpaper_label_span()]
+            if self.file_name.page is not None:
+                self.file_name.update()
+
+    def _after_wallpaper_set(
+        self,
+        path: str | Path,
+        *,
+        source: str,
+        title: str | None = None,
+    ) -> None:
+        path_str = str(path)
+        self._update_home_wallpaper_display(path_str)
+        self._append_wallpaper_history(
+            path_str,
+            reason="set",
+            title=title,
+            source=source,
+        )
+
+    def _history_reason_label(self, entry: dict[str, Any]) -> str:
+        reason = str(entry.get("reason") or "set")
+        source = str(entry.get("source") or "").strip()
+        reason_map = {
+            "startup": "启动记录",
+            "refresh": "刷新记录",
+            "set": "设为壁纸",
+        }
+        label = reason_map.get(reason, "设为壁纸")
+        if source:
+            source_map = {
+                "system": "系统壁纸",
+                "generate": "AI 生成",
+                "wallpaper_source": "壁纸源",
+                "favorite": "收藏",
+                "bing": "Bing 每日",
+                "spotlight": "Windows 聚焦",
+                "sniff": "嗅探",
+                "im": "壁纸市场",
+                "history": "历史记录",
+            }
+            label = f"{label} · {source_map.get(source, source)}"
+        return label
+
+    def _history_time_text(self, entry: dict[str, Any]) -> str:
+        try:
+            ts = float(entry.get("timestamp", 0))
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+        except Exception:
+            return "时间未知"
+
+    def _refresh_history_view(self) -> None:
+        if self._history_list_column is None:
+            return
+        controls: list[ft.Control] = []
+        if not self._wallpaper_history:
+            placeholder = self._history_placeholder
+            if placeholder is None:
+                placeholder = ft.Text(
+                    "暂无历史记录，刷新/启动/设置壁纸后会自动加入。",
+                    color=ft.Colors.GREY,
+                )
+                self._history_placeholder = placeholder
+            controls.append(placeholder)
+        else:
+            controls = [
+                self._build_history_entry_card(entry)
+                for entry in self._wallpaper_history
+            ]
+        self._history_list_column.controls = controls
+        if self._history_list_column.page is not None:
+            self._history_list_column.update()
+
     def _refresh_home(self, _):
         self._update_wallpaper()
         self.img.src = self.wallpaper_path or ""
         self.file_name.spans = [self._build_wallpaper_label_span()]
         self.refresh_home_quote()
 
+        self._record_current_wallpaper("refresh")
+
         self.page.update()
+
+    def _build_history_entry_card(self, entry: dict[str, Any]) -> ft.Control:
+        entry_id = str(entry.get("id") or uuid.uuid4().hex)
+        path = str(entry.get("path") or "")
+        title = str(entry.get("title") or Path(path).name or "历史记录")
+        exists = bool(path and Path(path).exists())
+        preview: ft.Control
+        if exists:
+            preview = ft.Image(
+                src=path,
+                width=200,
+                height=120,
+                fit=ft.ImageFit.COVER,
+                border_radius=ft.border_radius.all(8),
+                error_content=ft.Container(
+                    ft.Text("预览不可用"),
+                    alignment=ft.alignment.center,
+                    padding=12,
+                ),
+            )
+        else:
+            preview = ft.Container(
+                width=200,
+                height=120,
+                bgcolor=self._bgcolor_surface_low,
+                alignment=ft.alignment.center,
+                content=ft.Column(
+                    [
+                        ft.Icon(ft.Icons.IMAGE_NOT_SUPPORTED, color=ft.Colors.GREY),
+                        ft.Text("文件不存在", size=12, color=ft.Colors.GREY),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            )
+
+        meta_text = ft.Text(self._history_reason_label(entry), size=12)
+        time_text = ft.Text(self._history_time_text(entry), size=12, color=ft.Colors.GREY)
+        path_text = ft.Text(path or "未知路径", size=12, color=ft.Colors.GREY, selectable=True)
+
+        set_button = ft.FilledTonalButton(
+            "设为壁纸",
+            icon=ft.Icons.WALLPAPER,
+            disabled=not exists,
+            on_click=lambda _, eid=entry_id: self.page.run_task(
+                self._handle_history_set_wallpaper,
+                eid,
+            ),
+        )
+        delete_button = ft.TextButton(
+            "删除",
+            icon=ft.Icons.DELETE_OUTLINE,
+            on_click=lambda _, eid=entry_id: self._handle_history_delete(eid),
+        )
+
+        return ft.Card(
+            content=ft.Container(
+                padding=12,
+                content=ft.Row(
+                    [
+                        preview,
+                        ft.Column(
+                            [
+                                ft.Text(title, size=16, weight=ft.FontWeight.BOLD),
+                                meta_text,
+                                time_text,
+                                path_text,
+                                ft.Row([set_button, delete_button], spacing=8, wrap=True),
+                            ],
+                            spacing=6,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=16,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                ),
+            ),
+        )
+
+    async def _handle_history_set_wallpaper(self, entry_id: str) -> None:
+        entry = self._find_history_entry(entry_id)
+        if not entry:
+            self._show_snackbar("未找到历史记录。", error=True)
+            return
+        path = entry.get("path")
+        if not path or not Path(path).exists():
+            self._show_snackbar("文件不存在，无法设置壁纸。", error=True)
+            return
+        try:
+            await asyncio.to_thread(ltwapi.set_wallpaper, path)
+        except Exception as exc:
+            logger.error("从历史记录设置壁纸失败: {error}", error=str(exc))
+            self._show_snackbar("设为壁纸失败，请查看日志。", error=True)
+            return
+        self._show_snackbar("已应用历史壁纸。")
+        self._after_wallpaper_set(
+            path,
+            source=entry.get("source") or "history",
+            title=entry.get("title"),
+        )
+
+    def _handle_history_delete(self, entry_id: str) -> None:
+        history = [item for item in self._wallpaper_history if item.get("id") != entry_id]
+        if len(history) == len(self._wallpaper_history):
+            self._show_snackbar("未找到要删除的记录。", error=True)
+            return
+        self._save_wallpaper_history(history)
+        self._show_snackbar("已删除历史记录。")
+
+    def build_history_view(self) -> ft.View:
+        self._history_placeholder = None
+        self._history_list_column = ft.Column(spacing=12, tight=False, expand=True)
+        self._refresh_history_view()
+
+        body = ft.Container(
+            padding=16,
+            expand=True,
+            content=ft.Column(
+                [
+                    ft.Text("历史壁纸", size=26, weight=ft.FontWeight.BOLD),
+                    ft.Text(
+                        "刷新/启动/设为壁纸都会自动记录，方便随时回溯。",
+                        size=12,
+                        color=ft.Colors.GREY,
+                    ),
+                    self._history_list_column,
+                ],
+                spacing=12,
+                expand=True,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        )
+
+        return ft.View(
+            "/history",
+            [
+                ft.AppBar(
+                    title=ft.Text("历史壁纸"),
+                    leading=ft.IconButton(
+                        ft.Icons.ARROW_BACK,
+                        tooltip="返回",
+                        on_click=lambda _: self.page.go("/"),
+                    ),
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                ),
+                body,
+            ],
+        )
 
     async def _load_bing_wallpaper(self):
         max_attempts = 3
@@ -5121,6 +5441,12 @@ class Pages:
                                         icon=ft.Icons.STAR,
                                         tooltip="将当前壁纸加入收藏",
                                         on_click=self._handle_home_add_wallpaper_to_favorite,
+                                    ),
+                                    ft.TextButton(
+                                        "历史",
+                                        icon=ft.Icons.HISTORY,
+                                        tooltip="查看历史壁纸记录",
+                                        on_click=lambda _: self.page.go("/history"),
                                     ),
                                     ft.TextButton(
                                         "刷新",
@@ -7355,6 +7681,15 @@ class Pages:
             self._show_snackbar("设为壁纸失败，请查看日志。", error=True)
             return
         self._show_snackbar("已设置为壁纸。")
+        self._after_wallpaper_set(
+            path,
+            source="generate",
+            title=(
+                self._abbreviate_text(self._generate_last_prompt, 40)
+                if self._generate_last_prompt
+                else path.name
+            ),
+        )
 
     def _generate_make_favorite_payload(self) -> dict[str, Any] | None:
         path = self._generate_last_file
@@ -9642,6 +9977,11 @@ class Pages:
             self._show_snackbar("设置壁纸失败，请查看日志。", error=True)
             return
         self._show_snackbar("已设置为壁纸。")
+        self._after_wallpaper_set(
+            item.local_path,
+            source="wallpaper_source",
+            title=item.title or item.id,
+        )
 
     async def _ws_copy_image(self, item_id: str) -> None:
         item = self._ws_find_item(item_id)
@@ -12396,6 +12736,7 @@ class Pages:
         if not path:
             self._show_snackbar("图片文件不存在。", error=True)
             return
+        file_name = Path(path).name if path else "图片文件"
         try:
             await asyncio.to_thread(ltwapi.set_wallpaper, path)
         except Exception as exc:  # pragma: no cover - platform specific errors
@@ -12412,6 +12753,11 @@ class Pages:
             )
             return
         self._show_snackbar("已设置为壁纸。")
+        self._after_wallpaper_set(
+            path,
+            source="im",
+            title=file_name,
+        )
         self._emit_im_source_event(
             "resource.im_source.action",
             {
@@ -13595,6 +13941,11 @@ class Pages:
                     return
                 await asyncio.to_thread(ltwapi.set_wallpaper, local_path)
                 self._show_snackbar("壁纸设置成功。")
+                self._after_wallpaper_set(
+                    local_path,
+                    source="favorite",
+                    title=target_item.title or target_item.id,
+                )
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error(f"设置收藏壁纸失败: {exc}")
                 self._show_snackbar("设置壁纸失败，请查看日志。", error=True)
@@ -14358,6 +14709,13 @@ class Pages:
             if wallpaper_path:
                 self._emit_download_completed("bing", "set_wallpaper", wallpaper_path)
                 ltwapi.set_wallpaper(wallpaper_path)
+                self._after_wallpaper_set(
+                    wallpaper_path,
+                    source="bing",
+                    title=self.bing_wallpaper.get("title")
+                    if isinstance(self.bing_wallpaper, dict)
+                    else "Bing 壁纸",
+                )
                 self._emit_bing_action(
                     "set_wallpaper",
                     True,
@@ -14962,6 +15320,11 @@ class Pages:
                         ft.SnackBar(
                             ft.Text("壁纸设置成功啦~ (๑•̀ㅂ•́)و✧"),
                         ),
+                    )
+                    self._after_wallpaper_set(
+                        wallpaper_path,
+                        source="spotlight",
+                        title=spotlight.get("title") if spotlight else "Windows 聚焦壁纸",
                     )
                 except Exception as exc:
                     logger.error(f"设置壁纸失败: {exc}")
@@ -15777,6 +16140,11 @@ class Pages:
             self._show_snackbar("设为壁纸失败，请查看日志。", error=True)
         else:
             self._show_snackbar("已设置为壁纸。")
+            self._after_wallpaper_set(
+                cached_path,
+                source="sniff",
+                title=image.filename,
+            )
         finally:
             self._sniff_task_finish()
 

@@ -10,8 +10,8 @@ SETTINGS_TAB_PLUGINS = 7
 """Global constants for Little Tree Wallpaper Next."""
 
 APP_NAME = "小树壁纸 Next"
-VER = "1.0.0"
-BUILD = "2025.12.24-001"
+VER = "1.0.2026"
+BUILD = "2026.01.01-001"
 MODE = "STABLE"  # 可选值: STABLE, TEST
 BUILD_VERSION = f"v{VER} ({BUILD})"
 
